@@ -28,6 +28,10 @@ When the launcher is newly installed or updated, the payload also asks the PS5
 to open that local browser URL once. Later loads keep the tile available without
 forcing the browser open again.
 
+Launcher state is stored in `/data/BS5fm`. The PS5 app tile itself still lives
+under `/user/app/BS5F00001`, which is the console app location used by the app
+install API.
+
 The payload also shows a PS5 notification with the external browser URL when
 the web server is ready. Port `5905` is fixed so this payload can run next to
 older builds that may still be listening on another port.
@@ -59,9 +63,10 @@ At a high level the payload has five parts:
   notifications, installs the launcher tile if needed, and starts the HTTP
   server on port `5905`.
 - `src/app_installer.c` writes the embedded launcher metadata/icon under
-  `/user/app/BS5F00001` and registers the PS5 home-screen tile. The installer
-  resolves the title-directory install function from `libSceAppInstUtil.sprx`
-  at runtime and falls back to the broader app install call when needed.
+  `/user/app/BS5F00001`, stores its update marker under `/data/BS5fm`, and
+  registers the PS5 home-screen tile. The installer resolves the title-directory
+  install function from `libSceAppInstUtil.sprx` at runtime and falls back to
+  the broader app install call when needed.
 - `src/websrv_lite.c` is a compact HTTP server. It serves the embedded UI,
   static downloads under `/fs`, and JSON APIs under `/api/fs`.
 - `src/transfer.c` implements the file-manager API: list, stat, folder size,
@@ -114,3 +119,5 @@ port `5905` instead.
 Recursive folder size, copy, move, and delete can still take time on very large
 external drives. Progress polling is tolerant of short hiccups, and active jobs
 continue on the PS5 side even if the browser temporarily loses contact.
+Copy, move, and delete jobs report PS5-side throughput in `MB/s` plus ETA from
+the server-side job counters.

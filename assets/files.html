@@ -727,6 +727,12 @@
       return s + 's';
     }
 
+    function speedMBps(bytesPerSecond) {
+      if (!Number.isFinite(bytesPerSecond) || bytesPerSecond <= 0) return '';
+      const mb = bytesPerSecond / (1024 * 1024);
+      return mb.toFixed(mb >= 10 ? 1 : 2) + ' MB/s';
+    }
+
     function formatDate(seconds) {
       if (!Number.isFinite(seconds) || seconds <= 0) return 'Unknown';
       return new Date(seconds * 1000).toLocaleString();
@@ -739,7 +745,10 @@
       const totalFiles = Number(job.totalFiles || 0);
       const failedFiles = Number(job.failedFiles || 0);
       const elapsed = Math.max(0, (Date.now() / 1000) - Number(job.startedAt || 0));
-      const speed = elapsed > 0 && copied > 0 ? copied / elapsed : 0;
+      const reportedSpeed = Number(job.speedBytesPerSec || 0);
+      const speed = reportedSpeed > 0 ? reportedSpeed :
+        (elapsed > 0 && copied > 0 ? copied / elapsed : 0);
+      const reportedEta = Number(job.etaSeconds || 0);
       const pct = total > 0 ? Math.max(0, Math.min(100, (copied / total) * 100)) : 0;
       const parts = [];
 
@@ -755,8 +764,12 @@
       }
 
       if (speed > 0) {
-        parts.push(shortSize(speed) + '/s');
-        if (total > copied) parts.push('ETA ' + shortDuration((total - copied) / speed));
+        parts.push(speedMBps(speed));
+        if (reportedEta > 0) {
+          parts.push('ETA ' + shortDuration(reportedEta));
+        } else if (total > copied) {
+          parts.push('ETA ' + shortDuration((total - copied) / speed));
+        }
       }
 
       if (failedFiles > 0) parts.push(failedFiles + ' failed');
@@ -1027,7 +1040,7 @@
           if (!job.busy) return job;
         } catch (err) {
           missed++;
-          if (missed >= 120) throw err;
+          if (missed >= 600) throw err;
         }
         await new Promise((resolve) => setTimeout(resolve, 700));
       }
@@ -1171,7 +1184,7 @@
         } catch (err) {
           missed++;
           text.textContent = 'Waiting for status...';
-          if (missed >= 120) {
+          if (missed >= 600) {
             clearInterval(state.jobTimer);
             state.jobTimer = 0;
             box.classList.remove('show');

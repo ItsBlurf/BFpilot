@@ -18,7 +18,9 @@
 #define BS5FM_APP_TITLE_ID "BS5F00001"
 #define BS5FM_APP_ROOT "/user/app"
 #define BS5FM_APP_PARENT BS5FM_APP_ROOT "/"
-#define BS5FM_INSTALL_MARKER "bs5filemanager-launcher-v2\n"
+#define BS5FM_DATA_DIR "/data/BS5fm"
+#define BS5FM_MARKER_PATH BS5FM_DATA_DIR "/launcher.ok"
+#define BS5FM_INSTALL_MARKER "bs5filemanager-launcher-v3\n"
 
 #define INCASSET(name, file)                                                   \
   __asm__(".section .rodata\n"                                                 \
@@ -37,6 +39,7 @@ INCASSET(bs5fm_icon0_png, "assets-app/icon0.png");
 
 int sceAppInstUtilInitialize(void);
 int sceAppInstUtilAppInstallAll(void *);
+int sceAppInstUtilAppUnInstall(const char *);
 
 typedef int (*app_install_title_dir_fn)(const char *, const char *, void *);
 
@@ -106,27 +109,33 @@ mkdir_if_needed(const char *path) {
 }
 
 
+static int
+ensure_data_dir(void) {
+  if(mkdir_if_needed("/data") != 0) return -1;
+  return mkdir_if_needed(BS5FM_DATA_DIR);
+}
+
+
 int
 bs5fm_install_app_if_needed(void) {
   char app_dir[256];
   char sce_sys_dir[256];
   char param_path[256];
   char icon_path[256];
-  char marker_path[256];
   struct stat st;
 
   snprintf(app_dir, sizeof(app_dir), BS5FM_APP_ROOT "/%s", BS5FM_APP_TITLE_ID);
   snprintf(sce_sys_dir, sizeof(sce_sys_dir), "%s/sce_sys", app_dir);
   snprintf(param_path, sizeof(param_path), "%s/param.json", sce_sys_dir);
   snprintf(icon_path, sizeof(icon_path), "%s/icon0.png", sce_sys_dir);
-  snprintf(marker_path, sizeof(marker_path), "%s/bs5fm.ok", app_dir);
 
-  int needs_install = stat(app_dir, &st) != 0 ||
+  int app_exists = stat(app_dir, &st) == 0;
+  int needs_install = !app_exists ||
                       file_differs(param_path, bs5fm_param_json,
                                    bs5fm_param_json_size) ||
                       file_differs(icon_path, bs5fm_icon0_png,
                                    bs5fm_icon0_png_size) ||
-                      file_differs(marker_path, g_install_marker,
+                      file_differs(BS5FM_MARKER_PATH, g_install_marker,
                                    sizeof(g_install_marker) - 1);
 
   if(!needs_install) return 0;
@@ -141,6 +150,11 @@ bs5fm_install_app_if_needed(void) {
   if(err) {
     printf("  launcher install: sceAppInstUtilInitialize failed 0x%08x\n", err);
     return -1;
+  }
+
+  if(app_exists) {
+    int uninstall_err = sceAppInstUtilAppUnInstall(BS5FM_APP_TITLE_ID);
+    printf("  launcher install: refresh old tile 0x%08x\n", uninstall_err);
   }
 
   if(mkdir_if_needed(app_dir) != 0 || mkdir_if_needed(sce_sys_dir) != 0) {
@@ -164,9 +178,13 @@ bs5fm_install_app_if_needed(void) {
     return -1;
   }
 
-  if(write_file(marker_path, g_install_marker,
+  if(ensure_data_dir() != 0) {
+    printf("  launcher install: warning, failed creating %s errno %d\n",
+           BS5FM_DATA_DIR, errno);
+  } else if(write_file(BS5FM_MARKER_PATH, g_install_marker,
                 sizeof(g_install_marker) - 1) != 0) {
-    printf("  launcher install: warning, failed writing %s\n", marker_path);
+    printf("  launcher install: warning, failed writing %s\n",
+           BS5FM_MARKER_PATH);
   }
 
   bs5fm_notify("BS5FileManager app ready",

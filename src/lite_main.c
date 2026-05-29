@@ -25,7 +25,7 @@
 #define BS5FM_WEB_PORT 5905
 
 int sceNetCtlInit(void);
-int sceSystemServiceLaunchWebBrowser(const char *uri);
+int sceSystemServiceLaunchWebBrowser(const char *uri, void *);
 int sceUserServiceInitialize(void *);
 
 
@@ -76,7 +76,7 @@ static void
 launch_browser_once(ready_state_t *state) {
   if(!state->launch_browser || state->browser_launched) return;
 
-  int err = sceSystemServiceLaunchWebBrowser("http://127.0.0.1:5905/");
+  int err = sceSystemServiceLaunchWebBrowser("http://127.0.0.1:5905/", NULL);
   if(err == 0) {
     puts("  ps5 browser: opened http://127.0.0.1:5905/");
   } else {

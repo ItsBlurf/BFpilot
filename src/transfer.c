@@ -388,7 +388,7 @@ copy_recursive(const char *src, const char *dst) {
 
 
 static int
-delete_recursive(const char *path) {
+delete_recursive(const char *path, int count_progress) {
   if(job_cancelled()) {
     errno = ECANCELED;
     return -1;
@@ -405,7 +405,7 @@ delete_recursive(const char *path) {
       if(!strcmp(ent->d_name, ".") || !strcmp(ent->d_name, "..")) continue;
       char child[1024];
       join_path(child, sizeof(child), path, ent->d_name);
-      if(delete_recursive(child) != 0) {
+      if(delete_recursive(child, count_progress) != 0) {
         rc = -1;
         atomic_fetch_add(&g_job.failed_files, 1);
         if(job_cancelled()) break;
@@ -415,16 +415,24 @@ delete_recursive(const char *path) {
     if(rc == 0) {
       job_set_current(path);
       if(rmdir(path) != 0) return -1;
-      if(st.st_size > 0) atomic_fetch_add(&g_job.copied_bytes, (long)st.st_size);
-      atomic_fetch_add(&g_job.done_files, 1);
+      if(count_progress) {
+        if(st.st_size > 0) {
+          atomic_fetch_add(&g_job.copied_bytes, (long)st.st_size);
+        }
+        atomic_fetch_add(&g_job.done_files, 1);
+      }
     }
     return rc;
   }
 
   job_set_current(path);
   if(unlink(path) != 0) return -1;
-  if(st.st_size > 0) atomic_fetch_add(&g_job.copied_bytes, (long)st.st_size);
-  atomic_fetch_add(&g_job.done_files, 1);
+  if(count_progress) {
+    if(st.st_size > 0) {
+      atomic_fetch_add(&g_job.copied_bytes, (long)st.st_size);
+    }
+    atomic_fetch_add(&g_job.done_files, 1);
+  }
   return 0;
 }
 
@@ -492,7 +500,7 @@ copy_worker(void *arg) {
     free(a);
     return NULL;
   }
-  if(a->is_move && delete_recursive(a->src) != 0) {
+  if(a->is_move && delete_recursive(a->src, 0) != 0) {
     char err[160];
     snprintf(err, sizeof(err), "post-move cleanup: %s", strerror(errno));
     job_end(-1, err);
@@ -520,7 +528,7 @@ delete_worker(void *arg) {
   atomic_store(&g_job.total_files, (int)(items > 0 ? items : 1));
   atomic_store(&g_job.total_bytes, bytes);
 
-  if(delete_recursive(a->path) != 0) {
+  if(delete_recursive(a->path, 1) != 0) {
     char err[160];
     snprintf(err, sizeof(err), "delete: %s", strerror(errno));
     job_end(-1, err);
@@ -882,6 +890,16 @@ status_handler(const http_request_t *req) {
   ended_at = g_job.ended_at;
   pthread_mutex_unlock(&g_job.lock);
 
+  time_t now = time(NULL);
+  time_t ref_at = busy ? now : (ended_at ? ended_at : now);
+  long elapsed = started_at > 0 && ref_at > started_at
+                     ? (long)(ref_at - started_at)
+                     : 0;
+  long speed = elapsed > 0 && cb > 0 ? cb / elapsed : 0;
+  long eta = busy && speed > 0 && tb > cb
+                 ? (tb - cb + speed - 1) / speed
+                 : 0;
+
   json_buf_t b = {0};
   if(json_appendf(&b,
       "{\"ok\":true,\"busy\":%s,\"cancelling\":%s,\"verb\":",
@@ -894,8 +912,11 @@ status_handler(const http_request_t *req) {
      json_appendf(&b,
       ",\"totalBytes\":%ld,\"copiedBytes\":%ld,"
       "\"totalFiles\":%d,\"doneFiles\":%d,\"failedFiles\":%d,"
-      "\"startedAt\":%ld,\"endedAt\":%ld}",
-      tb, cb, tf, df, ff, (long)started_at, (long)ended_at) != 0) {
+      "\"startedAt\":%ld,\"endedAt\":%ld,"
+      "\"elapsedSeconds\":%ld,\"speedBytesPerSec\":%ld,"
+      "\"etaSeconds\":%ld}",
+      tb, cb, tf, df, ff, (long)started_at, (long)ended_at,
+      elapsed, speed, eta) != 0) {
     free(b.data);
     return -1;
   }
