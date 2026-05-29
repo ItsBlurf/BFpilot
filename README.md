@@ -55,7 +55,7 @@ older builds that may still be listening on another port.
 - Upload files or folder trees from the browser
 - Download one selected file through the browser
 - Target shortcuts for `/data/homebrew` and `/mnt/usb0`
-- USB shortcut discovery for `/mnt/usb0` through `/mnt/usb7`
+- shortcuts
 - Click-to-calculate recursive folder size
 - Full-width progress text in the UI so large totals and paths do not get
   clipped too aggressively
