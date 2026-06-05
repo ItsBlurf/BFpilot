@@ -1,5 +1,5 @@
 # BFpilot
-
+this is still in BETA phase but its working and does a good enough job.
 BFpilot is a small PS5 userland payload that starts a browser-based file
 manager on port `5905`.
 
