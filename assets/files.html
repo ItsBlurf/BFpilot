@@ -119,14 +119,47 @@
       min-width: 0;
     }
 
-    .title strong {
+    .title > strong {
       display: block;
       font-size: 18px;
     }
 
-    .title span {
+    .title > span {
       color: var(--muted);
       font-size: 12px;
+    }
+
+    .storage-summary {
+      margin-top: 3px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.3;
+    }
+
+    .storage-summary span {
+      min-width: 0;
+      max-width: 100%;
+      border: 0;
+      background: transparent;
+      padding: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .storage-summary span + span::before {
+      content: "· ";
+      color: #667789;
+    }
+
+    .storage-summary strong {
+      display: inline;
+      color: var(--ink);
+      font-size: inherit;
+      font-weight: 600;
     }
 
     .status {
@@ -158,7 +191,7 @@
       margin: 0 auto;
       padding: 14px;
       display: grid;
-      grid-template-columns: 150px minmax(0, 1fr) 300px;
+      grid-template-columns: 190px minmax(0, 1fr) 300px;
       gap: 12px;
       min-height: 0;
     }
@@ -179,13 +212,32 @@
       align-self: start;
       display: grid;
       gap: 8px;
+      overflow: hidden;
+    }
+
+    .rail-list,
+    .rail-tools {
+      display: grid;
+      gap: 6px;
+    }
+
+    .rail-title {
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
     }
 
     .rail button {
       width: 100%;
+      min-width: 0;
       justify-content: flex-start;
       text-align: left;
       background: var(--soft);
+      white-space: normal;
+      padding: 6px 10px;
+      min-height: 34px;
     }
 
     .rail button.active {
@@ -193,6 +245,24 @@
       background: var(--mint);
       color: var(--deep);
       font-weight: 700;
+    }
+
+    .place-label {
+      display: block;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .place-meta {
+      display: block;
+      margin-top: 1px;
+      color: var(--muted);
+      font-size: 10.5px;
+      font-weight: 400;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
     }
 
     .browser {
@@ -341,14 +411,48 @@
     }
 
     .target-buttons,
-    .target-grid {
+    .target-actions {
       display: grid;
       grid-template-columns: 1fr 1fr;
       gap: 8px;
     }
 
+    .target-grid {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 8px;
+    }
+
     .target-grid button {
       background: var(--soft);
+      min-width: 0;
+      padding: 7px 9px;
+      overflow-wrap: anywhere;
+      white-space: normal;
+      font-family: Consolas, Menlo, monospace;
+      font-size: 12px;
+      line-height: 1.25;
+    }
+
+    .target-label {
+      display: block;
+      color: var(--ink);
+      font-family: Arial, Helvetica, sans-serif;
+      font-size: 13px;
+      font-weight: 700;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .target-meta {
+      display: block;
+      margin-top: 2px;
+      color: var(--muted);
+      font-family: Consolas, Menlo, monospace;
+      font-size: 10.5px;
+      font-weight: 400;
+      overflow-wrap: anywhere;
     }
 
     .detail {
@@ -502,19 +606,21 @@
         grid-column: 1 / -1;
       }
 
+      .storage-summary span {
+        max-width: calc(100vw - 96px);
+      }
+
       .shell {
         grid-template-columns: 1fr;
         padding: 10px;
       }
 
       .rail {
-        display: flex;
-        overflow-x: auto;
+        display: grid;
       }
 
       .rail button {
-        width: auto;
-        flex: 0 0 auto;
+        width: 100%;
       }
 
       .pathbar {
@@ -565,13 +671,24 @@
       <div class="title">
         <strong>BFpilot</strong>
         <span id="build">File Manager</span>
+        <div class="storage-summary" id="storage-summary">
+          <span>Storage: loading</span>
+        </div>
       </div>
       <div class="status" id="status"><span class="dot"></span><span>Connecting</span></div>
     </div>
   </header>
 
   <main class="shell">
-    <nav class="rail" id="places" aria-label="Places"></nav>
+    <nav class="rail" aria-label="Places">
+      <div class="rail-title">Places</div>
+      <div class="rail-list" id="places"></div>
+      <div class="rail-tools">
+        <button id="add-shortcut">Add Shortcut</button>
+        <button id="remove-shortcut">Remove Shortcut</button>
+        <button id="customize-shortcut">Customize Shortcut</button>
+      </div>
+    </nav>
 
     <section class="browser" aria-label="Files">
       <div class="pathbar">
@@ -603,15 +720,13 @@
 
     <aside class="target" aria-label="Transfer target">
       <h2>Target</h2>
-      <input id="target-path" class="target-path" spellcheck="false" value="/mnt/usb0">
+      <input id="target-path" class="target-path" spellcheck="false" value="/data">
       <div class="target-buttons">
         <button id="copy" class="primary">Copy Here</button>
         <button id="move">Move Here</button>
       </div>
-      <div class="target-grid">
-        <button data-target="/data/homebrew">/data/homebrew</button>
-        <button data-target="/mnt/usb0">/mnt/usb0</button>
-        <button data-target="/mnt/ext0">/mnt/ext0</button>
+      <div class="target-grid" id="target-grid"></div>
+      <div class="target-actions">
         <button id="target-current">Current</button>
         <button id="open-target">Open</button>
       </div>
@@ -634,23 +749,22 @@
   <div id="toast" class="toast"></div>
 
   <script>
-    const places = [
-      ['Root', '/'],
-      ['Data', '/data'],
-      ['Homebrew', '/data/homebrew'],
-      ['Mounts', '/mnt'],
-      ['User', '/user'],
-      ['System', '/system_data']
-    ];
-
     const state = {
       path: '/data',
       entries: [],
+      places: [
+        { label: 'Root', path: '/', kind: 'root' },
+        { label: 'Homebrew', path: '/data/homebrew', kind: 'homebrew' },
+        { label: 'Mounts', path: '/mnt', kind: 'mounts' },
+        { label: 'User', path: '/user', kind: 'user' },
+        { label: 'Data', path: '/data', kind: 'internal' }
+      ],
       selected: new Set(),
       detailToken: 0,
       uploadBusy: false,
       uploadAbort: false,
       uploadXhr: null,
+      placesTimer: 0,
       jobTimer: 0,
       jobHideTimer: 0
     };
@@ -722,6 +836,208 @@
     function exactSize(size) {
       if (!Number.isFinite(size) || size < 0) return 'Unknown';
       return shortSize(size) + ' (' + Math.round(size).toLocaleString() + ' bytes)';
+    }
+
+    function storageSummary(place) {
+      if (!place || !place.statvfs || !Number.isFinite(place.totalBytes) || place.totalBytes <= 0) {
+        return '';
+      }
+      const free = Number(place.availableBytes || place.freeBytes || 0);
+      const pct = Number(place.usedPercent || 0);
+      return shortSize(free) + ' free of ' + shortSize(place.totalBytes) +
+        ', ' + pct.toFixed(0) + '% used';
+    }
+
+    function placeSubtitle(place) {
+      return cleanPath(place.path || '/');
+    }
+
+    function placeButton(place, onClick) {
+      const button = document.createElement('button');
+      button.dataset.path = cleanPath(place.path);
+      button.title = cleanPath(place.path);
+
+      const label = document.createElement('span');
+      label.className = 'place-label';
+      label.textContent = place.label || cleanPath(place.path);
+      button.appendChild(label);
+
+      const meta = document.createElement('span');
+      meta.className = 'place-meta';
+      meta.textContent = placeSubtitle(place);
+      button.appendChild(meta);
+
+      button.addEventListener('click', onClick);
+      return button;
+    }
+
+    function renderStorageSummary() {
+      const box = el('storage-summary');
+      box.textContent = '';
+      const seen = new Set();
+      const items = [];
+      for (const place of state.places) {
+        if (!place.statvfs || Number(place.totalBytes || 0) <= 0) continue;
+        if (place.kind !== 'internal' && place.kind !== 'usb' && place.kind !== 'ext') continue;
+        const key = place.kind === 'internal' ? 'internal' : cleanPath(place.path);
+        if (seen.has(key)) continue;
+        seen.add(key);
+        items.push(place);
+      }
+      if (!items.length) {
+        const empty = document.createElement('span');
+        empty.textContent = 'Storage: waiting for data';
+        box.appendChild(empty);
+        return;
+      }
+      for (const place of items) {
+        const item = document.createElement('span');
+        const title = document.createElement('strong');
+        title.textContent = place.kind === 'internal'
+          ? 'Data'
+          : cleanPath(place.path);
+        item.appendChild(title);
+        item.appendChild(document.createTextNode(': ' + (storageSummary(place) || 'unknown')));
+        item.title = cleanPath(place.path);
+        box.appendChild(item);
+      }
+    }
+
+    function targetButton(place, path) {
+      const button = document.createElement('button');
+      button.dataset.path = path;
+      if (place.custom) {
+        const label = document.createElement('span');
+        label.className = 'target-label';
+        label.textContent = place.label || path;
+        button.appendChild(label);
+
+        const meta = document.createElement('span');
+        meta.className = 'target-meta';
+        meta.textContent = path;
+        button.appendChild(meta);
+      } else {
+        button.textContent = path;
+      }
+      button.title = (place.label ? place.label + ' | ' : '') + path;
+      button.addEventListener('click', () => {
+        el('target-path').value = path;
+        updatePlaces();
+      });
+      return button;
+    }
+
+    function renderTargetButtons() {
+      const grid = el('target-grid');
+      grid.textContent = '';
+      const seen = new Set();
+      for (const path of ['/data', '/data/homebrew']) {
+        const place = state.places.find((item) => cleanPath(item.path) === path) ||
+          { label: path, path, kind: 'target' };
+        grid.appendChild(targetButton(place, path));
+        seen.add(path);
+      }
+      for (const place of state.places) {
+        if (!place.custom) continue;
+        const path = cleanPath(place.path);
+        if (seen.has(path)) continue;
+        seen.add(path);
+        grid.appendChild(targetButton(place, path));
+      }
+    }
+
+    function renderPlaces() {
+      const root = el('places');
+      root.textContent = '';
+      const seen = new Set();
+      for (const place of state.places) {
+        const clean = cleanPath(place.path);
+        if (seen.has(clean)) continue;
+        seen.add(clean);
+        root.appendChild(placeButton(place, () => openPath(clean)));
+      }
+      renderTargetButtons();
+      renderStorageSummary();
+      updatePlaces();
+    }
+
+    async function refreshPlaces(quiet) {
+      try {
+        const data = await api('/api/fs/places');
+        state.places = (data.places || []).map((place) => {
+          place.path = cleanPath(place.path || '/');
+          return place;
+        });
+      } catch (err) {
+        state.places = [
+          { label: 'Root', path: '/', kind: 'root' },
+          { label: 'Homebrew', path: '/data/homebrew', kind: 'homebrew' },
+          { label: 'Mounts', path: '/mnt', kind: 'mounts' },
+          { label: 'User', path: '/user', kind: 'user' },
+          { label: 'Data', path: '/data', kind: 'internal' }
+        ];
+        if (!quiet) toast('places: ' + err.message, 'err');
+      }
+      renderPlaces();
+    }
+
+    function activeShortcut() {
+      const current = cleanPath(state.path);
+      let match = state.places.find((place) => place.custom && cleanPath(place.path) === current);
+      if (!match) {
+        const target = cleanPath(el('target-path').value || '');
+        match = state.places.find((place) => place.custom && cleanPath(place.path) === target);
+      }
+      return match || null;
+    }
+
+    async function addShortcut() {
+      const path = cleanPath(prompt('Shortcut path', state.path) || '');
+      if (!path || path === '/') return;
+      const label = prompt('Shortcut label', path.split('/').filter(Boolean).pop() || path);
+      if (label === null) return;
+      try {
+        await api('/api/fs/shortcut/add?path=' + encodeURIComponent(path) +
+          '&label=' + encodeURIComponent(label));
+        await refreshPlaces(false);
+        toast('Shortcut saved', 'ok');
+      } catch (err) {
+        toast('shortcut: ' + err.message, 'err');
+      }
+    }
+
+    async function removeShortcut() {
+      const match = activeShortcut();
+      if (!match) {
+        toast('Open a custom shortcut first, or put one in Target', 'err');
+        return;
+      }
+      if (!confirm('Remove shortcut "' + (match.label || match.path) + '"?')) return;
+      try {
+        await api('/api/fs/shortcut/delete?path=' + encodeURIComponent(match.path));
+        await refreshPlaces(false);
+        toast('Shortcut removed', 'ok');
+      } catch (err) {
+        toast('shortcut: ' + err.message, 'err');
+      }
+    }
+
+    async function customizeShortcut() {
+      const match = activeShortcut();
+      if (!match) {
+        toast('Open a custom shortcut first, or put one in Target', 'err');
+        return;
+      }
+      const label = prompt('Shortcut name', match.label || match.path);
+      if (label === null) return;
+      try {
+        await api('/api/fs/shortcut/rename?path=' + encodeURIComponent(match.path) +
+          '&label=' + encodeURIComponent(label));
+        await refreshPlaces(false);
+        toast('Shortcut updated', 'ok');
+      } catch (err) {
+        toast('shortcut: ' + err.message, 'err');
+      }
     }
 
     function shortDuration(seconds) {
@@ -916,6 +1232,13 @@
       document.querySelectorAll('#places button').forEach((button) => {
         button.classList.toggle('active', cleanPath(button.dataset.path) === state.path);
       });
+      const currentCustom = state.places.some((place) => {
+        return place.custom && cleanPath(place.path) === state.path;
+      });
+      const targetCustom = state.places.some((place) => place.custom &&
+        cleanPath(place.path) === cleanPath(el('target-path').value || ''));
+      el('remove-shortcut').disabled = !currentCustom && !targetCustom;
+      el('customize-shortcut').disabled = !currentCustom && !targetCustom;
     }
 
     function updateSelection() {
@@ -1318,38 +1641,15 @@
     }
 
     async function boot() {
-      const placeRoot = el('places');
-      const extra = [];
-
-      try {
-        const usb = await api('/api/fs/usb');
-        for (const mount of usb.mounts || []) {
-          let label = mount.path
-            .replace('/mnt/', '')
-            .replace('/data/', '')
-            .toUpperCase();
-          if (mount.kind === 'homebrew' && mount.path !== '/data/homebrew') {
-            label = label.replace('/HOMEBREW', ' HB');
-          }
-          extra.push([label, mount.path]);
-        }
-      } catch (err) {}
-
-      const seenPlaces = new Set();
-      for (const [label, path] of places.concat(extra)) {
-        const clean = cleanPath(path);
-        if (seenPlaces.has(clean)) continue;
-        seenPlaces.add(clean);
-        const button = document.createElement('button');
-        button.textContent = label;
-        button.dataset.path = clean;
-        button.addEventListener('click', () => openPath(clean));
-        placeRoot.appendChild(button);
-      }
+      renderPlaces();
+      await refreshPlaces(false);
 
       el('up').addEventListener('click', () => openPath(parentPath(state.path)));
       el('go').addEventListener('click', refresh);
       el('refresh').addEventListener('click', refresh);
+      el('add-shortcut').addEventListener('click', addShortcut);
+      el('remove-shortcut').addEventListener('click', removeShortcut);
+      el('customize-shortcut').addEventListener('click', customizeShortcut);
       el('path').addEventListener('keydown', (event) => {
         if (event.key === 'Enter') refresh();
       });
@@ -1366,11 +1666,7 @@
       el('open-target').addEventListener('click', () => {
         openPath(el('target-path').value);
       });
-      document.querySelectorAll('[data-target]').forEach((button) => {
-        button.addEventListener('click', () => {
-          el('target-path').value = button.dataset.target;
-        });
-      });
+      el('target-path').addEventListener('input', updatePlaces);
       el('job-cancel').addEventListener('click', () => {
         if (state.uploadBusy) {
           state.uploadAbort = true;
@@ -1401,6 +1697,9 @@
       });
 
       await refresh();
+      if (!state.placesTimer) {
+        state.placesTimer = setInterval(() => refreshPlaces(true), 8000);
+      }
 
       api('/api/status').then((info) => {
         const status = el('status');

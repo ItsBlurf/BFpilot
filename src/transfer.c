@@ -15,6 +15,7 @@
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/statvfs.h>
 #include <sys/types.h>
 #include <time.h>
 #include <unistd.h>
@@ -30,6 +31,11 @@
 
 #define COPY_BUF_SIZE   BFPILOT_TRANSFER_BUF_SIZE
 #define UPLOAD_BUF_SIZE BFPILOT_TRANSFER_BUF_SIZE
+#define BFPILOT_DATA_ROOT "/data"
+#define BFPILOT_DATA_DIR "/data/BFpilot"
+#define BFPILOT_SHORTCUTS_PATH "/data/BFpilot/shortcuts.txt"
+#define BFPILOT_SHORTCUTS_TMP "/data/BFpilot/shortcuts.tmp"
+#define BFPILOT_MAX_SHORTCUTS 32
 
 
 typedef struct json_buf {
@@ -165,6 +171,13 @@ mkdirs(const char *path) {
 
 
 static void
+ensure_bfpilot_dir(void) {
+  (void)mkdir(BFPILOT_DATA_ROOT, 0755);
+  (void)mkdir(BFPILOT_DATA_DIR, 0755);
+}
+
+
+static void
 join_path(char *out, size_t out_sz, const char *dir, const char *name) {
   size_t n = strlen(dir);
   snprintf(out, out_sz, "%s%s%s", dir, (n > 1 && dir[n - 1] != '/') ? "/" : "",
@@ -176,6 +189,13 @@ static const char *
 path_basename(const char *path) {
   const char *base = strrchr(path ? path : "", '/');
   return base && base[1] ? base + 1 : path;
+}
+
+
+static const char *
+safe_basename_label(const char *path) {
+  const char *base = path_basename(path);
+  return base && base[0] ? base : path;
 }
 
 
@@ -813,6 +833,12 @@ list_request(const http_request_t *req) {
 }
 
 
+static void
+fs_totals(const char *path, int *ok, unsigned long long *total,
+          unsigned long long *free_bytes, unsigned long long *avail,
+          unsigned long long *used, double *used_pct);
+
+
 static int
 stat_request(const http_request_t *req) {
   char path[1024];
@@ -824,11 +850,21 @@ stat_request(const http_request_t *req) {
   if(lstat(path, &st) != 0) return serve_error(req, 404, strerror(errno));
 
   json_buf_t b = {0};
+  int fs_ok = 0;
+  unsigned long long total = 0, free_bytes = 0, avail = 0, used = 0;
+  double used_pct = 0.0;
+  fs_totals(path, &fs_ok, &total, &free_bytes, &avail, &used, &used_pct);
   if(json_append(&b, "{\"ok\":true,\"path\":") != 0 ||
      json_string(&b, path) != 0 ||
-     json_appendf(&b, ",\"dir\":%s,\"size\":%ld,\"mtime\":%ld}",
+     json_appendf(&b,
+                  ",\"dir\":%s,\"size\":%ld,\"mtime\":%ld,\"dev\":%lu,"
+                  "\"statvfs\":%s,\"totalBytes\":%llu,\"freeBytes\":%llu,"
+                  "\"availableBytes\":%llu,\"usedBytes\":%llu,"
+                  "\"usedPercent\":%.2f}",
                   S_ISDIR(st.st_mode) ? "true" : "false",
-                  (long)st.st_size, (long)st.st_mtime) != 0) {
+                  (long)st.st_size, (long)st.st_mtime,
+                  (unsigned long)st.st_dev, fs_ok ? "true" : "false",
+                  total, free_bytes, avail, used, used_pct) != 0) {
     free(b.data);
     return -1;
   }
@@ -910,20 +946,126 @@ du_request(const http_request_t *req) {
 }
 
 
+typedef struct shortcut_entry {
+  char label[64];
+  char path[512];
+} shortcut_entry_t;
+
+
+static void
+sanitize_shortcut_label(char *out, size_t out_size, const char *label,
+                        const char *path) {
+  const char *src = label && label[0] ? label : safe_basename_label(path);
+  size_t pos = 0;
+  if(out_size == 0) return;
+  for(const unsigned char *p = (const unsigned char *)src;
+      *p && pos + 1 < out_size; p++) {
+    if(*p < 0x20 || *p == '\t') {
+      if(pos > 0 && out[pos - 1] != ' ') out[pos++] = ' ';
+    } else {
+      out[pos++] = (char)*p;
+    }
+  }
+  while(pos > 0 && out[pos - 1] == ' ') pos--;
+  out[pos] = 0;
+  if(!out[0]) snprintf(out, out_size, "%s", safe_basename_label(path));
+}
+
+
 static int
-append_fs_place(json_buf_t *b, int *first, const char *path,
-                const char *kind) {
+read_shortcuts(shortcut_entry_t *items, int max_items) {
+  FILE *file = fopen(BFPILOT_SHORTCUTS_PATH, "r");
+  if(!file) return 0;
+
+  int count = 0;
+  char line[700];
+  while(count < max_items && fgets(line, sizeof(line), file)) {
+    char *nl = strpbrk(line, "\r\n");
+    if(nl) *nl = 0;
+    char *tab = strchr(line, '\t');
+    if(!tab) continue;
+    *tab++ = 0;
+    if(!path_is_safe(tab)) continue;
+    sanitize_shortcut_label(items[count].label, sizeof(items[count].label),
+                            line, tab);
+    snprintf(items[count].path, sizeof(items[count].path), "%s", tab);
+    count++;
+  }
+  fclose(file);
+  return count;
+}
+
+
+static int
+write_shortcuts(const shortcut_entry_t *items, int count) {
+  ensure_bfpilot_dir();
+  FILE *file = fopen(BFPILOT_SHORTCUTS_TMP, "w");
+  if(!file) return -1;
+  for(int i = 0; i < count; i++) {
+    if(fprintf(file, "%s\t%s\n", items[i].label, items[i].path) < 0) {
+      fclose(file);
+      return -1;
+    }
+  }
+  if(fclose(file) != 0) return -1;
+  if(rename(BFPILOT_SHORTCUTS_TMP, BFPILOT_SHORTCUTS_PATH) != 0) return -1;
+  return 0;
+}
+
+
+static void
+fs_totals(const char *path, int *ok, unsigned long long *total,
+          unsigned long long *free_bytes, unsigned long long *avail,
+          unsigned long long *used, double *used_pct) {
+  struct statvfs vfs;
+  *ok = 0;
+  *total = 0;
+  *free_bytes = 0;
+  *avail = 0;
+  *used = 0;
+  *used_pct = 0.0;
+  if(statvfs(path, &vfs) != 0) return;
+
+  unsigned long long block = vfs.f_frsize ? vfs.f_frsize : vfs.f_bsize;
+  *total = (unsigned long long)vfs.f_blocks * block;
+  *free_bytes = (unsigned long long)vfs.f_bfree * block;
+  *avail = (unsigned long long)vfs.f_bavail * block;
+  *used = *total > *free_bytes ? *total - *free_bytes : 0;
+  *used_pct = *total > 0 ? ((double)*used * 100.0) / (double)*total : 0.0;
+  *ok = 1;
+}
+
+
+static int
+append_fs_place(json_buf_t *b, int *first, const char *label,
+                const char *path, const char *kind, int custom,
+                int mounted) {
   struct stat st;
   if(stat(path, &st) != 0 || !S_ISDIR(st.st_mode)) return 0;
 
   if(!*first && json_append(b, ",") != 0) return -1;
   *first = 0;
 
-  if(json_append(b, "{\"path\":") != 0 ||
+  int fs_ok = 0;
+  unsigned long long total = 0, free_bytes = 0, avail = 0, used = 0;
+  double used_pct = 0.0;
+  fs_totals(path, &fs_ok, &total, &free_bytes, &avail, &used, &used_pct);
+
+  if(json_append(b, "{\"label\":") != 0 ||
+     json_string(b, label && label[0] ? label : safe_basename_label(path)) != 0 ||
+     json_append(b, ",\"path\":") != 0 ||
      json_string(b, path) != 0 ||
      json_append(b, ",\"kind\":") != 0 ||
      json_string(b, kind ? kind : "path") != 0 ||
-     json_append(b, ",\"writable\":null,\"writeProbe\":\"skipped-read-only\"}") != 0) {
+     json_appendf(b,
+                  ",\"custom\":%s,\"mounted\":%s,\"dev\":%lu,"
+                  "\"statvfs\":%s,\"totalBytes\":%llu,\"freeBytes\":%llu,"
+                  "\"availableBytes\":%llu,\"usedBytes\":%llu,"
+                  "\"usedPercent\":%.2f,"
+                  "\"writable\":null,\"writeProbe\":\"skipped-read-only\"}",
+                  custom ? "true" : "false", mounted ? "true" : "false",
+                  (unsigned long)st.st_dev, fs_ok ? "true" : "false",
+                  total, free_bytes, avail, used, used_pct) != 0) {
     return -1;
   }
   return 0;
@@ -931,24 +1073,45 @@ append_fs_place(json_buf_t *b, int *first, const char *path,
 
 
 static int
-usb_request(const http_request_t *req) {
+append_mount_candidate(json_buf_t *b, int *first, const char *path,
+                       const char *kind, dev_t mnt_dev) {
+  struct stat st;
+  if(stat(path, &st) != 0 || !S_ISDIR(st.st_mode)) return 0;
+
+  if(st.st_dev == mnt_dev) {
+    return 0;
+  }
+
+  char label[64];
+  snprintf(label, sizeof(label), "%s", path + strlen("/mnt/"));
+  for(char *p = label; *p; p++) *p = (char)toupper((unsigned char)*p);
+  return append_fs_place(b, first, label, path, kind, 0, 1);
+}
+
+
+static int
+places_request(const http_request_t *req) {
   json_buf_t b = {0};
-  if(json_append(&b, "{\"ok\":true,\"mounts\":[") != 0) return -1;
+  if(json_append(&b, "{\"ok\":true,\"places\":[") != 0) return -1;
   int first = 1;
 
-  if(append_fs_place(&b, &first, "/data/homebrew", "homebrew") != 0) {
+  if(append_fs_place(&b, &first, "Root", "/", "root", 0, 1) != 0 ||
+     append_fs_place(&b, &first, "Homebrew", "/data/homebrew", "homebrew", 0, 1) != 0 ||
+     append_fs_place(&b, &first, "Mounts", "/mnt", "mounts", 0, 1) != 0 ||
+     append_fs_place(&b, &first, "User", "/user", "user", 0, 1) != 0 ||
+     append_fs_place(&b, &first, "Data", "/data", "internal", 0, 1) != 0) {
     free(b.data);
     return -1;
   }
+
+  struct stat mnt_st;
+  dev_t mnt_dev = 0;
+  if(stat("/mnt", &mnt_st) == 0) mnt_dev = mnt_st.st_dev;
+
   for(int i = 0; i < 8; i++) {
     char path[24];
     snprintf(path, sizeof(path), "/mnt/usb%d", i);
-    if(append_fs_place(&b, &first, path, "usb") != 0) {
-      free(b.data);
-      return -1;
-    }
-    snprintf(path, sizeof(path), "/mnt/usb%d/homebrew", i);
-    if(append_fs_place(&b, &first, path, "homebrew") != 0) {
+    if(append_mount_candidate(&b, &first, path, "usb", mnt_dev) != 0) {
       free(b.data);
       return -1;
     }
@@ -956,17 +1119,176 @@ usb_request(const http_request_t *req) {
   for(int i = 0; i < 8; i++) {
     char path[24];
     snprintf(path, sizeof(path), "/mnt/ext%d", i);
-    if(append_fs_place(&b, &first, path, "ext") != 0) {
-      free(b.data);
-      return -1;
-    }
-    snprintf(path, sizeof(path), "/mnt/ext%d/homebrew", i);
-    if(append_fs_place(&b, &first, path, "homebrew") != 0) {
+    if(append_mount_candidate(&b, &first, path, "ext", mnt_dev) != 0) {
       free(b.data);
       return -1;
     }
   }
+
+  shortcut_entry_t shortcuts[BFPILOT_MAX_SHORTCUTS];
+  int shortcut_count = read_shortcuts(shortcuts, BFPILOT_MAX_SHORTCUTS);
+  for(int i = 0; i < shortcut_count; i++) {
+    if(append_fs_place(&b, &first, shortcuts[i].label, shortcuts[i].path,
+                       "custom", 1, 1) != 0) {
+      free(b.data);
+      return -1;
+    }
+  }
+
+  if(json_append(&b, "],\"mounts\":[") != 0) {
+    free(b.data);
+    return -1;
+  }
+
+  int mount_first = 1;
+  for(int i = 0; i < 8; i++) {
+    char path[24];
+    snprintf(path, sizeof(path), "/mnt/usb%d", i);
+    if(append_mount_candidate(&b, &mount_first, path, "usb", mnt_dev) != 0) {
+      free(b.data);
+      return -1;
+    }
+  }
+  for(int i = 0; i < 8; i++) {
+    char path[24];
+    snprintf(path, sizeof(path), "/mnt/ext%d", i);
+    if(append_mount_candidate(&b, &mount_first, path, "ext", mnt_dev) != 0) {
+      free(b.data);
+      return -1;
+    }
+  }
+
   if(json_append(&b, "]}") != 0) {
+    free(b.data);
+    return -1;
+  }
+  return serve_owned(req, 200, b.data, b.len);
+}
+
+
+static int
+shortcut_add_request(const http_request_t *req) {
+  char label[128], path[512];
+  if(!websrv_get_query_arg(req, "path", path, sizeof(path)) ||
+     !path_is_safe(path)) {
+    return serve_error(req, 400, "bad shortcut path");
+  }
+  (void)websrv_get_query_arg(req, "label", label, sizeof(label));
+
+  struct stat st;
+  if(stat(path, &st) != 0 || !S_ISDIR(st.st_mode)) {
+    return serve_error(req, 404, "shortcut target is not a folder");
+  }
+
+  shortcut_entry_t shortcuts[BFPILOT_MAX_SHORTCUTS];
+  int count = read_shortcuts(shortcuts, BFPILOT_MAX_SHORTCUTS);
+  int index = -1;
+  for(int i = 0; i < count; i++) {
+    if(!strcmp(shortcuts[i].path, path)) {
+      index = i;
+      break;
+    }
+  }
+  if(index < 0) {
+    if(count >= BFPILOT_MAX_SHORTCUTS) {
+      return serve_error(req, 409, "shortcut limit reached");
+    }
+    index = count++;
+  }
+  sanitize_shortcut_label(shortcuts[index].label,
+                          sizeof(shortcuts[index].label), label, path);
+  snprintf(shortcuts[index].path, sizeof(shortcuts[index].path), "%s", path);
+
+  if(write_shortcuts(shortcuts, count) != 0) {
+    return serve_error(req, 500, strerror(errno));
+  }
+  bfpilot_log("shortcut add label=%s path=%s", shortcuts[index].label, path);
+
+  json_buf_t b = {0};
+  if(json_append(&b, "{\"ok\":true,\"label\":") != 0 ||
+     json_string(&b, shortcuts[index].label) != 0 ||
+     json_append(&b, ",\"path\":") != 0 ||
+     json_string(&b, path) != 0 ||
+     json_append(&b, "}") != 0) {
+    free(b.data);
+    return -1;
+  }
+  return serve_owned(req, 200, b.data, b.len);
+}
+
+
+static int
+shortcut_delete_request(const http_request_t *req) {
+  char path[512];
+  if(!websrv_get_query_arg(req, "path", path, sizeof(path)) ||
+     !path_is_safe(path)) {
+    return serve_error(req, 400, "bad shortcut path");
+  }
+
+  shortcut_entry_t shortcuts[BFPILOT_MAX_SHORTCUTS];
+  int count = read_shortcuts(shortcuts, BFPILOT_MAX_SHORTCUTS);
+  int out = 0;
+  int removed = 0;
+  for(int i = 0; i < count; i++) {
+    if(!strcmp(shortcuts[i].path, path)) {
+      removed = 1;
+      continue;
+    }
+    if(out != i) shortcuts[out] = shortcuts[i];
+    out++;
+  }
+  if(!removed) return serve_error(req, 404, "shortcut not found");
+  if(write_shortcuts(shortcuts, out) != 0) {
+    return serve_error(req, 500, strerror(errno));
+  }
+  bfpilot_log("shortcut delete path=%s", path);
+
+  json_buf_t b = {0};
+  if(json_append(&b, "{\"ok\":true,\"path\":") != 0 ||
+     json_string(&b, path) != 0 ||
+     json_append(&b, "}") != 0) {
+    free(b.data);
+    return -1;
+  }
+  return serve_owned(req, 200, b.data, b.len);
+}
+
+
+static int
+shortcut_rename_request(const http_request_t *req) {
+  char label[128], path[512];
+  if(!websrv_get_query_arg(req, "path", path, sizeof(path)) ||
+     !path_is_safe(path)) {
+    return serve_error(req, 400, "bad shortcut path");
+  }
+  if(!websrv_get_query_arg(req, "label", label, sizeof(label))) {
+    return serve_error(req, 400, "missing shortcut label");
+  }
+
+  shortcut_entry_t shortcuts[BFPILOT_MAX_SHORTCUTS];
+  int count = read_shortcuts(shortcuts, BFPILOT_MAX_SHORTCUTS);
+  int index = -1;
+  for(int i = 0; i < count; i++) {
+    if(!strcmp(shortcuts[i].path, path)) {
+      index = i;
+      break;
+    }
+  }
+  if(index < 0) return serve_error(req, 404, "shortcut not found");
+
+  sanitize_shortcut_label(shortcuts[index].label,
+                          sizeof(shortcuts[index].label), label, path);
+  if(write_shortcuts(shortcuts, count) != 0) {
+    return serve_error(req, 500, strerror(errno));
+  }
+  bfpilot_log("shortcut rename label=%s path=%s", shortcuts[index].label, path);
+
+  json_buf_t b = {0};
+  if(json_append(&b, "{\"ok\":true,\"label\":") != 0 ||
+     json_string(&b, shortcuts[index].label) != 0 ||
+     json_append(&b, ",\"path\":") != 0 ||
+     json_string(&b, path) != 0 ||
+     json_append(&b, "}") != 0) {
     free(b.data);
     return -1;
   }
@@ -1157,14 +1479,18 @@ status_handler(const http_request_t *req) {
   long elapsed = started_at > 0 && ref_at > started_at
                      ? (long)(ref_at - started_at)
                      : 0;
-  long speed = elapsed > 0 && cb > 0 ? cb / elapsed : 0;
-  long eta = busy && speed > 0 && tb > cb
-                 ? (tb - cb + speed - 1) / speed
-                 : 0;
   if(busy) {
     long now_ms = monotonic_ms();
     elapsed_ms = now_ms > started_ms ? now_ms - started_ms : 0;
   }
+  double speed_bps = elapsed_ms > 0 && cb > 0
+                         ? ((double)cb * 1000.0) / (double)elapsed_ms
+                         : 0.0;
+  long speed = speed_bps > 0.0 ? (long)speed_bps : 0;
+  double avg_mbps = speed_bps / (1024.0 * 1024.0);
+  long eta = busy && speed > 0 && tb > cb
+                 ? (long)(((double)(tb - cb) / speed_bps) + 0.999)
+                 : 0;
 
   json_buf_t b = {0};
   if(json_appendf(&b,
@@ -1186,10 +1512,11 @@ status_handler(const http_request_t *req) {
       "\"elapsedSeconds\":%ld,\"elapsedMs\":%ld,"
       "\"bytesRead\":%ld,\"bytesWritten\":%ld,"
       "\"sourceDev\":%lu,\"destinationDev\":%lu,\"errno\":%d,"
-      "\"speedBytesPerSec\":%ld,\"etaSeconds\":%ld}",
+      "\"speedBytesPerSec\":%ld,\"averageMBps\":%.2f,"
+      "\"etaSeconds\":%ld}",
       tb, cb, tf, df, ff, (long)started_at, (long)ended_at,
       elapsed, elapsed_ms, read_bytes, written_bytes, source_dev,
-      destination_dev, last_errno, speed, eta) != 0) {
+      destination_dev, last_errno, speed, avg_mbps, eta) != 0) {
     free(b.data);
     return -1;
   }
@@ -1243,7 +1570,11 @@ transfer_request(const http_request_t *req, const char *url) {
   if(!strcmp(url, "/api/fs/list")) return list_request(req);
   if(!strcmp(url, "/api/fs/stat")) return stat_request(req);
   if(!strcmp(url, "/api/fs/du")) return du_request(req);
-  if(!strcmp(url, "/api/fs/usb")) return usb_request(req);
+  if(!strcmp(url, "/api/fs/places")) return places_request(req);
+  if(!strcmp(url, "/api/fs/usb")) return places_request(req);
+  if(!strcmp(url, "/api/fs/shortcut/add")) return shortcut_add_request(req);
+  if(!strcmp(url, "/api/fs/shortcut/delete")) return shortcut_delete_request(req);
+  if(!strcmp(url, "/api/fs/shortcut/rename")) return shortcut_rename_request(req);
   if(!strcmp(url, "/api/fs/copy")) return spawn_copy_or_move(req, 0);
   if(!strcmp(url, "/api/fs/move")) return spawn_copy_or_move(req, 1);
   if(!strcmp(url, "/api/fs/delete")) return delete_handler(req);

@@ -105,36 +105,18 @@ for file in "$@"; do
     bfpilot-launcher-installer.elf|./bfpilot-launcher-installer.elf)
       continue
       ;;
-    tests/installer_linkonly_appinst.elf|./tests/installer_linkonly_appinst.elf)
-      continue
-      ;;
-    tests/installer_websrv_pattern.elf|./tests/installer_websrv_pattern.elf)
-      continue
-      ;;
   esac
   if [[ -f "${file}" ]]; then
     check_no_direct_appinst_import "${file}"
   fi
 done
 
-for clean_file in bfpilot.elf bfpilot-debug.elf; do
-  if [[ ! -f "${clean_file}" ]]; then
-    continue
-  fi
-  if "${STRINGS}" "${clean_file}" |
+if [[ -f bfpilot.elf ]]; then
+  if "${STRINGS}" bfpilot.elf |
      grep -E 'SceAppInstUtil|sceAppInst|app_installer|BFPL00001' >"${TMP_DIR}/bfpilot-forbidden-imports.txt"; then
     echo
-    echo "inspect-imports: forbidden launcher/AppInst content in ${clean_file}" >&2
+    echo "inspect-imports: forbidden launcher/AppInst content in bfpilot.elf" >&2
     cat "${TMP_DIR}/bfpilot-forbidden-imports.txt" >&2
-    exit 1
-  fi
-done
-
-if [[ -f tests/installer_linkonly_appinst.elf ]]; then
-  if ! needed_libraries tests/installer_linkonly_appinst.elf |
-       grep -q 'libSceAppInstUtil\.sprx'; then
-    echo
-    echo "inspect-imports: tests/installer_linkonly_appinst.elf must directly import libSceAppInstUtil.sprx" >&2
     exit 1
   fi
 fi

@@ -1,11 +1,14 @@
 # Build output
 gen/
+build/
 *.o
 *.a
 *.so
 *.elf
 __pycache__/
-diagnostics/*.json
+diagnostics/
+output/
+screenshot.png
 
 # Local environment / editor noise
 .env

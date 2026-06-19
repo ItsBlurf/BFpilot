@@ -5,7 +5,7 @@
 #pragma once
 
 #ifndef VERSION_TAG
-#define VERSION_TAG "bfpilot-v0.2.1"
+#define VERSION_TAG "bfpilot-v0.3"
 #endif
 
 #ifndef BUILD_VERSION

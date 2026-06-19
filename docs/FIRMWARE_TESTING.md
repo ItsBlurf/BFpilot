@@ -1,18 +1,11 @@
 # BFpilot Firmware Testing
 
-Use this order on every firmware/loader combination. Do not skip ahead to the
-launcher. Record the exact payload, endpoint, HTTP status/return code, expected
-marker, actual result, and relevant source subsystem.
+Use this order on every firmware/loader combination. Do not test the launcher
+installer until the file manager is stable.
 
-Remote diagnostics are read-only. Remote write tests require:
-
-```sh
-export BF_ALLOW_PS5_WRITE=1
-export BF_ALLOWED_REMOTE_ROOTS=/data/BFpilot/bench
-```
-
-Never delete remote benchmark artifacts during diagnostics. They have unique
-timestamped BFpilot-owned names and can be reviewed before any later cleanup.
+Remote diagnostics are read-only unless benchmark mode is explicitly enabled.
+Benchmark mode writes only timestamped BFpilot-owned files under
+`/data/test/bfpilot-bench` and does not delete remote files.
 
 ## 1. Build Locally
 
@@ -22,156 +15,155 @@ make clean all
 make inspect-imports
 ```
 
-Expected: all ELFs build; import inspection reports compatibility checks passed.
+Expected outputs:
 
-Failure meaning: source/toolchain/import boundary failure. Do not inject.
+```text
+bfpilot.elf
+bfpilot-launcher-installer.elf
+```
 
-## 2. Stable File Manager
+Failure meaning: local toolchain, source, or import-boundary failure. Do not
+inject until this passes.
+
+## 2. Inject File Manager
 
 ```sh
 python3 payload_sender.py "$PS5_IP" "${BF_PAYLOAD_PORT:-9021}" bfpilot.elf
 PS5_IP="$PS5_IP" BF_WEB_PORT="${BF_WEB_PORT:-5905}" make ps5-diag
 ```
 
-Expected notification/log: `BFpilot BOOT`; a new `bfpilot file-manager` line in
-`/data/BFpilot/boot.log`; server startup lines in `/data/BFpilot/log.txt`.
+Expected notification/log:
 
-Expected endpoints: `/api/status` and `/api/diag` return HTTP 200;
-`/api/status` reports `mode=file-manager`, `port=5905`, and
-`diagReadOnly=true`.
+- `BFpilot BOOT`
+- a `bfpilot file-manager` entry in `/data/BFpilot/boot.log`
+- startup lines in `/data/BFpilot/log.txt`
+
+Expected endpoints:
+
+- `/api/status`: HTTP 200, `mode=file-manager`, `port=5905`,
+  `diagReadOnly=true`
+- `/api/fs/places`: HTTP 200, built-in places plus only actually mounted
+  USB/ext drives
+- `/api/diag`: HTTP 200
 
 Failure meaning:
 
 - No boot marker: loader rejected the ELF or failure occurred before `main()`.
 - Boot marker but no status: failure after `main()` during startup/bind/listen.
-- Status works but diagnostics fail: diagnostic route defect.
+- Status works but places/diag fails: HTTP API regression.
 
-Next action: inject the debug payload only if this stage fails.
+Next action: save `diagnostics/ps5-diag-*.json` and the BFpilot logs.
 
-## 3. Debug File Manager
+## 3. Confirm UI Places And Storage
 
-```sh
-python3 payload_sender.py "$PS5_IP" "${BF_PAYLOAD_PORT:-9021}" bfpilot-debug.elf
-PS5_IP="$PS5_IP" BF_WEB_PORT="${BF_WEB_PORT:-5905}" make ps5-diag
+Open:
+
+```text
+http://<PS5_IP>:5905/
 ```
 
-Expected: `bfpilot-debug debug` boot marker and stronger startup notifications.
+Expected:
 
-Failure meaning: use `/data/BFpilot/boot.log`, `/data/BFpilot/log.txt`, and
-`/data/BFpilot/crash.log` to locate the last checkpoint.
+- left rail shows Root, Homebrew, Mounts, User, Data, and custom shortcuts
+- no `/mnt/usb0..7` or `/mnt/ext0..7` placeholders unless the drive is really
+  mounted
+- the top storage summary shows free/total/used percentage for Data and each
+  mounted drive
+- custom shortcuts can be added, renamed, removed, and survive reload because
+  they are stored at `/data/BFpilot/shortcuts.txt`
+
+Failure meaning:
+
+- Placeholder USB/ext entries: mount detection regression.
+- No disk space: `statvfs`/places response regression.
+- Shortcuts do not persist: `/data/BFpilot/shortcuts.txt` write/read failure.
 
 ## 4. Safe Transfer Benchmark
 
-Run only after the stable file manager passes and writes are explicitly
-authorized:
+Run only after the file manager passes:
 
 ```sh
 PS5_IP="$PS5_IP" BF_WEB_PORT="${BF_WEB_PORT:-5905}" \
 BF_ALLOW_PS5_WRITE=1 \
-BF_ALLOWED_REMOTE_ROOTS=/data/BFpilot/bench \
-python3 scripts/ps5_diag.py --bench
+BF_ALLOWED_REMOTE_ROOTS=/data/test/bfpilot-bench \
+python3 scripts/ps5_diag.py --bench --logs
 ```
 
-Expected files: unique timestamped source/copy folders only under
-`/data/BFpilot/bench`.
+Expected files: timestamped source/copy folders only under
+`/data/test/bfpilot-bench`.
 
-Expected results: upload response contains `elapsedMs`, `averageMBps`, and
-`destinationDev`; copy job contains bytes read/written, elapsed ms, MB/s,
-source/destination device IDs, and errno.
-
-Failure meaning:
-
-- Slow client upload and slow server upload metric: network/browser/receive or
-  storage path.
-- Fast server upload metric but slow client elapsed time: browser/network.
-- Slow same-device copy: copy/storage path.
-- Slow only when device IDs differ: USB/cross-filesystem path.
-
-Next action: save the generated diagnostics JSON. Do not benchmark user files.
-
-## 5. Launcher Diagnostic Order
-
-Only continue after stages 1-4 are stable.
-
-### 5.1 Safe Installer
-
-Inject `bfpilot-launcher-installer-safe.elf`.
-
-Expected: boot marker and `/data/BFpilot/launcher-installer.log`.
-
-Failure meaning: no marker means failure before `main()` unrelated to direct
-AppInst import. A log showing AppInstUtil unavailable means runtime resolution
-cannot install on this environment.
-
-### 5.2 Entry Probe
-
-Inject `tests/installer_enter_probe.elf`.
-
-Expected file: `/data/BFpilot/installer_enter_probe.txt`.
-
-Failure meaning: loader rejected even the safe installer-shaped probe.
-
-### 5.3 Direct Import Probe
-
-Inject `tests/installer_linkonly_appinst.elf`.
-
-Expected file: `/data/BFpilot/linkonly_appinst_entered.txt`.
-
-Failure meaning: absent marker after the entry probe passed means direct
-AppInstUtil imports were rejected before `main()`.
-
-### 5.4 Runtime Resolve Probe
-
-Inject `tests/installer_runtime_resolve_appinst.elf`.
-
-Expected files: `/data/BFpilot/runtime_resolve_entered.txt` and
-`/data/BFpilot/runtime_resolve_appinst.log`.
-
-Failure meaning: `kernel_dynlib_handle ... rc=0xffffffff` means AppInstUtil is
-not reachable through the safe runtime path.
-
-### 5.5 Exact Websrv-Pattern Probe
-
-Build and inject `tests/installer_websrv_pattern.elf`:
+For a broader file API smoke test, run:
 
 ```sh
-make installer-websrv-pattern
-python3 payload_sender.py "$PS5_IP" "${BF_PAYLOAD_PORT:-9021}" \
-  tests/installer_websrv_pattern.elf
+PS5_IP="$PS5_IP" BF_WEB_PORT="${BF_WEB_PORT:-5905}" \
+BF_ALLOW_PS5_WRITE=1 \
+make ps5-smoke
 ```
 
-Expected files: `/data/BFpilot/websrv_pattern_entered.txt` and
-`/data/BFpilot/websrv_pattern.log`. Expected return codes for UserService init,
-authid setup, and AppInst init are all zero.
+Expected files: a unique `/data/test/bfpilot-smoke-*` folder that is deleted by
+the test after upload, download, copy, rename, move, and cleanup checks pass.
 
-Failure meaning: the loader/firmware does not support the complete dependency
-and privilege composition used by the isolated installer. Do not attempt tile
-registration.
+Expected results:
 
-### 5.6 Isolated Installer
-
-Inject `bfpilot-launcher-installer.elf` only when the websrv-pattern probe
-passes.
-
-Expected: boot marker, launcher log, metadata line showing title
-`BFPL00001` and `http://127.0.0.1:5905/`, asset validation, AppInst init code,
-staging codes, install code, and final result.
+- upload response includes `elapsedMs`, `averageMBps`, `bytesWritten`, and
+  `destinationDev`
+- copy job includes bytes read/written, elapsed ms, MB/s,
+  source/destination device IDs, return state, and errno
+- `/api/fs/transfer/stats` reflects the last upload/copy metrics
 
 Failure meaning:
 
-- No boot marker: the complete direct-import set was rejected before `main()`.
-- Init failed: AppInstUtil present but unusable in the current context.
-- Authid setup failed: `kernel_sys` privilege operation unavailable.
-- Asset/staging failed: path permissions or invalid/missing assets.
-- Registration failed: AppInst install call rejected metadata/title directory.
-- Installed but wrong URL: compare staged `param.json` with the logged deep link.
+- Slow same-device copy: copy loop or internal storage path.
+- Fast same-device copy but slow upload: client/LAN/HTTP receive path.
+- Slow only when device IDs differ: USB/cross-filesystem path.
 
-### 5.7 Experimental Full Build
+Do not benchmark user files.
 
-Inject `bfpilot-full.elf` last.
+## 5. Launcher Installer
 
-Expected: launcher diagnostics plus a functioning web server even if launcher
-registration fails.
+Run only after stages 1-4 pass:
 
-Failure meaning: integrated dynamic path is incompatible with the environment.
-Continue using `bfpilot.elf`; do not merge installer imports into it.
+```sh
+python3 payload_sender.py "$PS5_IP" "${BF_PAYLOAD_PORT:-9021}" \
+  bfpilot-launcher-installer.elf
+PS5_IP="$PS5_IP" BF_WEB_PORT="${BF_WEB_PORT:-5905}" \
+python3 scripts/ps5_diag.py --logs
+```
+
+Expected:
+
+- `BFpilot BOOT` marker for `bfpilot-launcher-installer`
+- `/data/BFpilot/launcher-installer.log`
+- log line confirming title `BFPL00001`
+- log line confirming deep link `http://127.0.0.1:5905/`
+- UserService init return code
+- authid set/restore return codes
+- AppInst init return code
+- asset/staging results
+- final `AppInstallTitleDir` return code
+
+Failure meaning:
+
+- No boot marker/log: loader rejected the installer before `main()`.
+- AppInst unavailable/init failed: AppInstUtil context not available on this
+  firmware/loader.
+- Authid setup failed: privilege operation unavailable.
+- Asset/staging failed: title file path or embedded metadata problem.
+- Install call failed: AppInst rejected the title directory.
+- Tile installed but opens the wrong URL: compare `param.json` and the logged
+  deep link.
+
+## 6. Files To Save
+
+For every failure, save:
+
+```text
+/data/BFpilot/boot.log
+/data/BFpilot/log.txt
+/data/BFpilot/crash.log
+/data/BFpilot/launcher-installer.log
+diagnostics/ps5-diag-*.json
+```
+
+Record the exact command, endpoint, HTTP status or return code, and the newest
+log lines around the failure.

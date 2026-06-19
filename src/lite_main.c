@@ -27,11 +27,6 @@
 #include "version.h"
 #include "websrv.h"
 
-#if BFPILOT_ENABLE_LAUNCHER
-#include "app_installer.h"
-#include "sce_resolve.h"
-#endif
-
 #define BFPILOT_RELOAD_TOKEN "bs5fm-local-reload"
 
 #ifndef BFPILOT_WEB_PORT
@@ -44,14 +39,6 @@
 
 #ifndef BFPILOT_DEBUG_NOTIFICATIONS
 #define BFPILOT_DEBUG_NOTIFICATIONS 0
-#endif
-
-#if BFPILOT_ENABLE_LAUNCHER
-typedef int (*sce_netctl_init_fn)(void);
-typedef int (*sce_user_service_initialize_fn)(void *);
-
-#define BFPILOT_NETCTL_MODULE "libSceNetCtl.sprx"
-#define BFPILOT_USER_SERVICE_MODULE "libSceUserService.sprx"
 #endif
 
 static void
@@ -122,71 +109,6 @@ runtime_port_requested(int argc, char **argv) {
   }
 
   return port;
-}
-
-
-#if BFPILOT_ENABLE_LAUNCHER
-static void
-init_ps5_services(void) {
-  int user_prio = 256;
-  int netctl_rc = BFPILOT_DIAG_SKIPPED;
-  int user_service_rc = BFPILOT_DIAG_SKIPPED;
-  sce_netctl_init_fn sce_netctl_init = NULL;
-  sce_user_service_initialize_fn sce_user_service_initialize = NULL;
-
-  int resolve_rc = sce_resolve_symbol(BFPILOT_NETCTL_MODULE,
-                                      "sceNetCtlInit",
-                                      (void **)&sce_netctl_init);
-  bfpilot_log("sce resolve %s:sceNetCtlInit %s rc=0x%08x",
-              BFPILOT_NETCTL_MODULE,
-              sce_netctl_init ? "ok" : "missing", resolve_rc);
-  if(sce_netctl_init) {
-    netctl_rc = sce_netctl_init();
-    bfpilot_log("sceNetCtlInit rc=0x%08x", netctl_rc);
-  } else {
-    bfpilot_log("sceNetCtlInit rc=skipped");
-  }
-
-  resolve_rc = sce_resolve_symbol(BFPILOT_USER_SERVICE_MODULE,
-                                  "sceUserServiceInitialize",
-                                  (void **)&sce_user_service_initialize);
-  bfpilot_log("sce resolve %s:sceUserServiceInitialize %s rc=0x%08x",
-              BFPILOT_USER_SERVICE_MODULE,
-              sce_user_service_initialize ? "ok" : "missing", resolve_rc);
-  if(sce_user_service_initialize) {
-    user_service_rc = sce_user_service_initialize(&user_prio);
-    bfpilot_log("sceUserServiceInitialize rc=0x%08x", user_service_rc);
-  } else {
-    bfpilot_log("sceUserServiceInitialize rc=skipped");
-  }
-
-  bfpilot_diag_set_service_rcs(netctl_rc, user_service_rc);
-}
-#endif
-
-
-static int
-launcher_disabled_requested(int argc, char **argv) {
-#if !BFPILOT_ENABLE_LAUNCHER
-  (void)argc;
-  (void)argv;
-  return 1;
-#else
-  const char *env_value = getenv("BFPILOT_NO_LAUNCHER");
-  int env_enabled = env_value &&
-                    (!strcmp(env_value, "1") ||
-                     !strcasecmp(env_value, "true") ||
-                     !strcasecmp(env_value, "yes") ||
-                     !strcasecmp(env_value, "on"));
-
-  if(env_enabled) return 1;
-  for(int i = 1; i < argc; i++) {
-    if(argv && argv[i] && !strcmp(argv[i], "--no-launcher")) {
-      return 1;
-    }
-  }
-  return 0;
-#endif
 }
 
 
@@ -384,10 +306,9 @@ main(int argc, char **argv) {
   detect_lan_ip(ready.ip, sizeof(ready.ip));
   ready.port = runtime_port_requested(argc, argv);
   websrv_set_runtime_port(ready.port);
-  int launcher_disabled = launcher_disabled_requested(argc, argv);
-  websrv_set_runtime_diag(launcher_disabled);
+  websrv_set_runtime_diag(1);
   bfpilot_log("runtime web_port=%u", (unsigned int)ready.port);
-  bfpilot_log("runtime launcher_disabled=%d", launcher_disabled);
+  bfpilot_log("runtime launcher=separate_payload");
 
   puts(".----------------------------------------------.");
   puts("|  BFpilot                                     |");
@@ -397,13 +318,7 @@ main(int argc, char **argv) {
   puts("  active: standalone web file manager");
   printf("  mode: %s\n", BFPILOT_BUILD_MODE);
   puts("  scope: browse, upload, download, copy, move, delete, rename, mkdir");
-  if(BFPILOT_ENABLE_LAUNCHER && !launcher_disabled) {
-    puts("  ps5 app: BFpilot opens http://127.0.0.1:5905/");
-  } else if(BFPILOT_ENABLE_LAUNCHER) {
-    puts("  ps5 app: launcher disabled");
-  } else {
-    puts("  ps5 app: launcher installer is a separate optional payload");
-  }
+  puts("  ps5 app: launcher installer is a separate optional payload");
   printf("  web ui: http://%s:%u/\n", ready.ip, (unsigned int)ready.port);
   puts("  inject/deploy port: 9021");
   puts("");
@@ -411,7 +326,7 @@ main(int argc, char **argv) {
   signal(SIGPIPE, SIG_IGN);
   signal(SIGCHLD, SIG_IGN);
 
-#if BFPILOT_DEBUG_NOTIFICATIONS || BFPILOT_ENABLE_LAUNCHER
+#if BFPILOT_DEBUG_NOTIFICATIONS
   int notification_rc = bfpilot_notify_test();
   bfpilot_diag_set_notification_rc(notification_rc);
   bfpilot_log("notification test rc=0x%08x", notification_rc);
@@ -420,39 +335,11 @@ main(int argc, char **argv) {
   bfpilot_log("notification test rc=skipped");
 #endif
 
-#if BFPILOT_ENABLE_LAUNCHER
-  if(!launcher_disabled) {
-    bfpilot_checkpoint("launcher started");
-    bfpilot_diag_set_launcher_status("started", 0);
-    bfpilot_log("launcher started");
-    init_ps5_services();
-
-    int app_install_status = bfpilot_install_app_if_needed();
-    if(app_install_status >= 0) {
-      bfpilot_diag_set_launcher_status("ready", app_install_status);
-      bfpilot_log("launcher ready rc=%d", app_install_status);
-      puts("  ps5 app: ready");
-    } else {
-      bfpilot_diag_set_launcher_status("failed", app_install_status);
-      bfpilot_log("launcher failed rc=%d, continuing web server",
-                  app_install_status);
-      puts("  ps5 app: install failed, continuing web server");
-    }
-  } else {
-    bfpilot_diag_set_service_rcs(BFPILOT_DIAG_SKIPPED, BFPILOT_DIAG_SKIPPED);
-    bfpilot_diag_set_launcher_status("skipped", BFPILOT_DIAG_SKIPPED);
-    bfpilot_log("sceNetCtlInit rc=skipped");
-    bfpilot_log("sceUserServiceInitialize rc=skipped");
-    bfpilot_log("launcher skipped: runtime flag");
-    puts("  ps5 app: skipped by runtime flag");
-  }
-#else
   bfpilot_diag_set_service_rcs(BFPILOT_DIAG_SKIPPED, BFPILOT_DIAG_SKIPPED);
   bfpilot_diag_set_launcher_status("separate_payload", BFPILOT_DIAG_SKIPPED);
   bfpilot_log("sceNetCtlInit rc=skipped");
   bfpilot_log("sceUserServiceInitialize rc=skipped");
   bfpilot_log("launcher skipped: separate payload");
-#endif
 
   bfpilot_checkpoint("handoff check");
   debug_notify("BFpilot debug", "handoff check");

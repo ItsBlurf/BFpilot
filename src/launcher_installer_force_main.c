@@ -3,8 +3,8 @@
  *
  * This intentionally uses the same direct AppInstUtil pattern as websrv,
  * Payload Manager, and ftpsrv. If a loader rejects AppInstUtil imports, this
- * ELF can fail before main; use bfpilot-launcher-installer-safe.elf to prove
- * that case.
+ * ELF can fail before main; in that case there will be no boot marker in
+ * /data/BFpilot/boot.log and no launcher-installer.log entry.
  */
 
 #include <errno.h>

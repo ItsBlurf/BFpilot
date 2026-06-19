@@ -1,136 +1,122 @@
 # BFpilot
-this is still in BETA phase but its working and does a good enough job.
-BFpilot is a small PS5 userland payload that starts a browser-based file
-manager on port `5905`.
 
-It is intentionally narrow: no daemons,or anythink that doesnt serve the purpose of a file manager
+BFpilot is a lightweight PS5 payload that serves a browser-based file manager at
+`http://<PS5_IP>:5905/`.
 
-Current prepared release: `v0.2.1`
+The project is split into two payloads:
 
-## Recommended Payload
+- `bfpilot.elf` - the main file manager payload.
+- `bfpilot-launcher-installer.elf` - an optional home-screen tile installer.
 
-Use `bfpilot.elf` as the main release payload.
+The main payload stays deliberately small and compatibility-focused. It does
+not import launcher installer libraries, does not install the tile, and can be
+used without touching PS5 app installation services.
 
-`bfpilot.elf` is the maximum-compatibility file manager:
+## Features
 
-- Starts the HTTP file manager at `http://<PS5_IP>:5905/`.
-- Does not install or refresh a PS5 home-screen tile.
-- Does not compile or link `src/app_installer.c`.
-- Does not link `libSceAppInstUtil`.
-- Does not depend on AppInstUtil, SystemService, UserService, or optional
-  launcher-only Sony libraries.
-- Writes boot and runtime diagnostics under `/data/BFpilot`.
+- Browse local PS5 paths from a web browser.
+- Upload and download files.
+- Copy, move, rename, create folders, and delete from the web UI.
+- PS5-side copy and move operations with progress and cancellation.
+- Transfer timing, throughput, and device diagnostics.
+- Clean places sidebar for Root, Homebrew, Mounts, User, Data, mounted drives,
+  and custom shortcuts.
+- Mounted USB/ext drives are shown only when they are actually present.
+- Top storage summary for Data and mounted drives.
+- Persistent custom shortcuts with add, rename, and remove controls.
+- Optional launcher tile that opens `http://127.0.0.1:5905/`.
 
-Use `bfpilot-debug.elf` when you need extra proof that the payload reached
-`main()` and progressed through startup. It is still file-manager-only and does
-not link AppInstUtil.
+## Download
 
-Use `bfpilot-full.elf` when you want the 0.2.0-style integrated launcher
-install path. This is the best first installer-capable build for your 11.6 case:
-it starts BFpilot and attempts the home-screen tile install inside the same
-process, after optional PS5 service initialization. It does not direct-link
-AppInstUtil; it dynamically resolves the same AppInst functions used by the
-previous full build.
+Use the release assets:
 
-Use `bfpilot-launcher-installer.elf` only after `bfpilot.elf` works. It is a
-separate optional payload whose only job is installing or refreshing the
-home-screen tile. It uses the complete pattern proven by ps5 websrv: direct
-`kernel_sys`, SystemService, UserService, and AppInstUtil imports, UserService
-initialization, and temporary system authid during registration. It restores
-the original authid before exit. The file manager is still unaffected.
+- `bfpilot.elf` for the file manager.
+- `bfpilot-launcher-installer.elf` only if you want the PS5 home-screen tile.
 
-Use `bfpilot-launcher-installer-safe.elf` only for diagnostics. It does not
-direct-link AppInstUtil and reports whether AppInstUtil is already reachable
-through the safe runtime path.
+Run `bfpilot.elf` first. After the web UI is working, run the launcher installer
+payload if you want the tile.
 
-## What It Does
+## Usage
 
-- Runs a file-manager web UI at `http://<PS5_IP>:5905/`.
-- Supports browse, upload, download, copy, move, rename, mkdir, and delete.
-- Shows progress for copy, move, delete, and browser uploads.
-- Creates missing copy/move target folders automatically.
-- Keeps default shortcuts at `/data/homebrew` and `/mnt/usb0`.
-- Writes boot markers to `/data/BFpilot/boot.log`.
-- Writes runtime logs to `/data/BFpilot/log.txt`.
-- Writes fatal-signal diagnostics to `/data/BFpilot/crash.log`.
+Inject the file manager payload to your loader, usually on port `9021`:
 
-The optional launcher tile, if installed by the separate installer payload,
-opens:
+```sh
+python3 payload_sender.py 192.168.1.204 9021 bfpilot.elf
+```
+
+Open:
+
+```text
+http://192.168.1.204:5905/
+```
+
+Health checks:
+
+```text
+http://192.168.1.204:5905/api/status
+http://192.168.1.204:5905/api/diag
+http://192.168.1.204:5905/api/fs/places
+```
+
+Install or refresh the launcher tile:
+
+```sh
+python3 payload_sender.py 192.168.1.204 9021 bfpilot-launcher-installer.elf
+```
+
+The tile opens:
 
 ```text
 http://127.0.0.1:5905/
 ```
 
-## Runtime Notes
+## Build
 
-Inject the ELF to your payload loader on port `9021`.
+Set `PS5_PAYLOAD_SDK` to your PS5 payload SDK path:
 
-First test:
-
-```text
-send bfpilot.elf to <PS5_IP>:9021
-open http://<PS5_IP>:5905/
-open http://<PS5_IP>:5905/api/status
-open http://<PS5_IP>:5905/api/diag
+```sh
+export PS5_PAYLOAD_SDK=/path/to/ps5-payload-sdk
+make clean all
+make inspect-imports
 ```
 
-Debug test:
+Expected outputs:
 
 ```text
-send bfpilot-debug.elf to <PS5_IP>:9021
-open http://<PS5_IP>:5905/api/diag
-check /data/BFpilot/boot.log
-check /data/BFpilot/log.txt
+bfpilot.elf
+bfpilot-launcher-installer.elf
 ```
 
-Full install test:
-
-```text
-send bfpilot-full.elf to <PS5_IP>:9021
-open http://<PS5_IP>:5905/
-check /data/BFpilot/log.txt
-```
-
-Alternate port test while an old instance is still running:
-
-```text
-send bfpilot-debug.elf --port 5906 to <PS5_IP>:9021
-open http://<PS5_IP>:5906/api/status
-```
-
-Launcher installer test:
-
-```text
-send bfpilot-launcher-installer.elf to <PS5_IP>:9021
-check /data/BFpilot/launcher-installer.log
-```
-
-If `bfpilot-launcher-installer.elf` gives no notification and no log, run the
-probes below to distinguish ordinary entry, incomplete AppInst imports, and the
-complete websrv dependency pattern.
-
-If the launcher installer appears to do nothing, run the probes in this order:
-
-```text
-tests/installer_enter_probe.elf
-tests/installer_linkonly_appinst.elf
-tests/installer_runtime_resolve_appinst.elf
-tests/installer_websrv_pattern.elf
-```
-
-If `installer_linkonly_appinst.elf` does not create
-`/data/BFpilot/linkonly_appinst_entered.txt`, direct AppInstUtil imports are
-failing before `main()` on that loader/firmware.
-
-If `installer_runtime_resolve_appinst.elf` logs
-`kernel_dynlib_handle libSceAppInstUtil.sprx rc=0xffffffff`, AppInstUtil is not
-reachable through BFpilot's safe runtime path on that firmware/loader. That does
-not invalidate the `bfpilot-full.elf` path on firmware where the same runtime
-resolution is available, such as the 11.6 case you reported.
+`make inspect-imports` verifies that the file manager payload does not contain
+launcher/AppInstUtil imports and that the isolated installer contains the
+required installer imports.
 
 ## Diagnostics
 
-Save these files when reporting failures:
+Local read-only diagnostics:
+
+```sh
+PS5_IP=192.168.1.204 BF_WEB_PORT=5905 make ps5-diag
+```
+
+Smoke test the file APIs using only BFpilot-created files under `/data/test`:
+
+```sh
+PS5_IP=192.168.1.204 BF_WEB_PORT=5905 \
+BF_ALLOW_PS5_WRITE=1 \
+make ps5-smoke
+```
+
+Optional benchmark mode writes under `/data/test/bfpilot-bench` by default:
+
+```sh
+PS5_IP=192.168.1.204 BF_WEB_PORT=5905 \
+BF_ALLOW_PS5_WRITE=1 \
+BF_ALLOWED_REMOTE_ROOTS=/data/test/bfpilot-bench \
+python3 scripts/ps5_diag.py --bench
+```
+
+Runtime logs are stored on the PS5 at:
 
 ```text
 /data/BFpilot/boot.log
@@ -139,74 +125,15 @@ Save these files when reporting failures:
 /data/BFpilot/launcher-installer.log
 ```
 
-If there is no notification and no `/data/BFpilot/boot.log` entry, the payload
-probably failed before `main()` or the loader rejected it. If the boot marker
-appears but the server does not start, the failure happened after `main()`.
+## Compatibility Notes
 
-## Build
+`bfpilot.elf` is file-manager-only by design. It avoids AppInstUtil,
+SystemService, UserService, and privileged launcher imports because those can
+fail before `main()` on some firmware/loader combinations.
 
-```sh
-export PS5_PAYLOAD_SDK=/path/to/ps5-payload-sdk
-make clean all
-```
+`bfpilot-launcher-installer.elf` is separate and uses the complete launcher
+installer dependency set. If launcher installation fails on a firmware, the file
+manager payload remains usable.
 
-Individual targets:
-
-```sh
-make bfpilot
-make debug
-make full
-make launcher-installer
-make hello-boot
-make hello-http
-make hello-notify
-make installer-enter-probe
-make installer-linkonly-appinst
-make installer-runtime-resolve-appinst
-make inspect-imports
-```
-
-Outputs:
-
-```text
-bfpilot.elf
-bfpilot-debug.elf
-bfpilot-full.elf
-bfpilot-launcher-installer.elf
-bfpilot-launcher-installer-safe.elf
-tests/hello_boot.elf
-tests/hello_http.elf
-tests/hello_notify.elf
-tests/installer_enter_probe.elf
-tests/installer_linkonly_appinst.elf
-tests/installer_runtime_resolve_appinst.elf
-```
-
-The compatibility check must pass for release builds:
-
-```sh
-make inspect-imports
-```
-
-It fails if `bfpilot.elf` or `bfpilot-debug.elf` contain AppInstUtil,
-`sceAppInst`, `app_installer`, or `BFPL00001` installer fingerprints. Direct
-`libSceAppInstUtil.sprx` import is allowed only for installer/probe targets.
-The release installer must also import `kernel_sys`, SystemService, and
-UserService; `make inspect-imports` enforces this composition.
-
-## Project Layout
-
-- `src/lite_main.c` starts the file-manager payload, handles clean reload, and
-  starts the web server.
-- `src/boot_marker.c` writes the earliest cross-payload boot marker.
-- `src/websrv_lite.c` serves `/`, `/api/status`, `/api/diag`, `/fs`, and
-  `/api/fs/*`.
-- `src/transfer.c` contains upload, copy, move, delete, and long-running job
-  handling.
-- `src/launcher_installer_main.c` is the isolated optional launcher installer.
-- `tests/` contains small probe payloads for loader, HTTP, notification, and
-  AppInstUtil testing.
-
-See [docs/COMPATIBILITY_STRATEGY.md](docs/COMPATIBILITY_STRATEGY.md) for the
-firmware compatibility strategy and [docs/FIRMWARE_TESTING.md](docs/FIRMWARE_TESTING.md)
-for the test protocol.
+More detail is in [docs/COMPATIBILITY_STRATEGY.md](docs/COMPATIBILITY_STRATEGY.md)
+and [docs/FIRMWARE_TESTING.md](docs/FIRMWARE_TESTING.md).

@@ -48,9 +48,10 @@ def fetch_logs(base: str, out_dir: pathlib.Path, stamp: str) -> dict[str, object
     return results
 
 def allowed_remote(path: str) -> bool:
-    roots = os.environ.get("BF_ALLOWED_REMOTE_ROOTS", "/data/BFpilot/bench")
+    roots = os.environ.get("BF_ALLOWED_REMOTE_ROOTS", "/data/test/bfpilot-bench")
     return any(path == root.rstrip("/") or path.startswith(root.rstrip("/") + "/")
-               for root in roots.split(",") if root.startswith("/data/"))
+               for root in roots.split(",")
+               if root.startswith("/data/test") or root.startswith("/data/bfpilot"))
 
 
 def run_bench(base: str) -> tuple[bool, object]:
@@ -59,7 +60,7 @@ def run_bench(base: str) -> tuple[bool, object]:
                        "reason": "BF_ALLOW_PS5_WRITE is not 1"}
 
     stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    root = "/data/BFpilot/bench"
+    root = "/data/test/bfpilot-bench"
     source_dir = f"{root}/source-{stamp}"
     copy_dir = f"{root}/copy-{stamp}"
     filename = "bfpilot-bench-8m.bin"
@@ -120,6 +121,7 @@ def main() -> int:
     out_dir.mkdir(exist_ok=True)
 
     status_ok, status = fetch_json(base, "/api/status")
+    places_ok, places = fetch_json(base, "/api/fs/places")
     diag_ok = False
     if isinstance(status, dict) and status.get("diagReadOnly") is True:
         diag_ok, diag = fetch_json(base, "/api/diag")
@@ -140,6 +142,7 @@ def main() -> int:
         "baseUrl": base,
         "allowPs5Write": allow_write,
         "status": status,
+        "places": places,
         "diag": diag,
     }
     if "--bench" in sys.argv:
@@ -152,7 +155,7 @@ def main() -> int:
     output = out_dir / f"ps5-diag-{stamp}.json"
     output.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
     print(f"saved {output}")
-    return 0 if status_ok and diag_ok and bench_ok else 1
+    return 0 if status_ok and places_ok and diag_ok and bench_ok else 1
 
 
 if __name__ == "__main__":

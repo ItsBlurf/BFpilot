@@ -453,7 +453,10 @@ diag_request(const http_request_t *req) {
                    "\"launcher_final_state\":\"%s\"},"
                    "\"notifications\":{\"mode\":\"optional-raw-debug\"},"
                    "\"routes\":[\"/\",\"/api/status\",\"/api/diag\","
-                   "\"/fs\",\"/api/fs/*\",\"/api/fs/transfer/stats\"]}",
+                   "\"/fs\",\"/api/fs/*\",\"/api/fs/places\","
+                   "\"/api/fs/shortcut/add\",\"/api/fs/shortcut/delete\","
+                   "\"/api/fs/shortcut/rename\","
+                   "\"/api/fs/transfer/stats\"]}",
                    VERSION_TAG, BUILD_VERSION, BFPILOT_BUILD_MODE,
                    (long)getpid(), (long)now,
                    bfpilot_diag_uptime(),
