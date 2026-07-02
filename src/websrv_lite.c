@@ -101,6 +101,7 @@ status_text(int status) {
   case 405: return "Method Not Allowed";
   case 409: return "Conflict";
   case 500: return "Internal Server Error";
+  case 507: return "Insufficient Storage";
   default:  return "OK";
   }
 }
@@ -456,6 +457,8 @@ diag_request(const http_request_t *req) {
                    "\"/fs\",\"/api/fs/*\",\"/api/fs/places\","
                    "\"/api/fs/shortcut/add\",\"/api/fs/shortcut/delete\","
                    "\"/api/fs/shortcut/rename\","
+                   "\"/api/fs/search\",\"/api/fs/search/status\","
+                   "\"/api/fs/search/rebuild\",\"/api/fs/search/cancel\","
                    "\"/api/fs/transfer/stats\","
                    "\"/api/fs/archive/support\","
                    "\"/api/fs/archive/status\","

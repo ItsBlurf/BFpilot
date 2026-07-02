@@ -29,6 +29,10 @@ READOBJ="$(find_tool llvm-readobj || true)"
 NM="$(find_tool llvm-nm || find_tool nm || true)"
 STRINGS="$(find_tool llvm-strings || find_tool strings || true)"
 TMP_DIR="${TMPDIR:-/tmp}"
+if ! mkdir -p "${TMP_DIR}" >/dev/null 2>&1; then
+  TMP_DIR="build/tmp"
+  mkdir -p "${TMP_DIR}"
+fi
 
 if [[ -z "${STRINGS}" ]]; then
   echo "inspect-imports: strings or llvm-strings is required" >&2

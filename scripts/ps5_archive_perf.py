@@ -8,6 +8,7 @@ import http.client
 import json
 import os
 import pathlib
+import re
 import sys
 import time
 import urllib.error
@@ -106,6 +107,28 @@ def wait_archive(base: str, poll_interval: float) -> tuple[bool, list[object], o
         time.sleep(poll_interval)
 
 
+def archive_result_matches_expectation(done: bool, final_status: object,
+                                       expect_error: bool,
+                                       error_contains: str) -> bool:
+    if done:
+        return not expect_error
+    if not expect_error or not isinstance(final_status, dict):
+        return False
+    state = str(final_status.get("state") or "")
+    error = str(final_status.get("error") or "")
+    if state != "error":
+        return False
+    if error_contains and error_contains not in error:
+        print(
+            f"FAIL expected archive error containing {error_contains!r}, got {error!r}",
+            file=sys.stderr,
+            flush=True,
+        )
+        return False
+    print(f"PASS expected archive error: {error}", flush=True)
+    return True
+
+
 def collect_logs(base: str, out_dir: pathlib.Path, stamp: str) -> dict[str, object]:
     logs = {
         "archive-integrated-status.json": "/data/BFpilot/archive-integrated/status.json",
@@ -125,8 +148,43 @@ def collect_logs(base: str, out_dir: pathlib.Path, stamp: str) -> dict[str, obje
     return report
 
 
-def upload_archive(base: str, local_path: pathlib.Path,
-                   remote_root: str) -> tuple[bool, object, str]:
+def detect_volume_siblings(local_path: pathlib.Path) -> list[pathlib.Path]:
+    name = local_path.name
+    lower = name.lower()
+    parent = local_path.parent
+    siblings: list[pathlib.Path] = []
+
+    if lower.endswith(".7z.001"):
+        prefix = name[:-3]
+        pattern = re.compile(re.escape(prefix) + r"\d{3}$", re.IGNORECASE)
+        siblings = [p for p in parent.iterdir() if p.is_file() and pattern.fullmatch(p.name)]
+    elif lower.endswith(".part1.rar"):
+        prefix = name[:-len("part1.rar")]
+        pattern = re.compile(re.escape(prefix) + r"part(\d+)\.rar$", re.IGNORECASE)
+        siblings = [p for p in parent.iterdir() if p.is_file() and pattern.fullmatch(p.name)]
+        siblings.sort(key=lambda p: int(pattern.fullmatch(p.name).group(1)))  # type: ignore[union-attr]
+        return siblings
+    elif lower.endswith(".rar"):
+        stem = name[:-4]
+        pattern = re.compile(re.escape(stem) + r"\.r\d{2}$", re.IGNORECASE)
+        siblings = [local_path] + [p for p in parent.iterdir() if p.is_file() and pattern.fullmatch(p.name)]
+
+    if not siblings:
+        return [local_path]
+    return sorted(set(siblings), key=lambda p: p.name.lower())
+
+
+def parse_extra_local_paths(value: str) -> list[pathlib.Path]:
+    paths: list[pathlib.Path] = []
+    for raw in value.split(";"):
+        raw = raw.strip()
+        if raw:
+            paths.append(pathlib.Path(raw))
+    return paths
+
+
+def upload_file(base: str, local_path: pathlib.Path,
+                remote_root: str) -> tuple[bool, object, str]:
     upload_timeout = float(os.environ.get("BF_ARCHIVE_UPLOAD_TIMEOUT", "1800"))
     upload_chunk = int(os.environ.get("BF_ARCHIVE_UPLOAD_CHUNK", str(1024 * 1024)))
     filename = local_path.name
@@ -165,13 +223,50 @@ def upload_archive(base: str, local_path: pathlib.Path,
         conn.close()
 
 
+def upload_archive_set(base: str, primary: pathlib.Path,
+                       remote_root: str) -> tuple[bool, list[object], str, list[str]]:
+    upload_siblings = os.environ.get("BF_ARCHIVE_UPLOAD_SIBLINGS", "1") == "1"
+    local_paths = detect_volume_siblings(primary) if upload_siblings else [primary]
+    local_paths.extend(parse_extra_local_paths(os.environ.get("BF_ARCHIVE_EXTRA_LOCAL", "")))
+
+    deduped: list[pathlib.Path] = []
+    seen: set[str] = set()
+    for path in local_paths:
+        resolved = str(path.resolve()).lower()
+        if resolved not in seen:
+            deduped.append(path)
+            seen.add(resolved)
+
+    uploads: list[object] = []
+    remote_primary = f"{remote_root}/{primary.name}"
+    uploaded_names: list[str] = []
+    all_ok = True
+    for path in deduped:
+        if not path.is_file():
+            body = {"ok": False, "path": str(path), "error": "volume file is missing"}
+            print(f"FAIL missing archive volume {path}", file=sys.stderr, flush=True)
+            uploads.append(body)
+            all_ok = False
+            continue
+        ok, upload, remote_path = upload_file(base, path, remote_root)
+        uploads.append(upload)
+        uploaded_names.append(path.name)
+        if path.resolve() == primary.resolve():
+            remote_primary = remote_path
+        all_ok = all_ok and ok
+    return all_ok, uploads, remote_primary, uploaded_names
+
+
 def prepare_archive(base: str, src: str, dst: str, password: str,
-                    threads: int) -> tuple[bool, object]:
+                    threads: int, nice: int,
+                    cleanup_partial: bool) -> tuple[bool, object]:
     body = urllib.parse.urlencode({
         "src": src,
         "dst": dst,
         "password": password,
         "threads": str(threads),
+        "nice": str(nice),
+        "cleanupPartial": "1" if cleanup_partial else "0",
     }).encode()
     return request_json(
         base,
@@ -193,7 +288,32 @@ def cleanup_remote_root(base: str, remote_root: str) -> tuple[bool, object]:
     if not ok:
         return False, body
     job_ok, job = wait_job_idle(base, "cleanup")
-    return job_ok, {"delete": body, "job": job}
+    missing_ok, missing = expect_missing(base, remote_root)
+    return job_ok and missing_ok, {"delete": body, "job": job, "statAfterDelete": missing}
+
+
+def expect_missing(base: str, remote_path: str) -> tuple[bool, object]:
+    url = base + "/api/fs/stat?path=" + q(remote_path)
+    try:
+        with urllib.request.urlopen(url, timeout=30) as response:
+            parsed = json.loads(response.read())
+        print(f"FAIL GET {url} HTTP {response.status}: cleanup path still exists",
+              file=sys.stderr, flush=True)
+        return False, {"ok": False, "http": response.status, "body": parsed}
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            print(f"PASS GET {url} HTTP 404 expected missing", flush=True)
+            return True, {"ok": True, "missing": True, "http": exc.code}
+        try:
+            body = exc.read().decode("utf-8", "replace")
+        except Exception:
+            body = ""
+        print(f"FAIL GET {url}: HTTP {exc.code} {body}",
+              file=sys.stderr, flush=True)
+        return False, {"ok": False, "http": exc.code, "body": body}
+    except (OSError, ValueError, urllib.error.URLError) as exc:
+        print(f"FAIL GET {url}: {exc}", file=sys.stderr, flush=True)
+        return False, {"ok": False, "url": url, "error": str(exc)}
 
 
 def save_report(report: dict[str, object], output: pathlib.Path,
@@ -224,6 +344,23 @@ def parse_threads(value: str) -> list[int]:
     return threads
 
 
+def parse_nice_values(value: str) -> list[int]:
+    values: list[int] = []
+    for raw in value.split(","):
+        raw = raw.strip()
+        if not raw:
+            continue
+        number = int(raw, 10)
+        if number < -20:
+            number = -20
+        if number > 20:
+            number = 20
+        values.append(number)
+    if not values:
+        raise ValueError("empty nice list")
+    return values
+
+
 def main() -> int:
     if os.environ.get("BF_ALLOW_PS5_WRITE") != "1":
         print("FAIL BF_ALLOW_PS5_WRITE must be 1 for archive perf tests", file=sys.stderr, flush=True)
@@ -243,14 +380,25 @@ def main() -> int:
     except ValueError as exc:
         print(f"FAIL {exc}", file=sys.stderr, flush=True)
         return 2
+    try:
+        nice_values = parse_nice_values(os.environ.get("BF_ARCHIVE_NICE", "4"))
+    except ValueError as exc:
+        print(f"FAIL {exc}", file=sys.stderr, flush=True)
+        return 2
     if any(value > 2 for value in threads):
         print("WARN manual thread counts above 2 can destabilize some PS5 setups", flush=True)
+    if any(value < 0 for value in nice_values):
+        print("WARN negative nice values raise archive priority; test them only after stable baseline runs",
+              flush=True)
 
     host = os.environ.get("PS5_IP", "192.168.1.100")
     port = os.environ.get("BF_WEB_PORT", "5905")
     base = f"http://{host}:{port}"
     password = os.environ.get("BF_ARCHIVE_PASSWORD", "")
     cleanup = os.environ.get("BF_ARCHIVE_CLEANUP", "1") == "1"
+    cleanup_partial = os.environ.get("BF_ARCHIVE_CLEANUP_PARTIAL", "1") == "1"
+    expect_error = os.environ.get("BF_ARCHIVE_EXPECT_ERROR", "0") == "1"
+    error_contains = os.environ.get("BF_ARCHIVE_EXPECT_ERROR_CONTAINS", "")
     poll_interval = float(os.environ.get("BF_ARCHIVE_POLL_INTERVAL", "2.0"))
     parent = os.environ.get("BF_ARCHIVE_REMOTE_PARENT", "/data/BFpilot").rstrip("/")
     if parent not in ("/data/BFpilot", "/data/test"):
@@ -270,10 +418,15 @@ def main() -> int:
         "baseUrl": base,
         "localArchive": str(local_path),
         "localArchiveBytes": local_path.stat().st_size,
+        "uploadSiblings": os.environ.get("BF_ARCHIVE_UPLOAD_SIBLINGS", "1") == "1",
         "passwordProvided": bool(password),
         "threads": threads,
+        "niceValues": nice_values,
         "remoteRoot": remote_root,
         "cleanupRequested": cleanup,
+        "cleanupPartialRequested": cleanup_partial,
+        "expectError": expect_error,
+        "expectErrorContains": error_contains,
     }
     output = out_dir / f"ps5-archive-perf-{stamp}.json"
     save_report(report, output, "created")
@@ -291,35 +444,49 @@ def main() -> int:
 
     remote_archive = ""
     if all(checks):
-        ok, upload, remote_archive = upload_archive(base, local_path, remote_root)
-        report["upload"] = upload
+        ok, uploads, remote_archive, uploaded_names = upload_archive_set(
+            base, local_path, remote_root
+        )
+        report["uploads"] = uploads
+        report["uploadedNames"] = uploaded_names
         report["remoteArchive"] = remote_archive
         checks.append(ok)
         save_report(report, output, "upload")
 
     runs: list[object] = []
     if all(checks):
-        for thread_count in threads:
-            dst = f"{remote_root}/out-t{thread_count}"
-            run: dict[str, object] = {
-                "threads": thread_count,
-                "destination": dst,
-            }
-            ok, prepared = prepare_archive(base, remote_archive, dst, password, thread_count)
-            run["prepare"] = prepared
-            if ok:
-                done, samples, final_status = wait_archive(base, poll_interval)
-                run["ok"] = done
-                run["samples"] = samples
-                run["finalStatus"] = final_status
-                checks.append(done)
-            else:
-                run["ok"] = False
-                checks.append(False)
-            runs.append(run)
-            report["runs"] = runs
-            save_report(report, output, f"run-{thread_count}")
-            if not run["ok"]:
+        stop = False
+        for nice in nice_values:
+            for thread_count in threads:
+                nice_label = f"m{abs(nice)}" if nice < 0 else str(nice)
+                dst = f"{remote_root}/out-t{thread_count}-n{nice_label}"
+                run: dict[str, object] = {
+                    "threads": thread_count,
+                    "nice": nice,
+                    "destination": dst,
+                }
+                ok, prepared = prepare_archive(base, remote_archive, dst,
+                                               password, thread_count, nice,
+                                               cleanup_partial)
+                run["prepare"] = prepared
+                if ok:
+                    done, samples, final_status = wait_archive(base, poll_interval)
+                    run["ok"] = archive_result_matches_expectation(
+                        done, final_status, expect_error, error_contains
+                    )
+                    run["samples"] = samples
+                    run["finalStatus"] = final_status
+                    checks.append(bool(run["ok"]))
+                else:
+                    run["ok"] = False
+                    checks.append(False)
+                runs.append(run)
+                report["runs"] = runs
+                save_report(report, output, f"run-t{thread_count}-n{nice_label}")
+                if not run["ok"]:
+                    stop = True
+                    break
+            if stop:
                 break
     report["runs"] = runs
     report["logs"] = collect_logs(base, out_dir, stamp)

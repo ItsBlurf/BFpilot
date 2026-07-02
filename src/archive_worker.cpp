@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cerrno>
+#include <climits>
 #include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
@@ -27,10 +28,13 @@
 #include <sys/file.h>
 #include <sys/resource.h>
 #include <sys/stat.h>
+#include <sys/statvfs.h>
 #include <sys/types.h>
 #include <time.h>
 #include <unistd.h>
 #include <vector>
+
+extern "C" int posix_fallocate(int fd, off_t offset, off_t len);
 
 #ifndef BFPILOT_ARCHIVE_INTEGRATED
 #define BFPILOT_ARCHIVE_INTEGRATED 0
@@ -55,14 +59,25 @@
 #define BFPILOT_ARCHIVE_MAX_THREADS 8U
 #define BFPILOT_ARCHIVE_AUTO_MAX_THREADS 2U
 #define BFPILOT_ARCHIVE_RAR_MAX_THREADS 1U
-#define BFPILOT_ARCHIVE_NICE (-10)
-#define BFPILOT_ZIP_IO_BUFFER_SIZE (1024U * 1024U)
+#define BFPILOT_ARCHIVE_NICE 4
+#define BFPILOT_ARCHIVE_MIN_NICE -20
+#define BFPILOT_ARCHIVE_MAX_NICE 20
+#define BFPILOT_ZIP_IN_BUFFER_SIZE (4U * 1024U * 1024U)
+#define BFPILOT_ZIP_OUT_BUFFER_SIZE (16U * 1024U * 1024U)
+#define BFPILOT_ARCHIVE_PREALLOC_MIN_SIZE (64ULL * 1024ULL * 1024ULL)
+#define BFPILOT_ARCHIVE_SPACE_MARGIN_BYTES (256ULL * 1024ULL * 1024ULL)
+#define BFPILOT_ZIP_MAX_ENTRIES 250000ULL
+#define BFPILOT_ZIP_MAX_MEMBER_PATH 1024U
+#define BFPILOT_7Z_MAX_ENTRIES 250000U
+#define BFPILOT_7Z_BOMB_MIN_UNPACKED_BYTES (256ULL * 1024ULL * 1024ULL)
+#define BFPILOT_7Z_MAX_EXPANSION_RATIO 512ULL
 
 struct ArchiveConfig {
   std::string source;
   std::string destination;
   std::string password;
   unsigned threads;
+  int priority_nice;
   bool cleanup_partial;
 };
 
@@ -290,6 +305,47 @@ IsAllowedArchivePath(const std::string &path) {
 }
 
 static bool
+IsGeneratedStagePath(const std::string &path) {
+  return IsAllowedArchivePath(path) &&
+         path.find(".bfpilot-extracting-") != std::string::npos;
+}
+
+static bool
+DeleteRecursiveForce(const std::string &path) {
+  struct stat st;
+  if(lstat(path.c_str(), &st) != 0) return errno == ENOENT;
+
+  if(S_ISDIR(st.st_mode)) {
+    DIR *d = opendir(path.c_str());
+    if(!d) return false;
+    bool ok = true;
+    int first_errno = 0;
+    struct dirent *ent;
+    errno = 0;
+    while((ent = readdir(d)) != NULL) {
+      if(!strcmp(ent->d_name, ".") || !strcmp(ent->d_name, "..")) continue;
+      if(!DeleteRecursiveForce(JoinPath(path, ent->d_name))) {
+        ok = false;
+        if(first_errno == 0) first_errno = errno ? errno : EIO;
+      }
+    }
+    int saved_errno = errno;
+    closedir(d);
+    if(saved_errno != 0) {
+      errno = saved_errno;
+      return false;
+    }
+    if(!ok) {
+      errno = first_errno ? first_errno : EIO;
+      return false;
+    }
+    return rmdir(path.c_str()) == 0 || errno == ENOENT;
+  }
+
+  return unlink(path.c_str()) == 0 || errno == ENOENT;
+}
+
+static bool
 IsSafeMemberPath(const std::string &path) {
   if(path.empty() || path[0] == '/' || path[0] == '\\') return false;
   if(path.size() >= 2 && path[1] == ':') return false;
@@ -354,7 +410,10 @@ WriteAll(int fd, const void *data, size_t size) {
       if(errno == EINTR) continue;
       return false;
     }
-    if(n == 0) return false;
+    if(n == 0) {
+      errno = ENOSPC;
+      return false;
+    }
     p += n;
     size -= (size_t)n;
   }
@@ -418,6 +477,20 @@ ParseArchiveThreads(const std::string &value) {
   return NormalizeArchiveThreads((unsigned)strtoul(value.c_str(), NULL, 10));
 }
 
+static int
+ParseArchiveNice(const std::string &value) {
+  if(value.empty()) return BFPILOT_ARCHIVE_NICE;
+  char *end = NULL;
+  errno = 0;
+  long parsed = strtol(value.c_str(), &end, 10);
+  if(errno != 0 || end == value.c_str() || (end && *end)) {
+    return BFPILOT_ARCHIVE_NICE;
+  }
+  if(parsed < BFPILOT_ARCHIVE_MIN_NICE) parsed = BFPILOT_ARCHIVE_MIN_NICE;
+  if(parsed > BFPILOT_ARCHIVE_MAX_NICE) parsed = BFPILOT_ARCHIVE_MAX_NICE;
+  return (int)parsed;
+}
+
 static void
 LogLine(const char *fmt, ...) {
   if(!MkdirAll(BFPILOT_ARCHIVE_DIR)) return;
@@ -438,11 +511,94 @@ LogLine(const char *fmt, ...) {
   close(fd);
 }
 
+static bool
+PreallocateOutputFile(int fd, unsigned long long size, const char *context,
+                      std::string &error) {
+  if(size < BFPILOT_ARCHIVE_PREALLOC_MIN_SIZE ||
+     size > (unsigned long long)LLONG_MAX) {
+    return true;
+  }
+
+  int rc = posix_fallocate(fd, 0, (off_t)size);
+  if(rc == 0) {
+    LogLine("archive prealloc ok context=%s size=%llu",
+            context ? context : "output", size);
+    return true;
+  }
+  if(rc == ENOSPC || rc == EFBIG) {
+    errno = rc;
+    error = "not enough space to preallocate archive output";
+    LogLine("archive prealloc failed context=%s rc=%d size=%llu",
+            context ? context : "output", rc, size);
+    return false;
+  }
+
+  LogLine("archive prealloc ignored context=%s rc=%d size=%llu",
+          context ? context : "output", rc, size);
+  if(ftruncate(fd, (off_t)size) == 0) {
+    LogLine("archive size hint ok context=%s size=%llu",
+            context ? context : "output", size);
+  } else {
+    LogLine("archive size hint ignored context=%s errno=%d size=%llu",
+            context ? context : "output", errno, size);
+  }
+  return true;
+}
+
+static bool
+CheckDestinationSpace(const std::string &path, unsigned long long required,
+                      const char *context, std::string &error) {
+  if(required == 0) return true;
+
+  struct statvfs vfs;
+  if(statvfs(path.c_str(), &vfs) != 0) {
+    int saved_errno = errno;
+    error = "failed to inspect destination free space";
+    LogLine("archive space check failed context=%s path=%s errno=%d",
+            context ? context : "output", path.c_str(), saved_errno);
+    errno = saved_errno;
+    return false;
+  }
+
+  unsigned long long block =
+      vfs.f_frsize ? (unsigned long long)vfs.f_frsize
+                   : (unsigned long long)vfs.f_bsize;
+  unsigned long long available =
+      block != 0 && vfs.f_bavail > ULLONG_MAX / block
+          ? ULLONG_MAX
+          : (unsigned long long)vfs.f_bavail * block;
+  unsigned long long needed =
+      required > ULLONG_MAX - BFPILOT_ARCHIVE_SPACE_MARGIN_BYTES
+          ? ULLONG_MAX
+          : required + BFPILOT_ARCHIVE_SPACE_MARGIN_BYTES;
+
+  if(available < needed) {
+    char buf[256];
+    snprintf(buf, sizeof(buf),
+             "not enough free space for %s extraction: need %llu bytes, "
+             "available %llu bytes",
+             context ? context : "archive", needed, available);
+    error = buf;
+    LogLine("archive space check failed context=%s path=%s required=%llu "
+            "needed=%llu available=%llu",
+            context ? context : "output", path.c_str(), required, needed,
+            available);
+    errno = ENOSPC;
+    return false;
+  }
+
+  LogLine("archive space check ok context=%s path=%s required=%llu needed=%llu "
+          "available=%llu",
+          context ? context : "output", path.c_str(), required, needed,
+          available);
+  return true;
+}
+
 static void
-ApplyArchiveScheduling(void) {
-  g_status.priority_nice = BFPILOT_ARCHIVE_NICE;
+ApplyArchiveScheduling(int priority_nice) {
+  g_status.priority_nice = priority_nice;
   errno = 0;
-  g_status.priority_rc = setpriority(PRIO_PROCESS, 0, BFPILOT_ARCHIVE_NICE);
+  g_status.priority_rc = setpriority(PRIO_PROCESS, 0, priority_nice);
   g_status.priority_errno = g_status.priority_rc == 0 ? 0 : errno;
   LogLine("archive scheduling nice=%d rc=%d errno=%d",
           g_status.priority_nice, g_status.priority_rc,
@@ -689,6 +845,7 @@ LoadConfig(ArchiveConfig &cfg, std::string &error) {
   cfg.destination.clear();
   cfg.password.clear();
   cfg.threads = 0;
+  cfg.priority_nice = BFPILOT_ARCHIVE_NICE;
   cfg.cleanup_partial = false;
 
   std::string data;
@@ -714,6 +871,7 @@ LoadConfig(ArchiveConfig &cfg, std::string &error) {
     else if(key == "destination") cfg.destination = value;
     else if(key == "password") cfg.password = value;
     else if(key == "threads") cfg.threads = ParseArchiveThreads(value);
+    else if(key == "nice") cfg.priority_nice = ParseArchiveNice(value);
     else if(key == "cleanupPartial") {
       cfg.cleanup_partial =
           value == "1" || value == "true" || value == "yes" || value == "on";
@@ -914,6 +1072,14 @@ ReadLe64(const unsigned char *p) {
   return lo | (hi << 32);
 }
 
+static bool
+U64AddOverflow(unsigned long long a, unsigned long long b,
+               unsigned long long &out) {
+  if(ULLONG_MAX - a < b) return true;
+  out = a + b;
+  return false;
+}
+
 class ZipCrypto {
   unsigned int keys[3];
 
@@ -987,8 +1153,8 @@ struct ZipIoBuffers {
 
   bool Init(std::string &error) {
     try {
-      in.resize(BFPILOT_ZIP_IO_BUFFER_SIZE);
-      out.resize(BFPILOT_ZIP_IO_BUFFER_SIZE);
+      in.resize(BFPILOT_ZIP_IN_BUFFER_SIZE);
+      out.resize(BFPILOT_ZIP_OUT_BUFFER_SIZE);
     } catch(...) {
       error = "out of memory";
       return false;
@@ -1107,10 +1273,22 @@ FindZipCentralDir(int fd, unsigned long long file_size,
 
 static bool
 ReadZipEntries(int fd, unsigned long long central_offset,
+               unsigned long long central_size,
                unsigned long long entry_count, std::vector<ZipEntry> &entries,
                std::string &error) {
   unsigned long long offset = central_offset;
+  unsigned long long central_end = 0;
+  if(U64AddOverflow(central_offset, central_size, central_end)) {
+    error = "bad zip central directory size";
+    return false;
+  }
   for(unsigned long long i = 0; i < entry_count; i++) {
+    unsigned long long min_entry_end = 0;
+    if(U64AddOverflow(offset, 46ULL, min_entry_end) ||
+       min_entry_end > central_end) {
+      error = "zip central directory is truncated";
+      return false;
+    }
     unsigned char hdr[46];
     if(!ReadExactAt(fd, offset, hdr, sizeof(hdr)) ||
        ReadLe32(hdr) != ZIP_SIG_CENTRAL) {
@@ -1129,6 +1307,19 @@ ReadZipEntries(int fd, unsigned long long central_offset,
     unsigned short comment_len = ReadLe16(hdr + 32);
     entry.local_offset = ReadLe32(hdr + 42);
     entry.encrypted = (entry.flags & 1) != 0;
+
+    if(name_len == 0 || name_len > BFPILOT_ZIP_MAX_MEMBER_PATH) {
+      error = "zip member path length is unsupported";
+      return false;
+    }
+    unsigned long long variable_len =
+        (unsigned long long)name_len + extra_len + comment_len;
+    unsigned long long entry_end = 0;
+    if(U64AddOverflow(min_entry_end, variable_len, entry_end) ||
+       entry_end > central_end) {
+      error = "zip central directory entry is truncated";
+      return false;
+    }
 
     std::vector<unsigned char> name_buf(name_len);
     std::vector<unsigned char> extra(extra_len);
@@ -1163,14 +1354,14 @@ ReadZipEntries(int fd, unsigned long long central_offset,
     }
 
     entries.push_back(entry);
-    offset += 46ULL + name_len + extra_len + comment_len;
+    offset = entry_end;
   }
   return true;
 }
 
 static bool
 OpenZipEntryData(int fd, const ZipEntry &entry, unsigned long long &data_offset,
-                 std::string &error) {
+                 unsigned long long archive_size, std::string &error) {
   unsigned char hdr[30];
   if(!ReadExactAt(fd, entry.local_offset, hdr, sizeof(hdr)) ||
      ReadLe32(hdr) != ZIP_SIG_LOCAL) {
@@ -1179,7 +1370,12 @@ OpenZipEntryData(int fd, const ZipEntry &entry, unsigned long long &data_offset,
   }
   unsigned short name_len = ReadLe16(hdr + 26);
   unsigned short extra_len = ReadLe16(hdr + 28);
-  data_offset = entry.local_offset + 30ULL + name_len + extra_len;
+  unsigned long long header_len = 30ULL + name_len + extra_len;
+  if(U64AddOverflow(entry.local_offset, header_len, data_offset) ||
+     data_offset > archive_size) {
+    error = "zip local file header is outside archive";
+    return false;
+  }
   return true;
 }
 
@@ -1271,11 +1467,23 @@ WriteZipDeflatedFile(int zip_fd, int out_fd, ZipEntry &entry,
       stream.avail_in = (mz_uint)want;
     }
 
+    unsigned long long remaining_out =
+        entry.uncompressed_size > written ? entry.uncompressed_size - written
+                                          : 0;
+    int flush = (remaining == 0 && remaining_out <= outbuf.size())
+                    ? MZ_FINISH
+                    : MZ_NO_FLUSH;
     stream.next_out = outbuf.data();
     stream.avail_out = (mz_uint)outbuf.size();
-    zrc = mz_inflate(&stream, remaining == 0 ? MZ_FINISH : MZ_NO_FLUSH);
+    zrc = mz_inflate(&stream, flush);
     size_t produced = outbuf.size() - stream.avail_out;
     if(produced > 0) {
+      if(written > entry.uncompressed_size ||
+         produced > entry.uncompressed_size - written) {
+        error = "deflated zip size exceeds header";
+        ok = false;
+        break;
+      }
       if(!TimedWriteAll(out_fd, outbuf.data(), produced)) {
         error = "failed to write extracted zip file";
         ok = false;
@@ -1320,7 +1528,7 @@ WriteZipDeflatedFile(int zip_fd, int out_fd, ZipEntry &entry,
 static bool
 ExtractOneZipEntry(int zip_fd, ZipEntry &entry, const std::string &dest,
                    const std::string &password, ZipIoBuffers &buffers,
-                   std::string &error) {
+                   unsigned long long archive_size, std::string &error) {
   std::string out_path = JoinPath(dest, entry.name);
   g_status.current = entry.name;
 
@@ -1351,7 +1559,14 @@ ExtractOneZipEntry(int zip_fd, ZipEntry &entry, const std::string &dest,
   }
 
   unsigned long long data_offset = 0;
-  if(!OpenZipEntryData(zip_fd, entry, data_offset, error)) return false;
+  if(!OpenZipEntryData(zip_fd, entry, data_offset, archive_size, error)) {
+    return false;
+  }
+  if(entry.compressed_size > archive_size ||
+     data_offset > archive_size - entry.compressed_size) {
+    error = "zip entry data is outside archive";
+    return false;
+  }
 
   ZipCrypto zip_crypto(password);
   ZipCrypto *crypto = entry.encrypted ? &zip_crypto : NULL;
@@ -1374,6 +1589,11 @@ ExtractOneZipEntry(int zip_fd, ZipEntry &entry, const std::string &dest,
     }
     data_offset += 12;
     entry.compressed_size -= 12;
+    if(entry.compressed_size > archive_size ||
+       data_offset > archive_size - entry.compressed_size) {
+      error = "encrypted zip entry data is outside archive";
+      return false;
+    }
   }
 
   if(!MkdirAll(DirName(out_path))) {
@@ -1384,6 +1604,12 @@ ExtractOneZipEntry(int zip_fd, ZipEntry &entry, const std::string &dest,
   int out_fd = open(out_path.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0666);
   if(out_fd < 0) {
     error = "failed to create zip output file";
+    return false;
+  }
+  if(!PreallocateOutputFile(out_fd, entry.uncompressed_size, "zip", error)) {
+    int saved_errno = errno;
+    close(out_fd);
+    errno = saved_errno;
     return false;
   }
 
@@ -1429,10 +1655,23 @@ RunZipExtract(const std::string &archive_path, const std::string &dest_path,
     close(fd);
     return false;
   }
+  unsigned long long central_end = 0;
+  if(U64AddOverflow(central_offset, central_size, central_end) ||
+     central_end > (unsigned long long)st.st_size) {
+    close(fd);
+    error = "zip central directory is outside archive";
+    return false;
+  }
+  if(entry_count > BFPILOT_ZIP_MAX_ENTRIES) {
+    close(fd);
+    error = "zip has too many entries";
+    return false;
+  }
 
   std::vector<ZipEntry> entries;
   entries.reserve((size_t)std::min<unsigned long long>(entry_count, 4096ULL));
-  if(!ReadZipEntries(fd, central_offset, entry_count, entries, error)) {
+  if(!ReadZipEntries(fd, central_offset, central_size, entry_count, entries,
+                     error)) {
     close(fd);
     return false;
   }
@@ -1441,7 +1680,20 @@ RunZipExtract(const std::string &archive_path, const std::string &dest_path,
   g_status.total_files = entries.size();
   g_status.total_bytes = 0;
   for(size_t i = 0; i < entries.size(); i++) {
-    if(!entries[i].is_dir) g_status.total_bytes += entries[i].uncompressed_size;
+    if(!entries[i].is_dir) {
+      unsigned long long next_total = 0;
+      if(U64AddOverflow(g_status.total_bytes, entries[i].uncompressed_size,
+                        next_total)) {
+        close(fd);
+        error = "zip uncompressed size is too large";
+        return false;
+      }
+      g_status.total_bytes = next_total;
+    }
+  }
+  if(!CheckDestinationSpace(dest_path, g_status.total_bytes, "zip", error)) {
+    close(fd);
+    return false;
   }
   WriteStatus(true);
 
@@ -1459,7 +1711,7 @@ RunZipExtract(const std::string &archive_path, const std::string &dest_path,
 
   for(size_t i = 0; i < entries.size(); i++) {
     if(!ExtractOneZipEntry(fd, entries[i], dest_path, password, buffers,
-                           error)) {
+                           (unsigned long long)st.st_size, error)) {
       close(fd);
       return false;
     }
@@ -1491,8 +1743,47 @@ RunArchive(const ArchiveConfig &cfg, ArchiveType type, std::string &error) {
   if(type == ARCHIVE_7Z) {
     g_status.effective_threads =
         EffectiveArchiveThreadsForType(cfg.threads, type);
-    g_status.total_bytes = 0;
-    g_status.total_files = 0;
+    SevenZArchiveInfo info =
+        Probe7zArchive(cfg.source, cfg.password, g_status.effective_threads);
+    if(info.code != RARX_SUCCESS && info.code != RARX_WARNING) {
+      error = info.reason;
+      if(!info.missing_volume.empty()) {
+        error += ": ";
+        error += info.missing_volume;
+      }
+      return info.code;
+    }
+
+    g_status.total_bytes = info.total_bytes;
+    g_status.total_files = info.file_count;
+    if(info.file_count > BFPILOT_7Z_MAX_ENTRIES) {
+      char buf[160];
+      snprintf(buf, sizeof(buf), "7z has too many entries: %u",
+               info.file_count);
+      error = buf;
+      return RARX_FATAL;
+    }
+    if(info.unknown_size_count > 0) {
+      char buf[192];
+      snprintf(buf, sizeof(buf), "7z has %u entries without known sizes",
+               info.unknown_size_count);
+      error = buf;
+      return RARX_FATAL;
+    }
+    if(!CheckDestinationSpace(g_status.stage, info.total_bytes, "7z",
+                              error)) {
+      return RARX_FATAL;
+    }
+    if(info.input_bytes > 0 &&
+       info.total_bytes >= BFPILOT_7Z_BOMB_MIN_UNPACKED_BYTES &&
+       info.total_bytes / info.input_bytes > BFPILOT_7Z_MAX_EXPANSION_RATIO) {
+      char buf[256];
+      snprintf(buf, sizeof(buf),
+               "7z expansion ratio too high: %llu bytes from %llu bytes",
+               info.total_bytes, info.input_bytes);
+      error = buf;
+      return RARX_FATAL;
+    }
     WriteStatus(true);
     errno = 0;
     SevenZExtractResult result =
@@ -1548,8 +1839,6 @@ bfpilot_archive_run_prepared_job(void) {
   ResetIoCounters();
   WriteStatus(true);
   LogLine("archive job entry reached");
-  ApplyArchiveScheduling();
-  WriteStatus(true);
 
   ArchiveConfig cfg;
   std::string error;
@@ -1565,6 +1854,8 @@ bfpilot_archive_run_prepared_job(void) {
   g_status.source = cfg.source;
   g_status.destination = cfg.destination;
   g_status.threads = cfg.threads;
+  ApplyArchiveScheduling(cfg.priority_nice);
+  WriteStatus(true);
 
   struct stat src_st;
   if(stat(cfg.source.c_str(), &src_st) != 0 || !S_ISREG(src_st.st_mode)) {
@@ -1637,6 +1928,19 @@ bfpilot_archive_run_prepared_job(void) {
     g_status.error = error.empty() ? "archive extraction failed" : error;
     g_status.errno_code = errno;
     g_status.archive_exit_code = rc;
+    if(cfg.cleanup_partial && IsGeneratedStagePath(g_status.stage)) {
+      std::string old_stage = g_status.stage;
+      int cleanup_rc = DeleteRecursiveForce(old_stage) ? 0 : -1;
+      int cleanup_errno = cleanup_rc == 0 ? 0 : errno;
+      LogLine("partial cleanup rc=%d errno=%d stage=%s", cleanup_rc,
+              cleanup_errno, old_stage.c_str());
+      if(cleanup_rc == 0) {
+        g_status.stage.clear();
+        g_status.current = "partial extraction cleaned";
+      } else {
+        g_status.current = "partial extraction cleanup failed";
+      }
+    }
     WriteStatus(true);
     LogLine("extract failed rc=%d errno=%d error=%s stage=%s", rc, errno,
             g_status.error.c_str(), g_status.stage.c_str());

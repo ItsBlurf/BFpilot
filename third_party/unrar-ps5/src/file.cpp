@@ -1,7 +1,9 @@
 #include "rar.hpp"
 
 #ifdef PS5_PAYLOAD
+extern "C" int posix_fallocate(int fd, off_t offset, off_t len);
 extern "C" bool Ps5UnrarFlushBufferedOutput(File *DestFile);
+static const int64 PS5_UNRAR_PREALLOC_MIN_SIZE=64LL*1024LL*1024LL;
 #endif
 
 File::File()
@@ -356,7 +358,24 @@ bool File::Write(const void *Data,size_t Size)
       Success=WriteFile(hFile,Data,(DWORD)Size,&Written,NULL)!=FALSE;
 #else
 #ifdef FILE_USE_OPEN
-    ssize_t Written=write(hFile,Data,Size);
+    size_t Written=0;
+    while (Written<Size)
+    {
+      ssize_t CurWritten=write(hFile,(const byte *)Data+Written,
+                                Size-Written);
+      if (CurWritten<0)
+      {
+        if (errno==EINTR)
+          continue;
+        break;
+      }
+      if (CurWritten==0)
+      {
+        errno=ENOSPC;
+        break;
+      }
+      Written+=(size_t)CurWritten;
+    }
     Success=Written==Size;
 #else
     int Written=fwrite(Data,1,Size,hFile);
@@ -639,6 +658,24 @@ int64 File::Tell()
 
 void File::Prealloc(int64 Size)
 {
+#ifdef PS5_PAYLOAD
+  if (Size>=PS5_UNRAR_PREALLOC_MIN_SIZE)
+  {
+    int fd=GetFD();
+    if (fd>=0)
+    {
+      int Rc=posix_fallocate(fd,0,(off_t)Size);
+      if (Rc==ENOSPC || Rc==EFBIG)
+      {
+        errno=Rc;
+        return;
+      }
+      if (Rc!=0)
+        (void)ftruncate(fd,(off_t)Size);
+    }
+  }
+#endif
+
 #ifdef _WIN_ALL
   if (RawSeek(Size,SEEK_SET))
   {

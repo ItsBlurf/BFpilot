@@ -78,9 +78,14 @@ Files:
 Routes:
 
 - `GET /api/fs/search/status`
-- `GET /api/fs/search/rebuild?root=/data`
+- `GET /api/fs/search/rebuild`
+- `GET /api/fs/search/rebuild?mode=system`
+- `GET /api/fs/search/rebuild?root=/` as an alias for system indexing
+- `GET /api/fs/search/rebuild?root=/data` for targeted test rebuilds
 - `GET /api/fs/search/cancel`
-- `GET /api/fs/search?q=term&root=/data&limit=200&offset=0&type=all`
+- `GET /api/fs/search?q=term&limit=200&offset=0&type=all`
+- `GET /api/fs/search?q=term&root=/data&limit=200&offset=0&type=all` for
+  targeted filtered queries
 
 Index record:
 
@@ -105,11 +110,19 @@ Indexer behavior:
 
 Default roots:
 
-- Default rebuild root: `/data`.
+- Default rebuild mode: all detected user/storage roots.
+- The global index includes existing `/data`, `/user`, `/mnt/usb0` through
+  `/mnt/usb7`, and `/mnt/ext0` through `/mnt/ext7`.
+- System rebuild mode crawls `/` plus detected separate system/user/storage
+  roots, including `/system`, `/system_data`, `/system_ex`, `/preinst`,
+  `/preinst2`, `/hostapp`, `/data`, `/user`, `/mnt/usb*`, and `/mnt/ext*` when
+  those paths exist.
 - Allow mounted storage roots under `/mnt/usb0` through `/mnt/usb7` and
-  `/mnt/ext0` through `/mnt/ext7`.
-- Allow custom user-selected roots only when explicitly requested.
+  `/mnt/ext0` through `/mnt/ext7` for explicit root-scoped tests.
+- Allow custom absolute user-selected roots only when explicitly requested.
 - Do not auto-index `/` at startup.
+- Do not index pseudo/volatile roots such as `/dev`, `/proc`, `/sys`, `/net`,
+  and `/run`.
 
 Query behavior:
 
@@ -121,7 +134,8 @@ Query behavior:
 
 UI behavior:
 
-- Add a compact search input and index button near the current path controls.
+- Add a compact search input, "Index All" button, and explicit "Index System"
+  button near the current path controls.
 - Search results reuse the existing file list row style.
 - Search result selection must operate on absolute paths, not names relative to
   the current folder.
@@ -204,3 +218,85 @@ The first implementation should measure:
 - Search results can be opened and selected without path confusion.
 - Cancel stops an active rebuild.
 - PS5 diagnostics save search status and logs without mutating user data.
+
+## 2026-07-02 Implementation Update
+
+Implemented phase-one indexed search in the main file manager payload.
+
+Changed files:
+
+- `src/search.c` and `src/search.h`: in-memory search index, background rebuild,
+  cancel, status, and query handlers.
+- `src/transfer.c`: search route glue and stale markers after BFpilot mutating
+  file operations.
+- `src/websrv_lite.c`: diagnostic route metadata for search endpoints.
+- `assets/files.html`: compact search controls, index status, search result
+  mode, and absolute-path selection/action handling.
+- `Makefile`: includes `src/search.c` in the web payload.
+
+Current behavior:
+
+- `GET /api/fs/search/status`
+- `GET /api/fs/search/rebuild`
+- `GET /api/fs/search/rebuild?mode=system`
+- `GET /api/fs/search/rebuild?root=/` as an alias for system indexing
+- `GET /api/fs/search/rebuild?root=/data` for targeted test rebuilds
+- `GET /api/fs/search/cancel`
+- `GET /api/fs/search?q=term&limit=200&offset=0&type=all&scope=path`
+- `GET /api/fs/search?q=term&root=/data&limit=200&offset=0&type=all&scope=path`
+  for filtered queries
+
+Safety constraints implemented:
+
+- Explicit rebuild only; no startup crawl.
+- The default rebuild indexes all detected user/storage roots: `/data`, `/user`,
+  `/mnt/usb0` through `/mnt/usb7`, and `/mnt/ext0` through `/mnt/ext7`.
+- The system rebuild indexes `/` plus detected separate system/user/storage
+  roots, including `/system`, `/system_data`, `/system_ex`, `/preinst`,
+  `/preinst2`, `/hostapp`, `/data`, `/user`, `/mnt/usb*`, and `/mnt/ext*`.
+- Allowed explicit roots are absolute paths without `..` segments, excluding
+  pseudo/volatile roots.
+- Rejects non-absolute paths and `..` segments.
+- Uses `lstat`, does not follow symlinks, and only descends directories on the
+  same device as each indexed root.
+- Skips pseudo/volatile roots such as `/dev`, `/proc`, `/sys`, `/net`, and
+  `/run`.
+- Caps index entries at 750000 and response limits at 1000.
+- Keeps old index active while a rebuild is running, then swaps the new index
+  under a mutex.
+- Marks the index stale after upload, mkdir, rename, copy, move, delete, and
+  archive prepare.
+- Runs the crawler at a lower process priority when `setpriority` is available.
+
+Validation performed locally:
+
+- Installed PS5 payload SDK into `C:\Users\Blurf\ps5sdk` to avoid path-with-space
+  Makefile failures.
+- Patched installed SDK wrapper scripts for this Windows setup so copied
+  symlink wrappers resolve `clang.exe`, `ld.lld.exe`, and LLVM binutils
+  correctly.
+- Patched the local SDK wrappers and BFpilot Makefile so this machine's
+  BusyBox-backed `bash` shim uses POSIX-compatible wrapper syntax and `C:/...`
+  shell paths instead of `/c/...` link paths.
+- Built and installed static libc++/libc++abi/libunwind into the SDK because the
+  integrated archive build requires `<new>` and C++ runtime libraries.
+- `PS5_PAYLOAD_SDK=C:/Users/Blurf/ps5sdk mingw32-make bfpilot` completed and a
+  follow-up run reported `Nothing to be done for 'bfpilot'`.
+- `PS5_PAYLOAD_SDK=C:/Users/Blurf/ps5sdk mingw32-make inspect-imports` passed.
+- Parsed the embedded `assets/files.html` script with Node's `new Function`;
+  syntax check passed.
+
+Not yet done:
+
+- PS5 hardware smoke test with a small controlled `/data/test/bfpilot-search-*`
+  tree.
+- Measured index build/query timings on PS5 internal storage and USB storage.
+
+Next measured improvements, only after PS5 smoke testing:
+
+- Add a small PS5 search smoke script that creates a controlled tree, rebuilds
+  that root, queries known names, cancels a rebuild, and deletes the test tree.
+- Add optional sorting controls and "load more" paging in the UI.
+- Consider a persisted binary index only after measuring memory-only stability.
+- Consider extension buckets, prefix arrays, or a trigram index only if linear
+  scan query time is measured as a real problem on large PS5 datasets.

@@ -21,7 +21,7 @@ PS5_PORT ?= 9021
 PYTHON ?= python3
 WEB_PORT ?= 5905
 
-VERSION_TAG := bfpilot-v0.3.1-test6-perf8
+VERSION_TAG := bfpilot-v0.3.1-test7-search
 BUILD_VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 
 LLVM_CONFIG ?= $(if $(wildcard $(PS5_PAYLOAD_SDK)/bin/prospero-llvm-config),$(PS5_PAYLOAD_SDK)/bin/prospero-llvm-config,$(CURDIR)/build-tools/llvm-config)
@@ -41,6 +41,7 @@ WEB_SRCS += src/asset.c
 WEB_SRCS += src/fs.c
 WEB_SRCS += src/mime.c
 WEB_SRCS += src/notify.c
+WEB_SRCS += src/search.c
 WEB_SRCS += src/transfer.c
 
 LAUNCHER_INSTALLER_SRCS := src/launcher_installer_force_main.c
@@ -168,11 +169,14 @@ CURDIR_POSIX := $(shell pwd)
 PS5_PAYLOAD_SDK_POSIX := $(shell cygpath -u "$(PS5_PAYLOAD_SDK)" 2>/dev/null || printf '%s' "$(PS5_PAYLOAD_SDK)")
 LLVM_CONFIG_POSIX := $(shell cygpath -u "$(LLVM_CONFIG)" 2>/dev/null || printf '%s' "$(LLVM_CONFIG)")
 LLVM_BINDIR_POSIX := $(shell cygpath -u "$(LLVM_BINDIR)" 2>/dev/null || printf '%s' "$(LLVM_BINDIR)")
-RUN_ENV := cd "$(CURDIR_POSIX)" && export LLVM_CONFIG="$(LLVM_CONFIG_POSIX)" && export LLVM_BINDIR="$(LLVM_BINDIR_POSIX)"
-STRIP_CMD := "$(LLVM_BINDIR_POSIX)/llvm-strip"
-WINDOWS_LINK_PREFIX := --gc-sections --sysroot="$(PS5_PAYLOAD_SDK_POSIX)"
-WINDOWS_LINK_PREFIX += -L"$(PS5_PAYLOAD_SDK_POSIX)/target/lib"
-WINDOWS_LINK_PREFIX += -L"$(PS5_PAYLOAD_SDK_POSIX)/target/user/homebrew/lib"
+PS5_PAYLOAD_SDK_SHELL := $(subst \,/,$(PS5_PAYLOAD_SDK))
+LLVM_CONFIG_SHELL := $(subst \,/,$(LLVM_CONFIG))
+LLVM_BINDIR_SHELL := $(subst \,/,$(LLVM_BINDIR))
+RUN_ENV := cd "$(CURDIR_POSIX)" && export LLVM_CONFIG="$(LLVM_CONFIG_SHELL)" && export LLVM_BINDIR="$(LLVM_BINDIR_SHELL)"
+STRIP_CMD := "$(LLVM_BINDIR_SHELL)/llvm-strip"
+WINDOWS_LINK_PREFIX := --gc-sections --sysroot="$(PS5_PAYLOAD_SDK_SHELL)"
+WINDOWS_LINK_PREFIX += -L"$(PS5_PAYLOAD_SDK_SHELL)/target/lib"
+WINDOWS_LINK_PREFIX += -L"$(PS5_PAYLOAD_SDK_SHELL)/target/user/homebrew/lib"
 WINDOWS_LINK_PREFIX += -l:crt1.o -l:crti.o -l:crtbegin.o -lc
 WINDOWS_WEB_SUFFIX := -lkernel_web -lSceLibcInternal -lSceNet
 WINDOWS_WEB_SUFFIX += -lc_stub_weak -lkernel_stub_weak
@@ -181,6 +185,24 @@ WINDOWS_APPINST_SUFFIX := -lkernel_sys -lSceSystemService
 WINDOWS_APPINST_SUFFIX += -lSceUserService -lSceAppInstUtil
 WINDOWS_APPINST_SUFFIX += -lSceLibcInternal -lc_stub_weak -lkernel_stub_weak
 WINDOWS_APPINST_SUFFIX += -l:crtend.o -l:crtn.o
+WINDOWS_CXX_LD_CMD := "$(PS5_PAYLOAD_SDK_SHELL)/win/prospero-lld.exe"
+WINDOWS_CXX_LINK_PREFIX := -m elf_x86_64_fbsd --sysroot="$(PS5_PAYLOAD_SDK_SHELL)"
+WINDOWS_CXX_LINK_PREFIX += -pie --eh-frame-hdr --hash-style=sysv --build-id=uuid
+WINDOWS_CXX_LINK_PREFIX += --unresolved-symbols=report-all -z now
+WINDOWS_CXX_LINK_PREFIX += -z start-stop-visibility=hidden -z rodynamic
+WINDOWS_CXX_LINK_PREFIX += -z common-page-size=0x4000 -z max-page-size=0x4000
+WINDOWS_CXX_LINK_PREFIX += -z dead-reloc-in-nonalloc=.debug_*=0xffffffffffffffff
+WINDOWS_CXX_LINK_PREFIX += -z dead-reloc-in-nonalloc=.debug_ranges=0xfffffffffffffffe
+WINDOWS_CXX_LINK_PREFIX += -z dead-reloc-in-nonalloc=.debug_loc=0xfffffffffffffffe
+WINDOWS_CXX_LINK_PREFIX += --default-script main.script --lto=full
+WINDOWS_CXX_LINK_PREFIX += -plugin-opt=-emit-jump-table-sizes-section
+WINDOWS_CXX_LINK_PREFIX += -L"$(PS5_PAYLOAD_SDK_SHELL)/target/lib"
+WINDOWS_CXX_LINK_PREFIX += -L"$(PS5_PAYLOAD_SDK_SHELL)/target/user/homebrew/lib" -L.
+WINDOWS_CXX_LINK_PREFIX += -l:crt1.o -l:crti.o -l:crtbegin.o
+WINDOWS_CXX_LINK_PREFIX += -lunwind -lc++abi -lc++ -lc
+WINDOWS_CXX_LINK_SUFFIX := -lSceNotification -lkernel_web -lSceLibcInternal
+WINDOWS_CXX_LINK_SUFFIX += -lSceNet -lpthread -lc_stub_weak -lkernel_stub_weak
+WINDOWS_CXX_LINK_SUFFIX += -l:crtend.o -l:crtn.o
 define run
 bash -lc '$(RUN_ENV) && $(1)'
 endef
@@ -230,7 +252,8 @@ build/bfpilot-archive/%.o: %.c Makefile
 
 ifeq ($(HOST_IS_WINDOWS),1)
 $(BFPILOT_BIN): $(BFPILOT_OBJS) $(BFPILOT_ARCHIVE_OBJS)
-	$(call run,$(CXX_CMD) -o $@ $(BFPILOT_OBJS) $(BFPILOT_ARCHIVE_OBJS) $(ARCHIVE_WORKER_LDFLAGS))
+	$(file >build/bfpilot-link.rsp,$(BFPILOT_OBJS) $(BFPILOT_ARCHIVE_OBJS))
+	$(call run,$(WINDOWS_CXX_LD_CMD) -o $@ $(WINDOWS_CXX_LINK_PREFIX) @build/bfpilot-link.rsp $(WINDOWS_CXX_LINK_SUFFIX))
 	$(call run,$(STRIP_CMD) --strip-all $@)
 	$(call run,$(PYTHON) scripts/scrub_main_payload.py $@)
 
@@ -239,7 +262,8 @@ $(LAUNCHER_INSTALLER_BIN): $(LAUNCHER_INSTALLER_OBJS) $(APP_ASSETS)
 	$(call run,$(STRIP_CMD) --strip-all $@)
 
 $(ARCHIVE_WORKER_BIN): $(ARCHIVE_WORKER_OBJS)
-	$(call run,$(CXX_CMD) -o $@ $(ARCHIVE_WORKER_OBJS) $(ARCHIVE_WORKER_LDFLAGS))
+	$(file >build/archive-worker-link.rsp,$(ARCHIVE_WORKER_OBJS))
+	$(call run,$(WINDOWS_CXX_LD_CMD) -o $@ $(WINDOWS_CXX_LINK_PREFIX) @build/archive-worker-link.rsp $(WINDOWS_CXX_LINK_SUFFIX))
 	$(call run,$(STRIP_CMD) --strip-all $@)
 else
 $(BFPILOT_BIN): $(BFPILOT_OBJS) $(BFPILOT_ARCHIVE_OBJS)

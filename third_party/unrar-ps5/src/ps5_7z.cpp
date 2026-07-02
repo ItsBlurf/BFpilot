@@ -23,6 +23,8 @@
 #include <unistd.h>
 #include <vector>
 
+extern "C" int posix_fallocate(int fd, off_t offset, off_t len);
+
 extern "C" void Ps5UnrarProgress(int Percent);
 extern "C" void Ps5ArchiveProgress64(unsigned long long Completed,
                                       unsigned long long Total);
@@ -30,6 +32,11 @@ extern "C" void Ps5ArchiveInputSample(unsigned long long Bytes,
                                       unsigned long long Usec);
 extern "C" void Ps5ArchiveOutputSample(unsigned long long Bytes,
                                        unsigned long long Usec);
+
+#define PS5_7Z_OUT_BUFFER_SIZE (8U * 1024U * 1024U)
+#define PS5_7Z_PREALLOC_MIN_SIZE (64ULL * 1024ULL * 1024ULL)
+
+static bool g_7z_output_error=false;
 
 static unsigned long long Ps5ArchiveNowUsec7z()
 {
@@ -187,6 +194,25 @@ static HRESULT ErrnoToHresult()
   return E_FAIL;
 }
 
+static bool Preallocate7zOutput(int Fd,UInt64 ExpectedSize)
+{
+  if (ExpectedSize<PS5_7Z_PREALLOC_MIN_SIZE ||
+      ExpectedSize>(UInt64)LLONG_MAX)
+    return true;
+
+  int Rc=posix_fallocate(Fd,0,(off_t)ExpectedSize);
+  if (Rc==0)
+    return true;
+  if (Rc==ENOSPC || Rc==EFBIG)
+  {
+    errno=Rc;
+    return false;
+  }
+  return true;
+}
+
+static bool PropVariantToUInt64(const NCOM::CPropVariant &Prop,UInt64 *Out);
+
 class CPosixInStream Z7_final:
   public IInStream,
   public IStreamGetSize,
@@ -215,7 +241,20 @@ public:
       return false;
     struct stat St;
     if (fstat(Fd,&St)!=0)
+    {
+      int SavedErrno=errno;
+      close(Fd);
+      Fd=-1;
+      errno=SavedErrno;
       return false;
+    }
+    if (!S_ISREG(St.st_mode))
+    {
+      close(Fd);
+      Fd=-1;
+      errno=EINVAL;
+      return false;
+    }
     Size=(UInt64)St.st_size;
     return true;
   }
@@ -444,18 +483,89 @@ class CPosixOutStream Z7_final:
   Z7_IFACE_COM7_IMP(ISequentialOutStream)
 
   int Fd;
+  std::vector<Byte> Buffer;
+  size_t Used;
+  bool Failed;
+
+  HRESULT FlushBuffer()
+  {
+    if (Failed)
+      return E_FAIL;
+    size_t Done=0;
+    while (Done<Used)
+    {
+      unsigned long long Start=Ps5ArchiveNowUsec7z();
+      ssize_t Written=write(Fd,Buffer.data()+Done,Used-Done);
+      if (Written<0)
+      {
+        if (errno==EINTR)
+          continue;
+        Failed=true;
+        g_7z_output_error=true;
+        return ErrnoToHresult();
+      }
+      if (Written==0)
+      {
+        errno=ENOSPC;
+        Failed=true;
+        g_7z_output_error=true;
+        return ErrnoToHresult();
+      }
+      unsigned long long End=Ps5ArchiveNowUsec7z();
+      Ps5ArchiveOutputSample((unsigned long long)Written,
+                             End>Start ? End-Start:0);
+      Done+=(size_t)Written;
+    }
+    Used=0;
+    return S_OK;
+  }
 
 public:
-  CPosixOutStream():Fd(-1) {}
+  CPosixOutStream():Fd(-1),Used(0),Failed(false) {}
   ~CPosixOutStream()
   {
+    if (Fd>=0 && Used>0)
+      FlushBuffer();
     if (Fd>=0)
       close(Fd);
   }
 
-  bool Create(const std::string &Path)
+  bool Create(const std::string &Path,UInt64 ExpectedSize)
   {
+    if (Fd>=0)
+    {
+      if (Used>0)
+        FlushBuffer();
+      close(Fd);
+      Fd=-1;
+    }
+    Used=0;
+    Failed=false;
+    if (Buffer.empty())
+    {
+      try
+      {
+        Buffer.resize(PS5_7Z_OUT_BUFFER_SIZE);
+      }
+      catch(...)
+      {
+        errno=ENOMEM;
+        return false;
+      }
+    }
     Fd=open(Path.c_str(),O_WRONLY|O_CREAT|O_TRUNC,0666);
+    if (Fd>=0 && ExpectedSize>0 && ExpectedSize<=(UInt64)LLONG_MAX)
+    {
+      if (!Preallocate7zOutput(Fd,ExpectedSize))
+      {
+        int SavedErrno=errno;
+        close(Fd);
+        Fd=-1;
+        errno=SavedErrno;
+        return false;
+      }
+      (void)ftruncate(Fd,(off_t)ExpectedSize);
+    }
     return Fd>=0;
   }
 };
@@ -466,23 +576,23 @@ Z7_COM7F_IMF(CPosixOutStream::Write(const void *Data,UInt32 SizeToWrite,UInt32 *
     *ProcessedSize=0;
   if (SizeToWrite==0)
     return S_OK;
+  if (Failed)
+    return E_FAIL;
   UInt32 Done=0;
   while (Done<SizeToWrite)
   {
-    unsigned long long Start=Ps5ArchiveNowUsec7z();
-    ssize_t Written=write(Fd,(const Byte *)Data+Done,SizeToWrite-Done);
-    if (Written<0)
+    size_t Space=Buffer.size()-Used;
+    if (Space==0)
     {
-      if (errno==EINTR)
-        continue;
-      return ErrnoToHresult();
+      HRESULT Res=FlushBuffer();
+      if (Res!=S_OK)
+        return Res;
+      Space=Buffer.size();
     }
-    if (Written==0)
-      return E_FAIL;
-    unsigned long long End=Ps5ArchiveNowUsec7z();
-    Ps5ArchiveOutputSample((unsigned long long)Written,
-                           End>Start ? End-Start:0);
-    Done+=(UInt32)Written;
+    UInt32 Cur=(UInt32)std::min<size_t>(Space,SizeToWrite-Done);
+    memcpy(Buffer.data()+Used,(const Byte *)Data+Done,Cur);
+    Used+=Cur;
+    Done+=Cur;
   }
   if (ProcessedSize)
     *ProcessedSize=Done;
@@ -639,13 +749,18 @@ Z7_COM7F_IMF(CExtractCallback::GetStream(UInt32 Index,ISequentialOutStream **Out
     return MkdirAll7z(FullPath) ? S_OK:E_FAIL;
   }
 
+  UInt64 ExpectedSize=0;
+  NCOM::CPropVariant SizeProp;
+  if (Archive->GetProperty(Index,kpidSize,&SizeProp)==S_OK)
+    (void)PropVariantToUInt64(SizeProp,&ExpectedSize);
+
   std::string Parent=DirName7z(FullPath);
   if (!MkdirAll7z(Parent))
     return E_FAIL;
 
   CPosixOutStream *StreamSpec=new CPosixOutStream;
   CMyComPtr<ISequentialOutStream> Stream=StreamSpec;
-  if (!StreamSpec->Create(FullPath))
+  if (!StreamSpec->Create(FullPath,ExpectedSize))
     return ErrnoToHresult();
 
   *OutStream=Stream.Detach();
@@ -720,6 +835,174 @@ static void Set7zProperties(IInArchive *Archive,uint Threads)
   NCOM::CPropVariant Values[1];
   Values[0]=(UInt32)std::min<uint>(Threads>0 ? Threads:1,8);
   SetProperties->SetProperties(Names,Values,1);
+}
+
+static bool PropVariantToUInt64(const NCOM::CPropVariant &Prop,UInt64 *Out)
+{
+  switch (Prop.vt)
+  {
+    case VT_UI8: *Out=Prop.uhVal.QuadPart; return true;
+    case VT_UI4: *Out=Prop.ulVal; return true;
+    case VT_UI2: *Out=Prop.uiVal; return true;
+    case VT_UI1: *Out=Prop.bVal; return true;
+    case VT_I8:
+      if (Prop.hVal.QuadPart<0)
+        return false;
+      *Out=(UInt64)Prop.hVal.QuadPart;
+      return true;
+    case VT_I4:
+      if (Prop.lVal<0)
+        return false;
+      *Out=(UInt64)Prop.lVal;
+      return true;
+  }
+  return false;
+}
+
+SevenZArchiveInfo Probe7zArchive(const std::string &ArchivePath,
+                                 const std::string &Password,
+                                 uint Threads)
+{
+  SevenZArchiveInfo Info;
+  Info.code=RARX_FATAL;
+  Info.reason="7z probe error";
+  Info.input_bytes=0;
+  Info.total_bytes=0;
+  Info.max_file_bytes=0;
+  Info.file_count=0;
+  Info.dir_count=0;
+  Info.unknown_size_count=0;
+
+  CMyComPtr<IInArchive> Archive=new NArchive::N7z::CHandler;
+  Set7zProperties(Archive,Threads);
+
+  CMyComPtr<IInStream> InStream;
+  CVolumeInStream *VolumeStreamSpec=NULL;
+  std::string LowerArchivePath=ToLowerAscii7z(ArchivePath);
+  if (LowerArchivePath.size()>7 && LowerArchivePath.substr(LowerArchivePath.size()-7)==".7z.001")
+  {
+    VolumeStreamSpec=new CVolumeInStream;
+    CMyComPtr<IInStream> Temp=VolumeStreamSpec;
+    if (!VolumeStreamSpec->Open(ArchivePath))
+    {
+      Info.code=RARX_OPEN;
+      Info.reason="missing 7z volume or open error";
+      Info.missing_volume=ArchivePath;
+      return Info;
+    }
+    if (!VolumeStreamSpec->MissingVolume.empty())
+    {
+      Info.code=RARX_OPEN;
+      Info.reason="missing 7z volume or open error";
+      Info.missing_volume=VolumeStreamSpec->MissingVolume;
+      return Info;
+    }
+    InStream=Temp;
+  }
+  else
+  {
+    CPosixInStream *FileStreamSpec=new CPosixInStream;
+    CMyComPtr<IInStream> Temp=FileStreamSpec;
+    if (!FileStreamSpec->Open(ArchivePath))
+    {
+      Info.code=RARX_OPEN;
+      Info.reason="open error";
+      return Info;
+    }
+    InStream=Temp;
+  }
+
+  CMyComPtr<IStreamGetSize> SizeGetter;
+  InStream->QueryInterface(IID_IStreamGetSize,(void **)&SizeGetter);
+  if (SizeGetter)
+  {
+    UInt64 Size=0;
+    if (SizeGetter->GetSize(&Size)==S_OK)
+      Info.input_bytes=(unsigned long long)Size;
+  }
+
+  COpenCallback *OpenCallbackSpec=new COpenCallback(ArchivePath,Password);
+  CMyComPtr<IArchiveOpenCallback> OpenCallback=OpenCallbackSpec;
+  UInt64 ScanSize=(UInt64)1<<23;
+  HRESULT OpenResult=Archive->Open(InStream,&ScanSize,OpenCallback);
+  if (OpenResult!=S_OK)
+  {
+    if (OpenResult==E_OUTOFMEMORY)
+    {
+      Info.code=RARX_MEMORY;
+      Info.reason="out of memory";
+    }
+    else if (OpenResult==E_ABORT && Password.empty())
+    {
+      Info.code=RARX_BADPWD;
+      Info.reason="7z password required";
+    }
+    else if (OpenResult==E_ABORT)
+    {
+      Info.code=RARX_BADPWD;
+      Info.reason="bad 7z password or probe aborted";
+    }
+    else if (Password.empty())
+    {
+      Info.code=RARX_OPEN;
+      Info.reason="missing 7z volume or open error";
+    }
+    else
+    {
+      Info.code=RARX_BADPWD;
+      Info.reason="bad 7z password or encrypted-header open error";
+    }
+    if (VolumeStreamSpec && !VolumeStreamSpec->MissingVolume.empty())
+      Info.missing_volume=VolumeStreamSpec->MissingVolume;
+    else if (!OpenCallbackSpec->MissingVolume.empty())
+      Info.missing_volume=OpenCallbackSpec->MissingVolume;
+    return Info;
+  }
+
+  UInt32 Count=0;
+  if (Archive->GetNumberOfItems(&Count)!=S_OK)
+  {
+    Info.code=RARX_FATAL;
+    Info.reason="7z item count probe failed";
+    return Info;
+  }
+
+  for (UInt32 I=0;I<Count;I++)
+  {
+    bool IsDir=false;
+    NCOM::CPropVariant IsDirProp;
+    if (Archive->GetProperty(I,kpidIsDir,&IsDirProp)==S_OK &&
+        IsDirProp.vt==VT_BOOL)
+      IsDir=IsDirProp.boolVal!=VARIANT_FALSE;
+
+    if (IsDir)
+    {
+      Info.dir_count++;
+      continue;
+    }
+
+    Info.file_count++;
+    NCOM::CPropVariant SizeProp;
+    UInt64 Size=0;
+    if (Archive->GetProperty(I,kpidSize,&SizeProp)==S_OK &&
+        PropVariantToUInt64(SizeProp,&Size))
+    {
+      if (Info.total_bytes>ULLONG_MAX-(unsigned long long)Size)
+        Info.total_bytes=ULLONG_MAX;
+      else
+        Info.total_bytes+=(unsigned long long)Size;
+      if ((unsigned long long)Size>Info.max_file_bytes)
+        Info.max_file_bytes=(unsigned long long)Size;
+    }
+    else
+    {
+      Info.unknown_size_count++;
+    }
+  }
+
+  Info.code=RARX_SUCCESS;
+  Info.reason="success";
+  return Info;
 }
 
 SevenZExtractResult Run7zExtract(const std::string &ArchivePath,
@@ -808,6 +1091,7 @@ SevenZExtractResult Run7zExtract(const std::string &ArchivePath,
     return Result;
   }
 
+  g_7z_output_error=false;
   CExtractCallback *ExtractCallbackSpec=new CExtractCallback(Archive,DestPath,Password);
   CMyComPtr<IArchiveExtractCallback> ExtractCallback=ExtractCallbackSpec;
   HRESULT ExtractResult=Archive->Extract(NULL,(UInt32)(Int32)-1,false,ExtractCallback);
@@ -839,6 +1123,12 @@ SevenZExtractResult Run7zExtract(const std::string &ArchivePath,
       Result.reason="missing 7z volume or open error";
       Result.missing_volume=VolumeStreamSpec->MissingVolume;
     }
+    return Result;
+  }
+  if (g_7z_output_error)
+  {
+    Result.code=RARX_WRITE;
+    Result.reason="7z output write error";
     return Result;
   }
 

@@ -268,7 +268,7 @@
     .browser {
       min-height: 650px;
       display: grid;
-      grid-template-rows: auto auto minmax(0, 1fr);
+      grid-template-rows: auto auto auto minmax(0, 1fr);
       overflow: hidden;
     }
 
@@ -290,6 +290,27 @@
       color: var(--ink);
       padding: 0 10px;
       font-family: Consolas, Menlo, monospace;
+    }
+
+    .searchbar {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto auto auto auto auto minmax(170px, auto);
+      gap: 8px;
+      padding: 9px 10px;
+      border-bottom: 1px solid var(--line);
+      background: #0d141c;
+    }
+
+    .search-status {
+      min-width: 0;
+      min-height: 34px;
+      display: inline-flex;
+      align-items: center;
+      color: var(--muted);
+      font-size: 12px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
     }
 
     .actions {
@@ -631,6 +652,17 @@
         grid-column: 1 / -1;
       }
 
+      .searchbar {
+        grid-template-columns: minmax(0, 1fr) auto auto;
+      }
+
+      .searchbar #search-rebuild,
+      .searchbar #search-system,
+      .searchbar #search-cancel,
+      .searchbar #search-status {
+        grid-column: 1 / -1;
+      }
+
       .actions {
         flex-wrap: nowrap;
       }
@@ -696,6 +728,16 @@
         <input id="path" class="path" spellcheck="false" value="/data">
         <button id="go" class="primary">Go</button>
         <button id="refresh">Refresh</button>
+      </div>
+
+      <div class="searchbar">
+        <input id="search-query" class="path" spellcheck="false" placeholder="Search indexed paths">
+        <button id="search-go" class="primary">Search</button>
+        <button id="search-rebuild">Index All</button>
+        <button id="search-system" class="warn">Index System</button>
+        <button id="search-cancel">Cancel</button>
+        <button id="search-clear">Clear</button>
+        <span id="search-status" class="search-status">Index not built</span>
       </div>
 
       <div class="actions">
@@ -768,7 +810,13 @@
       placesTimer: 0,
       jobTimer: 0,
       jobHideTimer: 0,
-      archiveTimer: 0
+      archiveTimer: 0,
+      searchTimer: 0,
+      search: {
+        active: false,
+        root: 'all',
+        query: ''
+      }
     };
 
     function el(id) {
@@ -790,6 +838,20 @@
     function joinPath(dir, name) {
       dir = cleanPath(dir);
       return dir === '/' ? '/' + name : dir + '/' + name;
+    }
+
+    function baseName(path) {
+      path = cleanPath(path);
+      if (path === '/') return '/';
+      return path.slice(path.lastIndexOf('/') + 1) || path;
+    }
+
+    function entryPath(entry) {
+      return entry && entry.path ? cleanPath(entry.path) : joinPath(state.path, entry.name);
+    }
+
+    function entryKey(entry) {
+      return entry && entry.path ? entryPath(entry) : entry.name;
     }
 
     function fileUrl(path) {
@@ -1270,7 +1332,7 @@
             state.archiveTimer = 0;
             toast(job.state === 'done' ? 'Archive extracted' : ('extract: ' + (job.error || 'failed')),
               job.state === 'done' ? 'ok' : 'err');
-            if (job.state === 'done') refresh();
+            if (job.state === 'done') refreshCurrentView();
             state.jobHideTimer = setTimeout(() => {
               state.jobHideTimer = 0;
               cancel.disabled = false;
@@ -1337,18 +1399,18 @@
     }
 
     function selectedPaths() {
-      return Array.from(state.selected).map((name) => joinPath(state.path, name));
+      return selectedEntries().map(entryPath);
     }
 
     function selectedEntries() {
-      return state.entries.filter((entry) => state.selected.has(entry.name));
+      return state.entries.filter((entry) => state.selected.has(entryKey(entry)));
     }
 
     async function loadFolderSize(path, token, entry) {
       try {
         const du = await api('/api/fs/du?path=' + encodeURIComponent(path));
         if (token !== state.detailToken) return;
-        if (!state.selected.has(entry.name)) return;
+        if (!state.selected.has(entryKey(entry))) return;
 
         const rows = [
           ['Kind', 'Folder'],
@@ -1392,7 +1454,7 @@
       const detail = el('detail');
       if (!entries.length) {
         renderDetail('No selection', [
-          ['Path', state.path],
+          ['Path', state.search.active ? 'Search results' : state.path],
           ['Items', state.entries.length + ' visible']
         ], 'Select a file or folder to see size and modified date.');
         return;
@@ -1402,7 +1464,7 @@
       const files = entries.length - dirs;
       if (entries.length === 1) {
         const entry = entries[0];
-        const path = joinPath(state.path, entry.name);
+        const path = entryPath(entry);
         const rows = [
           ['Kind', entry.dir ? 'Folder' : 'File'],
           ['Size', exactSize(entry.size)],
@@ -1425,22 +1487,26 @@
         ['Files', String(files)],
         ['Folders', String(dirs)],
         ['File size', exactSize(totalFileBytes)],
-        ['Location', state.path]
+        ['Location', state.search.active ? 'Search results' : state.path]
       ], dirs ? 'Folder contents are not included in the total.' : '');
     }
 
     function makeRow(entry, parent) {
       const row = document.createElement('div');
-      row.className = 'file-row ' + (entry.dir ? 'dir ' : '') + (parent ? 'parent' : '');
+      row.className = 'file-row ' + (entry.dir ? 'dir ' : '') +
+        (parent ? 'parent' : '') + (entry.path ? ' search-result' : '');
       row.innerHTML =
         '<span class="tag"></span><span class="name"></span><span class="muted-cell type"></span><span class="muted-cell mtime"></span>';
 
+      const path = parent ? parentPath(state.path) : entryPath(entry);
+      const key = entryKey(entry);
       row.querySelector('.tag').textContent = entry.dir ? 'DIR' : 'FILE';
-      row.querySelector('.name').textContent = entry.name;
+      row.querySelector('.name').textContent = entry.path ? path : entry.name;
+      row.querySelector('.name').title = path;
       row.querySelector('.type').textContent = parent ? '' : (entry.dir ? 'folder' : shortSize(entry.size || 0));
       row.querySelector('.mtime').textContent = entry.mtime ? new Date(entry.mtime * 1000).toLocaleDateString() : '';
 
-      if (!parent && state.selected.has(entry.name)) {
+      if (!parent && state.selected.has(key)) {
         row.classList.add('selected');
       }
 
@@ -1450,18 +1516,18 @@
           return;
         }
         if (event.ctrlKey || event.metaKey) {
-          if (state.selected.has(entry.name)) state.selected.delete(entry.name);
-          else state.selected.add(entry.name);
+          if (state.selected.has(key)) state.selected.delete(key);
+          else state.selected.add(key);
         } else {
           state.selected.clear();
-          state.selected.add(entry.name);
+          state.selected.add(key);
         }
         drawList();
       });
 
       row.addEventListener('dblclick', () => {
         if (parent) return;
-        const next = joinPath(state.path, entry.name);
+        const next = entryPath(entry);
         if (entry.dir) {
           openPath(next);
         } else {
@@ -1478,10 +1544,12 @@
 
       const head = document.createElement('div');
       head.className = 'file-head';
-      head.innerHTML = '<span>Kind</span><span>Name</span><span>Type</span><span>Modified</span>';
+      head.innerHTML = state.search.active
+        ? '<span>Kind</span><span>Path</span><span>Type</span><span>Modified</span>'
+        : '<span>Kind</span><span>Name</span><span>Type</span><span>Modified</span>';
       list.appendChild(head);
 
-      if (state.path !== '/') {
+      if (!state.search.active && state.path !== '/') {
         list.appendChild(makeRow({ name: '..', dir: true }, true));
       }
 
@@ -1506,7 +1574,130 @@
       list.appendChild(row);
     }
 
+    function searchStatusText(status) {
+      const root = status && status.root ? status.root : 'all';
+      const system = root === 'system';
+      if (!status || !status.indexed) {
+        if (status && status.running) {
+          const parts = [system ? 'Indexing system' : 'Indexing all storage'];
+          parts.push(Number(status.entries || 0).toLocaleString() + ' seen');
+          if (status.current) parts.push(status.current);
+          return parts.join(' | ');
+        }
+        return 'Index not built';
+      }
+      const parts = [Number(status.entries || 0).toLocaleString() +
+        (status.running ? ' seen' : ' indexed')];
+      parts.push(system ? 'system' : 'storage');
+      if (status.running) parts.push('indexing');
+      if (status.stale) parts.push('stale');
+      if (status.truncated) parts.push('truncated');
+      if (status.elapsedMs > 0) parts.push((Number(status.elapsedMs) / 1000).toFixed(1) + 's');
+      if (status.lastQueryMs > 0) parts.push('query ' + Number(status.lastQueryMs).toFixed(0) + 'ms');
+      if (status.error) parts.push(status.error);
+      return parts.join(' | ');
+    }
+
+    async function refreshSearchStatus(quiet) {
+      try {
+        const status = await api('/api/fs/search/status');
+        state.search.root = status.root || state.search.root || 'all';
+        el('search-status').textContent = searchStatusText(status);
+        el('search-cancel').disabled = !status.running;
+        return status;
+      } catch (err) {
+        if (!quiet) toast('search status: ' + err.message, 'err');
+        el('search-status').textContent = 'Search status unavailable';
+        return null;
+      }
+    }
+
+    function pollSearchStatus() {
+      if (state.searchTimer) return;
+      state.searchTimer = setInterval(async () => {
+        const status = await refreshSearchStatus(true);
+        if (!status || !status.running) {
+          clearInterval(state.searchTimer);
+          state.searchTimer = 0;
+        }
+      }, 800);
+    }
+
+    async function rebuildSearchIndex(system) {
+      try {
+        const url = system ? '/api/fs/search/rebuild?mode=system' : '/api/fs/search/rebuild';
+        const status = await api(url);
+        state.search.root = status.root || (system ? 'system' : 'all');
+        el('search-status').textContent = searchStatusText(status);
+        pollSearchStatus();
+        toast(system ? 'Search indexing system paths' : 'Search indexing all storage', 'ok');
+      } catch (err) {
+        toast('search index: ' + err.message, 'err');
+      }
+    }
+
+    async function cancelSearchIndex() {
+      try {
+        const status = await api('/api/fs/search/cancel');
+        el('search-status').textContent = searchStatusText(status);
+      } catch (err) {
+        toast('search cancel: ' + err.message, 'err');
+      }
+    }
+
+    async function runSearch() {
+      const query = el('search-query').value.trim();
+      if (!query) {
+        state.search.active = false;
+        state.search.query = '';
+        await refresh();
+        return;
+      }
+      showLoading();
+      try {
+        const data = await api('/api/fs/search?q=' + encodeURIComponent(query) +
+          '&limit=500&scope=path');
+        state.search.active = true;
+        state.search.query = query;
+        state.search.root = data.indexedRoot || data.root || state.search.root || 'all';
+        state.entries = (data.results || []).map((entry) => {
+          entry.path = cleanPath(entry.path);
+          entry.name = entry.name || baseName(entry.path);
+          return entry;
+        });
+        state.selected.clear();
+        drawList();
+        const suffix = data.hasMore ? '+' : '';
+        el('search-status').textContent = Number(data.matched || 0).toLocaleString() +
+          suffix + ' matches | ' + Number(data.elapsedMs || 0).toFixed(0) + 'ms' +
+          (data.stale ? ' | stale' : '');
+      } catch (err) {
+        state.entries = [];
+        state.search.active = true;
+        drawList();
+        toast('search: ' + err.message, 'err');
+        await refreshSearchStatus(true);
+      }
+    }
+
+    async function clearSearch() {
+      el('search-query').value = '';
+      state.search.active = false;
+      state.search.query = '';
+      await refresh();
+      await refreshSearchStatus(true);
+    }
+
+    async function refreshCurrentView() {
+      if (state.search.active && (el('search-query').value || '').trim()) {
+        await runSearch();
+      } else {
+        await refresh();
+      }
+    }
+
     async function refresh() {
+      state.search.active = false;
       state.path = cleanPath(el('path').value || state.path);
       el('path').value = state.path;
       showLoading();
@@ -1552,7 +1743,7 @@
         }
       }
 
-      await refresh();
+      await refreshCurrentView();
     }
 
     async function waitJobIdle() {
@@ -1575,7 +1766,7 @@
       if (!name) return;
       try {
         await api('/api/fs/mkdir?path=' + encodeURIComponent(joinPath(state.path, name)));
-        await refresh();
+        await refreshCurrentView();
         toast('Folder created', 'ok');
       } catch (err) {
         toast('mkdir: ' + err.message, 'err');
@@ -1590,11 +1781,13 @@
       }
       const next = prompt('New name', entries[0].name);
       if (!next || next === entries[0].name) return;
+      const srcPath = entryPath(entries[0]);
+      const dstPath = joinPath(parentPath(srcPath), next);
       try {
         await api('/api/fs/rename?src=' +
-          encodeURIComponent(joinPath(state.path, entries[0].name)) +
-          '&dst=' + encodeURIComponent(joinPath(state.path, next)));
-        await refresh();
+          encodeURIComponent(srcPath) +
+          '&dst=' + encodeURIComponent(dstPath));
+        await refreshCurrentView();
         toast('Renamed', 'ok');
       } catch (err) {
         toast('rename: ' + err.message, 'err');
@@ -1607,7 +1800,7 @@
         toast('Select one file', 'err');
         return;
       }
-      window.open(fileUrl(joinPath(state.path, entries[0].name)), '_blank');
+      window.open(fileUrl(entryPath(entries[0])), '_blank');
     }
 
     async function extractSelected() {
@@ -1621,8 +1814,8 @@
         return;
       }
 
-      const source = joinPath(state.path, entries[0].name);
-      const suggested = joinPath(state.path, archiveStem(entries[0].name));
+      const source = entryPath(entries[0]);
+      const suggested = joinPath(parentPath(source), archiveStem(entries[0].name));
       const destination = cleanPath(prompt('Extract to folder', suggested) || '');
       if (!destination || destination === '/') return;
       const password = prompt('Archive password (leave blank if none)', '');
@@ -1662,7 +1855,7 @@
           break;
         }
       }
-      await refresh();
+      await refreshCurrentView();
     }
 
     function uploadOne(file, relPath, onProgress) {
@@ -1748,7 +1941,7 @@
 
       state.uploadBusy = false;
       state.uploadXhr = null;
-      await refresh();
+      await refreshCurrentView();
       if (state.uploadAbort) {
         toast('Upload cancelled after ' + ok + ' file(s)', 'err');
       } else {
@@ -1829,6 +2022,15 @@
       el('path').addEventListener('keydown', (event) => {
         if (event.key === 'Enter') refresh();
       });
+      el('search-go').addEventListener('click', runSearch);
+      el('search-rebuild').addEventListener('click', () => rebuildSearchIndex(false));
+      el('search-system').addEventListener('click', () => rebuildSearchIndex(true));
+      el('search-cancel').addEventListener('click', cancelSearchIndex);
+      el('search-clear').addEventListener('click', clearSearch);
+      el('search-query').addEventListener('keydown', (event) => {
+        if (event.key === 'Enter') runSearch();
+        if (event.key === 'Escape') clearSearch();
+      });
 
       el('new-folder').addEventListener('click', makeFolder);
       el('rename').addEventListener('click', renameOne);
@@ -1899,6 +2101,9 @@
           pollArchiveStatus();
         }
       }).catch(() => {});
+      refreshSearchStatus(true).then((status) => {
+        if (status && status.running) pollSearchStatus();
+      });
     }
 
     boot();

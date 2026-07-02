@@ -6,6 +6,7 @@
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <pthread.h>
 #include <stdarg.h>
 #include <stdatomic.h>
@@ -21,6 +22,7 @@
 #include <unistd.h>
 
 #include "diag.h"
+#include "search.h"
 #include "transfer.h"
 #include "websrv.h"
 
@@ -31,6 +33,8 @@
 
 #define COPY_BUF_SIZE   BFPILOT_TRANSFER_BUF_SIZE
 #define UPLOAD_BUF_SIZE BFPILOT_TRANSFER_BUF_SIZE
+#define UPLOAD_PREALLOC_MIN_SIZE (64UL * 1024UL * 1024UL)
+#define BFPILOT_SPACE_MARGIN_BYTES (256ULL * 1024ULL * 1024ULL)
 #define BFPILOT_DATA_ROOT "/data"
 #define BFPILOT_DATA_DIR "/data/BFpilot"
 #define BFPILOT_SHORTCUTS_PATH "/data/BFpilot/shortcuts.txt"
@@ -51,7 +55,11 @@
 #define BFPILOT_ARCHIVE_STATUS BFPILOT_ARCHIVE_DIR "/status.json"
 #define BFPILOT_ARCHIVE_STATUS_TMP BFPILOT_ARCHIVE_DIR "/status.tmp"
 #define BFPILOT_ARCHIVE_MAX_THREADS 8U
+#define BFPILOT_ARCHIVE_DEFAULT_NICE 4
+#define BFPILOT_ARCHIVE_MIN_NICE -20
+#define BFPILOT_ARCHIVE_MAX_NICE 20
 
+extern int posix_fallocate(int fd, off_t offset, off_t len);
 
 typedef struct json_buf {
   char  *data;
@@ -763,6 +771,7 @@ copy_worker(void *arg) {
     if(rename(a->src, final_dst) == 0) {
       atomic_store(&g_job.done_files, (int)(files > 0 ? files : 1));
       atomic_store(&g_job.copied_bytes, bytes);
+      bfpilot_search_mark_stale(a->is_move ? "move" : "copy");
       job_end(0, NULL);
       free(a);
       return NULL;
@@ -816,6 +825,7 @@ copy_worker(void *arg) {
     bfpilot_log("transfer source cleanup complete src=%s", a->src);
   }
 
+  bfpilot_search_mark_stale(a->is_move ? "move" : "copy");
   job_end(0, NULL);
   free(a);
   return NULL;
@@ -849,6 +859,7 @@ delete_worker(void *arg) {
     free(a);
     return NULL;
   }
+  bfpilot_search_mark_stale("delete");
   job_end(0, NULL);
   free(a);
   return NULL;
@@ -1506,6 +1517,7 @@ mkdir_handler(const http_request_t *req) {
     return serve_error(req, 400, "bad path");
   }
   if(mkdirs(path) != 0) return serve_error(req, 500, strerror(errno));
+  bfpilot_search_mark_stale("mkdir");
 
   json_buf_t b = {0};
   if(json_append(&b, "{\"ok\":true,\"path\":") != 0 ||
@@ -1527,6 +1539,7 @@ rename_handler(const http_request_t *req) {
     return serve_error(req, 400, "bad src/dst");
   }
   if(rename(src, dst) != 0) return serve_error(req, 500, strerror(errno));
+  bfpilot_search_mark_stale("rename");
 
   json_buf_t b = {0};
   if(json_append(&b, "{\"ok\":true,\"src\":") != 0 ||
@@ -1755,10 +1768,35 @@ archive_normalize_threads_text(const char *threads) {
   return (unsigned)value;
 }
 
+static int
+archive_normalize_nice_text(const char *nice) {
+  if(!nice || !*nice) return BFPILOT_ARCHIVE_DEFAULT_NICE;
+  char *end = NULL;
+  errno = 0;
+  long value = strtol(nice, &end, 10);
+  if(errno != 0 || end == nice || (end && *end)) {
+    return BFPILOT_ARCHIVE_DEFAULT_NICE;
+  }
+  if(value < BFPILOT_ARCHIVE_MIN_NICE) value = BFPILOT_ARCHIVE_MIN_NICE;
+  if(value > BFPILOT_ARCHIVE_MAX_NICE) value = BFPILOT_ARCHIVE_MAX_NICE;
+  return (int)value;
+}
+
+
+static int
+archive_bool_text_true(const char *value) {
+  if(!value) return 0;
+  return !strcmp(value, "1") ||
+         !strcmp(value, "true") ||
+         !strcmp(value, "yes") ||
+         !strcmp(value, "on");
+}
+
 
 static int
 archive_write_status_prepared(const char *src, const char *dst,
-                              unsigned threads) {
+                              unsigned threads, int priority_nice,
+                              int cleanup_partial) {
   json_buf_t b = {0};
 #if BFPILOT_ENABLE_INTEGRATED_ARCHIVE
   const char *worker = "bfpilot-integrated-archive";
@@ -1788,7 +1826,10 @@ archive_write_status_prepared(const char *src, const char *dst,
      json_appendf(&b, "%u", threads) != 0 ||
      json_append(&b, ",\"threadMode\":\"") != 0 ||
      json_append(&b, threads == 0 ? "auto" : "manual") != 0 ||
-     json_append(&b, "\","
+     json_appendf(&b, "\",\"priorityNice\":%d", priority_nice) != 0 ||
+     json_append(&b, ",\"cleanupPartial\":") != 0 ||
+     json_append(&b, cleanup_partial ? "true" : "false") != 0 ||
+     json_append(&b, ","
                  "\"requiresInjection\":") != 0 ||
      json_append(&b, requires_injection) != 0 ||
      json_append(&b, "}") != 0) {
@@ -1878,7 +1919,9 @@ archive_support_handler(const http_request_t *req) {
       "large-archive PS5 stability validation\"},"
       "\"7z\":{\"autoMax\":2,\"manualMax\":8},"
       "\"zip\":{\"autoMax\":1,\"manualMax\":1}}},"
-      "\"scheduling\":{\"nice\":-10,\"bestEffort\":true},"
+      "\"scheduling\":{\"defaultNice\":4,\"minNice\":-20,"
+      "\"maxNice\":20,\"bestEffort\":true},"
+      "\"options\":{\"cleanupPartial\":true},"
       "\"telemetry\":[\"inputWaitMBps\",\"outputWaitMBps\","
       "\"cpuUtilPercent\",\"rarMtThreadedBlocks\","
       "\"rarMtLargeBlocks\"],"
@@ -1894,7 +1937,8 @@ transfer_archive_prepare_request(const http_request_t *req,
                                  size_t initial_size,
                                  size_t content_size) {
   char *body = NULL;
-  char src[1024], dst[1024], password[512], threads[32];
+  char src[1024], dst[1024], password[512], threads[32], nice[32],
+       cleanup_partial[16];
 
 #if BFPILOT_ENABLE_INTEGRATED_ARCHIVE
   int expected = 0;
@@ -1939,6 +1983,13 @@ archive_busy_claimed:
   if(!form_get_arg(body, "threads", threads, sizeof(threads))) {
     snprintf(threads, sizeof(threads), "%s", "0");
   }
+  if(!form_get_arg(body, "nice", nice, sizeof(nice))) {
+    snprintf(nice, sizeof(nice), "%d", BFPILOT_ARCHIVE_DEFAULT_NICE);
+  }
+  if(!form_get_arg(body, "cleanupPartial", cleanup_partial,
+                   sizeof(cleanup_partial))) {
+    snprintf(cleanup_partial, sizeof(cleanup_partial), "%s", "0");
+  }
   free(body);
 
   int src_allowed = archive_path_allowed(src);
@@ -1947,15 +1998,19 @@ archive_busy_claimed:
   int dst_text_ok = config_value_safe(dst, 0);
   int password_text_ok = config_value_safe(password, 1);
   int threads_text_ok = config_value_safe(threads, 1);
+  int nice_text_ok = config_value_safe(nice, 1);
+  int cleanup_text_ok = config_value_safe(cleanup_partial, 1);
   if(!ok || !src_allowed || !dst_allowed || !src_text_ok || !dst_text_ok ||
-     !password_text_ok || !threads_text_ok) {
+     !password_text_ok || !threads_text_ok || !nice_text_ok ||
+     !cleanup_text_ok) {
     char err[256];
     snprintf(err, sizeof(err),
              "bad archive request fields ok=%d src_allowed=%d "
              "dst_allowed=%d src_text=%d dst_text=%d password_text=%d "
-             "threads_text=%d",
+             "threads_text=%d nice_text=%d cleanup_text=%d",
              ok, src_allowed, dst_allowed, src_text_ok, dst_text_ok,
-             password_text_ok, threads_text_ok);
+             password_text_ok, threads_text_ok, nice_text_ok,
+             cleanup_text_ok);
     int rc = serve_error(req, 400, err);
 #if BFPILOT_ENABLE_INTEGRATED_ARCHIVE
     atomic_store(&g_archive_busy, 0);
@@ -1995,6 +2050,8 @@ archive_busy_claimed:
   }
 
   unsigned normalized_threads = archive_normalize_threads_text(threads);
+  int normalized_nice = archive_normalize_nice_text(nice);
+  int cleanup_partial_enabled = archive_bool_text_true(cleanup_partial);
 
   json_buf_t job = {0};
   if(json_append(&job, "source=") != 0 ||
@@ -2005,7 +2062,11 @@ archive_busy_claimed:
      json_append(&job, password) != 0 ||
      json_append(&job, "\nthreads=") != 0 ||
      json_appendf(&job, "%u", normalized_threads) != 0 ||
-     json_append(&job, "\ncleanupPartial=0\n") != 0) {
+     json_append(&job, "\nnice=") != 0 ||
+     json_appendf(&job, "%d", normalized_nice) != 0 ||
+     json_append(&job, "\ncleanupPartial=") != 0 ||
+     json_append(&job, cleanup_partial_enabled ? "1" : "0") != 0 ||
+     json_append(&job, "\n") != 0) {
     free(job.data);
     int rc = serve_error(req, 500, "out of memory");
 #if BFPILOT_ENABLE_INTEGRATED_ARCHIVE
@@ -2024,7 +2085,9 @@ archive_busy_claimed:
   }
   free(job.data);
 
-  if(archive_write_status_prepared(src, dst, normalized_threads) != 0) {
+  if(archive_write_status_prepared(src, dst, normalized_threads,
+                                   normalized_nice,
+                                   cleanup_partial_enabled) != 0) {
     int rc = serve_error(req, 500, strerror(errno));
 #if BFPILOT_ENABLE_INTEGRATED_ARCHIVE
     atomic_store(&g_archive_busy, 0);
@@ -2032,9 +2095,11 @@ archive_busy_claimed:
     return rc;
   }
 
-  bfpilot_log("archive prepare source=%s destination=%s password=%s threads=%u mode=%s",
+  bfpilot_log("archive prepare source=%s destination=%s password=%s threads=%u mode=%s nice=%d",
               src, dst, password[0] ? "provided" : "empty",
-              normalized_threads, normalized_threads == 0 ? "auto" : "manual");
+              normalized_threads, normalized_threads == 0 ? "auto" : "manual",
+              normalized_nice);
+  bfpilot_search_mark_stale("archive");
 
 #if BFPILOT_ENABLE_INTEGRATED_ARCHIVE
   bfpilot_log("archive integrated worker job queued");
@@ -2060,6 +2125,9 @@ archive_busy_claimed:
      json_appendf(&res, ",\"threads\":%u,\"threadMode\":\"%s\"",
                   normalized_threads,
                   normalized_threads == 0 ? "auto" : "manual") != 0 ||
+     json_appendf(&res, ",\"priorityNice\":%d", normalized_nice) != 0 ||
+     json_append(&res, ",\"cleanupPartial\":") != 0 ||
+     json_append(&res, cleanup_partial_enabled ? "true" : "false") != 0 ||
      json_append(&res, ",\"next\":") != 0 ||
 #if BFPILOT_ENABLE_INTEGRATED_ARCHIVE
      json_string(&res, "archive extraction started") != 0 ||
@@ -2089,6 +2157,10 @@ cancel_handler(const http_request_t *req) {
 int
 transfer_request(const http_request_t *req, const char *url) {
   if(!strcmp(url, "/api/fs/list")) return list_request(req);
+  if(!strncmp(url, "/api/fs/search", 14) &&
+     (url[14] == 0 || url[14] == '/')) {
+    return bfpilot_search_request(req, url);
+  }
   if(!strcmp(url, "/api/fs/stat")) return stat_request(req);
   if(!strcmp(url, "/api/fs/du")) return du_request(req);
   if(!strcmp(url, "/api/fs/places")) return places_request(req);
@@ -2137,6 +2209,33 @@ write_all_fd(int fd, const void *data, size_t size) {
   return 0;
 }
 
+static int
+check_free_space_for_bytes(const char *path, unsigned long long required,
+                           unsigned long long *available_out,
+                           unsigned long long *needed_out) {
+  struct statvfs vfs;
+  if(available_out) *available_out = 0;
+  if(needed_out) *needed_out = 0;
+  if(required == 0) return 0;
+  if(statvfs(path, &vfs) != 0) return -1;
+
+  unsigned long long block =
+      vfs.f_frsize ? (unsigned long long)vfs.f_frsize
+                   : (unsigned long long)vfs.f_bsize;
+  unsigned long long available =
+      block != 0 && vfs.f_bavail > ULLONG_MAX / block
+          ? ULLONG_MAX
+          : (unsigned long long)vfs.f_bavail * block;
+  unsigned long long needed =
+      required > ULLONG_MAX - BFPILOT_SPACE_MARGIN_BYTES
+          ? ULLONG_MAX
+          : required + BFPILOT_SPACE_MARGIN_BYTES;
+
+  if(available_out) *available_out = available;
+  if(needed_out) *needed_out = needed;
+  return available >= needed ? 0 : 1;
+}
+
 
 static void
 drain_body(int fd, size_t already_read, size_t content_size) {
@@ -2159,7 +2258,7 @@ int
 transfer_upload_request(const http_request_t *req, const char *initial_data,
                         size_t initial_size, size_t content_size) {
   char dest[1024], fname[256], relpath[768];
-  char dir[1024], final_path[1024];
+  char dir[1024], final_path[1024], staging_path[1152];
   int has_relpath = 0;
 
   if(!websrv_get_query_arg(req, "path", dest, sizeof(dest)) ||
@@ -2203,19 +2302,59 @@ transfer_upload_request(const http_request_t *req, const char *initial_data,
     drain_body(req->fd, initial_size, content_size);
     return serve_error(req, 500, strerror(errno));
   }
+  unsigned long long upload_available = 0;
+  unsigned long long upload_needed = 0;
+  int space_rc = check_free_space_for_bytes(
+      dir, (unsigned long long)content_size, &upload_available,
+      &upload_needed);
+  if(space_rc != 0) {
+    int saved_errno = errno;
+    if(space_rc < 0) {
+      return serve_error(req, 500, strerror(saved_errno));
+    }
+    char msg[192];
+    snprintf(msg, sizeof(msg),
+             "not enough free space for upload: need %llu bytes, "
+             "available %llu bytes",
+             upload_needed, upload_available);
+    return serve_error(req, 507, msg);
+  }
   join_path(final_path, sizeof(final_path), dir, fname);
+  int staging_n = snprintf(staging_path, sizeof(staging_path),
+                           "%s.bfpilot-upload-%ld-%ld",
+                           final_path, (long)getpid(), (long)time(NULL));
+  if(staging_n < 0 || (size_t)staging_n >= sizeof(staging_path)) {
+    drain_body(req->fd, initial_size, content_size);
+    return serve_error(req, 400, "upload staging path too long");
+  }
 
-  int out = open(final_path, O_WRONLY | O_CREAT | O_TRUNC, 0777);
+  int out = open(staging_path, O_WRONLY | O_CREAT | O_TRUNC, 0777);
   if(out < 0) {
     drain_body(req->fd, initial_size, content_size);
     return serve_error(req, 500, strerror(errno));
+  }
+
+  int prealloc_attempted = 0;
+  int prealloc_rc = 0;
+  if(content_size >= UPLOAD_PREALLOC_MIN_SIZE) {
+    prealloc_attempted = 1;
+    prealloc_rc = posix_fallocate(out, 0, (off_t)content_size);
+    if(prealloc_rc == ENOSPC || prealloc_rc == EFBIG) {
+      close(out);
+      unlink(staging_path);
+      return serve_error(req, 507, strerror(prealloc_rc));
+    }
+    if(prealloc_rc != 0) {
+      bfpilot_log("upload posix_fallocate ignored rc=%d path=%s size=%lu",
+                  prealloc_rc, staging_path, (unsigned long)content_size);
+    }
   }
 
   char *buf = malloc(UPLOAD_BUF_SIZE);
   if(!buf) {
     close(out);
     drain_body(req->fd, initial_size, content_size);
-    unlink(final_path);
+    unlink(staging_path);
     return serve_error(req, 500, "out of memory");
   }
 
@@ -2267,6 +2406,10 @@ transfer_upload_request(const http_request_t *req, const char *initial_data,
     failed = 1;
     snprintf(err, sizeof(err), "close: %s", strerror(errno));
   }
+  if(!failed && rename(staging_path, final_path) != 0) {
+    failed = 1;
+    snprintf(err, sizeof(err), "rename: %s", strerror(errno));
+  }
   int saved_errno = failed ? (errno ? errno : EIO) : 0;
   long ended_ms = monotonic_ms();
   long elapsed_ms = ended_ms > started_ms ? ended_ms - started_ms : 0;
@@ -2283,24 +2426,28 @@ transfer_upload_request(const http_request_t *req, const char *initial_data,
   double mbps = elapsed_ms > 0 ?
       ((double)bytes * 1000.0 / (double)elapsed_ms) / (1024.0 * 1024.0) : 0.0;
   bfpilot_log("upload end rc=%d errno=%d bytes_read=%lu bytes_written=%lu "
-              "elapsed_ms=%ld average_mbps=%.2f dst_dev=%lu path=%s",
+              "elapsed_ms=%ld average_mbps=%.2f dst_dev=%lu "
+              "prealloc_attempted=%d prealloc_rc=%d path=%s",
               failed ? -1 : 0, saved_errno, (unsigned long)bytes,
               (unsigned long)bytes, elapsed_ms, mbps, destination_dev,
-              final_path);
+              prealloc_attempted, prealloc_rc, final_path);
 
   if(failed) {
     drain_body(req->fd, 0, remaining);
-    unlink(final_path);
+    unlink(staging_path);
     return serve_error(req, 500, err[0] ? err : "upload failed");
   }
+  bfpilot_search_mark_stale("upload");
 
   json_buf_t b = {0};
   if(json_append(&b, "{\"ok\":true,\"path\":") != 0 ||
      json_string(&b, final_path) != 0 ||
      json_appendf(&b,
                   ",\"size\":%lu,\"elapsedMs\":%ld,\"averageMBps\":%.2f,"
-                  "\"destinationDev\":%lu}",
-                  (unsigned long)bytes, elapsed_ms, mbps, destination_dev) != 0) {
+                  "\"destinationDev\":%lu,\"preallocate\":{\"attempted\":%s,"
+                  "\"rc\":%d}}",
+                  (unsigned long)bytes, elapsed_ms, mbps, destination_dev,
+                  prealloc_attempted ? "true" : "false", prealloc_rc) != 0) {
     free(b.data);
     return -1;
   }
