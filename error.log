@@ -1,0 +1,2 @@
+Makefile:10: C:\Users\Blurf\ps5dev\toolchains\ps5-payload-sdk: Permission denied
+make: *** No rule to make target 'C:\Users\Blurf\ps5dev\toolchains\ps5-payload-sdk'.  Stop.

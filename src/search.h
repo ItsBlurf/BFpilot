@@ -8,4 +8,4 @@
 
 int bfpilot_search_request(const http_request_t *req, const char *url);
 void bfpilot_search_mark_stale(const char *reason);
-
+void bfpilot_search_shutdown(void);

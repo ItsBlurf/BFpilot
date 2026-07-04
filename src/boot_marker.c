@@ -28,8 +28,8 @@
 #endif
 
 #define BFPILOT_DATA_ROOT "/data"
-#define BFPILOT_DATA_DIR "/data/BFpilot"
-#define BFPILOT_BOOT_LOG_PATH "/data/BFpilot/boot.log"
+#define BFPILOT_DATA_DIR "/data/gemBFPILOT"
+#define BFPILOT_BOOT_LOG_PATH "/data/gemBFPILOT/boot.log"
 
 
 static void

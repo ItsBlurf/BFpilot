@@ -23,6 +23,7 @@
 #include <ctime>
 #include <dirent.h>
 #include <fcntl.h>
+#include <pthread.h>
 #include <memory>
 #include <string>
 #include <sys/file.h>
@@ -41,9 +42,9 @@ extern "C" int posix_fallocate(int fd, off_t offset, off_t len);
 #endif
 
 #if BFPILOT_ARCHIVE_INTEGRATED
-#define BFPILOT_ARCHIVE_DIR "/data/BFpilot/archive-integrated"
+#define BFPILOT_ARCHIVE_DIR "/data/gemBFPILOT/archive-integrated"
 #else
-#define BFPILOT_ARCHIVE_DIR "/data/BFpilot/archive"
+#define BFPILOT_ARCHIVE_DIR "/data/gemBFPILOT/archive"
 #endif
 #define BFPILOT_ARCHIVE_JOB BFPILOT_ARCHIVE_DIR "/job.ini"
 #define BFPILOT_ARCHIVE_STATUS BFPILOT_ARCHIVE_DIR "/status.json"
@@ -57,13 +58,13 @@ extern "C" int posix_fallocate(int fd, off_t offset, off_t len);
 #define ZIP_SIG_ZIP64_END 0x06064b50U
 #define ZIP_SIG_ZIP64_LOCATOR 0x07064b50U
 #define BFPILOT_ARCHIVE_MAX_THREADS 8U
-#define BFPILOT_ARCHIVE_AUTO_MAX_THREADS 2U
-#define BFPILOT_ARCHIVE_RAR_MAX_THREADS 1U
+#define BFPILOT_ARCHIVE_AUTO_MAX_THREADS 8U
+#define BFPILOT_ARCHIVE_RAR_MAX_THREADS 8U
 #define BFPILOT_ARCHIVE_NICE 4
 #define BFPILOT_ARCHIVE_MIN_NICE -20
 #define BFPILOT_ARCHIVE_MAX_NICE 20
-#define BFPILOT_ZIP_IN_BUFFER_SIZE (4U * 1024U * 1024U)
-#define BFPILOT_ZIP_OUT_BUFFER_SIZE (16U * 1024U * 1024U)
+#define BFPILOT_ZIP_IN_BUFFER_SIZE (16U * 1024U * 1024U)
+#define BFPILOT_ZIP_OUT_BUFFER_SIZE (64U * 1024U * 1024U)
 #define BFPILOT_ARCHIVE_PREALLOC_MIN_SIZE (64ULL * 1024ULL * 1024ULL)
 #define BFPILOT_ARCHIVE_SPACE_MARGIN_BYTES (256ULL * 1024ULL * 1024ULL)
 #define BFPILOT_ZIP_MAX_ENTRIES 250000ULL
@@ -1982,7 +1983,8 @@ static bool
 StatusLooksInterrupted(const std::string &status) {
   return status.find("\"state\":\"starting\"") != std::string::npos ||
          status.find("\"state\":\"running\"") != std::string::npos ||
-         status.find("\"state\":\"finalizing\"") != std::string::npos;
+         status.find("\"state\":\"finalizing\"") != std::string::npos ||
+         status.find("\"state\":\"prepared\"") != std::string::npos;
 }
 
 static void
@@ -2018,17 +2020,17 @@ MarkInterruptedArchiveStatus(const std::string &old_status) {
   LogLine("archive interrupted status recovered old_status=%s", sample.c_str());
 }
 
-static int
-ArchiveDaemonMain(pid_t parent_pid) {
+static void *
+ArchiveDaemonMain(void *arg) {
   if(!MkdirAll(BFPILOT_ARCHIVE_DIR)) {
     LogLine("archive daemon mkdir failed errno=%d", errno);
-    return 2;
+    return (void*)2;
   }
 
   int lock_fd = open(BFPILOT_ARCHIVE_DAEMON_LOCK, O_RDWR | O_CREAT, 0666);
   if(lock_fd < 0) {
     LogLine("archive daemon lock open failed errno=%d", errno);
-    return 3;
+    return (void*)3;
   }
   int lock_rc = -1;
   for(int attempt = 0; attempt < 40; attempt++) {
@@ -2038,7 +2040,7 @@ ArchiveDaemonMain(pid_t parent_pid) {
     if(saved_errno != EWOULDBLOCK && saved_errno != EAGAIN) {
       LogLine("archive daemon lock failed errno=%d", saved_errno);
       close(lock_fd);
-      return 4;
+      return (void*)4;
     }
     if(attempt == 0) {
       LogLine("archive daemon lock busy; waiting for old daemon");
@@ -2048,7 +2050,7 @@ ArchiveDaemonMain(pid_t parent_pid) {
   if(lock_rc != 0) {
     LogLine("archive daemon lock still busy errno=%d", errno);
     close(lock_fd);
-    return 4;
+    return (void*)4;
   }
 
   char pid_buf[64];
@@ -2058,8 +2060,7 @@ ArchiveDaemonMain(pid_t parent_pid) {
     write(lock_fd, pid_buf, (size_t)pid_len);
   }
 
-  LogLine("archive daemon started pid=%ld parent=%ld",
-          (long)getpid(), (long)parent_pid);
+  LogLine("archive daemon started pid=%ld", (long)getpid());
 
   std::string startup_status;
   if(ReadSmallFile(BFPILOT_ARCHIVE_STATUS, startup_status, 32768) &&
@@ -2069,11 +2070,6 @@ ArchiveDaemonMain(pid_t parent_pid) {
 
   std::string last_job;
   for(;;) {
-    if(parent_pid > 1 && getppid() != parent_pid) {
-      LogLine("archive daemon parent changed parent=%ld expected=%ld; exiting",
-              (long)getppid(), (long)parent_pid);
-      break;
-    }
     std::string status;
     bool prepared = ReadSmallFile(BFPILOT_ARCHIVE_STATUS, status, 32768) &&
                     status.find("\"state\":\"prepared\"") != std::string::npos;
@@ -2090,28 +2086,26 @@ ArchiveDaemonMain(pid_t parent_pid) {
     usleep(250000);
   }
   close(lock_fd);
-  return 0;
+  return NULL;
 }
+
 
 extern "C" int
 bfpilot_archive_start_daemon(void) {
-  pid_t child = fork();
-  if(child < 0) {
-    LogLine("archive daemon fork failed errno=%d", errno);
+  pthread_t thread;
+  if(pthread_create(&thread, NULL, ArchiveDaemonMain, NULL) != 0) {
+    LogLine("archive daemon thread creation failed errno=%d", errno);
     return -errno;
   }
-  if(child == 0) {
-    int rc = ArchiveDaemonMain(getppid());
-    _exit(rc & 0xff);
-  }
-  LogLine("archive daemon forked pid=%ld", (long)child);
-  return (int)child;
+  pthread_detach(thread);
+  LogLine("archive daemon thread started");
+  return 0;
 }
 
 #ifndef BFPILOT_ARCHIVE_NO_MAIN
 int
 main(void) {
-  int rc = bfpilot_archive_start_daemon();
-  return rc < 0 ? 1 : 0;
+  ArchiveDaemonMain(NULL);
+  return 0;
 }
 #endif

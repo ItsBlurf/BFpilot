@@ -101,7 +101,7 @@
       margin: 0 auto;
       padding: 10px 14px;
       display: grid;
-      grid-template-columns: auto minmax(0, 1fr) auto;
+      grid-template-columns: auto minmax(0, 1fr) auto auto;
       gap: 12px;
       align-items: center;
     }
@@ -409,6 +409,14 @@
       font-size: 12px;
     }
 
+    .name mark {
+      background: #f5a623;
+      color: #1a1a2e;
+      border-radius: 2px;
+      padding: 0 1px;
+      font-style: normal;
+    }
+
     .target {
       align-self: start;
       padding: 12px;
@@ -708,6 +716,7 @@
         </div>
       </div>
       <div class="status" id="status"><span class="dot"></span><span>Connecting</span></div>
+      <button id="terminate-top" class="danger" title="Terminate Payload">Exit</button>
     </div>
   </header>
 
@@ -1491,6 +1500,27 @@
       ], dirs ? 'Folder contents are not included in the total.' : '');
     }
 
+    function highlightPath(path, query) {
+      const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
+      if (!terms.length) return escHtml(path);
+      // Split into directory part and filename
+      const slash = path.lastIndexOf('/');
+      const dir = slash >= 0 ? path.slice(0, slash + 1) : '';
+      const name = slash >= 0 ? path.slice(slash + 1) : path;
+      return escHtml(dir) + highlightSpan(name, terms);
+    }
+
+    function highlightSpan(text, terms) {
+      // Build a combined regex for all terms
+      const pattern = terms.map(t => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
+      const re = new RegExp('(' + pattern + ')', 'gi');
+      return escHtml(text).replace(re, '<mark>$1</mark>');
+    }
+
+    function escHtml(s) {
+      return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    }
+
     function makeRow(entry, parent) {
       const row = document.createElement('div');
       row.className = 'file-row ' + (entry.dir ? 'dir ' : '') +
@@ -1501,8 +1531,13 @@
       const path = parent ? parentPath(state.path) : entryPath(entry);
       const key = entryKey(entry);
       row.querySelector('.tag').textContent = entry.dir ? 'DIR' : 'FILE';
-      row.querySelector('.name').textContent = entry.path ? path : entry.name;
-      row.querySelector('.name').title = path;
+      const nameEl = row.querySelector('.name');
+      nameEl.title = path;
+      if (entry.path && state.search.query) {
+        nameEl.innerHTML = highlightPath(path, state.search.query);
+      } else {
+        nameEl.textContent = entry.path ? path : entry.name;
+      }
       row.querySelector('.type').textContent = parent ? '' : (entry.dir ? 'folder' : shortSize(entry.size || 0));
       row.querySelector('.mtime').textContent = entry.mtime ? new Date(entry.mtime * 1000).toLocaleDateString() : '';
 
@@ -1549,13 +1584,49 @@
         : '<span>Kind</span><span>Name</span><span>Type</span><span>Modified</span>';
       list.appendChild(head);
 
+      const scroller = document.createElement('div');
+      scroller.className = 'virtual-scroller';
+      
+      let items = [];
       if (!state.search.active && state.path !== '/') {
-        list.appendChild(makeRow({ name: '..', dir: true }, true));
+        items.push({ name: '..', dir: true, isParent: true });
+      }
+      items = items.concat(state.entries);
+      
+      const rowHeight = 43; // 42px min-height + 1px border
+      scroller.style.height = (items.length * rowHeight) + 'px';
+      scroller.style.position = 'relative';
+      list.appendChild(scroller);
+
+      const parent = list.parentElement; // .main-body
+
+      function renderViewport() {
+        const viewportHeight = parent.clientHeight || 600;
+        const scrollTop = parent.scrollTop;
+        
+        const renderAhead = 15;
+        const startIdx = Math.max(0, Math.floor(scrollTop / rowHeight) - renderAhead);
+        const endIdx = Math.min(items.length, startIdx + Math.ceil(viewportHeight / rowHeight) + (renderAhead * 2));
+        
+        scroller.textContent = '';
+        const fragment = document.createDocumentFragment();
+        for(let i = startIdx; i < endIdx; i++) {
+          const entry = items[i];
+          const row = makeRow(entry, entry.isParent);
+          row.style.position = 'absolute';
+          row.style.top = (i * rowHeight) + 'px';
+          row.style.left = '0';
+          row.style.right = '0';
+          fragment.appendChild(row);
+        }
+        scroller.appendChild(fragment);
       }
 
-      for (const entry of state.entries) {
-        list.appendChild(makeRow(entry, false));
-      }
+      parent.onscroll = () => {
+        requestAnimationFrame(renderViewport);
+      };
+      
+      renderViewport();
 
       updatePlaces();
       updateSelection();
@@ -2104,6 +2175,28 @@
       refreshSearchStatus(true).then((status) => {
         if (status && status.running) pollSearchStatus();
       });
+    }
+
+    async function requestShutdown() {
+      const btn = el('terminate-top');
+      if (!confirm('Terminate BFpilot now?\n\nThis will safely abort any running SSD indexes and fully exit the payload from memory.')) {
+        return;
+      }
+      if (btn) {
+        btn.disabled = true;
+        btn.textContent = 'Exiting...';
+      }
+      
+      try {
+        await fetch('/api/control/shutdown', { method: 'POST' });
+      } catch(e) {
+      }
+      
+      document.body.innerHTML = '<div style="padding: 40px; text-align: center; font-size: 18px;">BFpilot terminated. You may now close this window.</div>';
+    }
+
+    if(el('terminate-top')) {
+      el('terminate-top').addEventListener('click', requestShutdown);
     }
 
     boot();

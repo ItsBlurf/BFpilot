@@ -110,13 +110,15 @@ Indexer behavior:
 
 Default roots:
 
-- Default rebuild mode: all detected user/storage roots.
-- The global index includes existing `/data`, `/user`, `/mnt/usb0` through
-  `/mnt/usb7`, and `/mnt/ext0` through `/mnt/ext7`.
-- System rebuild mode crawls `/` plus detected separate system/user/storage
-  roots, including `/system`, `/system_data`, `/system_ex`, `/preinst`,
-  `/preinst2`, `/hostapp`, `/data`, `/user`, `/mnt/usb*`, and `/mnt/ext*` when
-  those paths exist.
+- Default rebuild mode: all useful detected roots.
+- The global index crawls `/` plus detected separate system/user/storage roots,
+  including `/system`, `/system_data`, `/system_ex`, `/preinst`, `/preinst2`,
+  `/hostapp`, `/data`, `/user`, `/mnt/usb*`, and `/mnt/ext*` when those paths
+  exist.
+- Root-level directories are discovered dynamically so firmware-specific mount
+  points can be included without hardcoding every name.
+- System rebuild mode uses the same broad root discovery path and remains as an
+  explicit UI affordance for system-file searches.
 - Allow mounted storage roots under `/mnt/usb0` through `/mnt/usb7` and
   `/mnt/ext0` through `/mnt/ext7` for explicit root-scoped tests.
 - Allow custom absolute user-selected roots only when explicitly requested.
@@ -136,6 +138,7 @@ UI behavior:
 
 - Add a compact search input, "Index All" button, and explicit "Index System"
   button near the current path controls.
+- Highlight typed search terms in result paths.
 - Search results reuse the existing file list row style.
 - Search result selection must operate on absolute paths, not names relative to
   the current folder.
@@ -249,11 +252,12 @@ Current behavior:
 Safety constraints implemented:
 
 - Explicit rebuild only; no startup crawl.
-- The default rebuild indexes all detected user/storage roots: `/data`, `/user`,
-  `/mnt/usb0` through `/mnt/usb7`, and `/mnt/ext0` through `/mnt/ext7`.
-- The system rebuild indexes `/` plus detected separate system/user/storage
-  roots, including `/system`, `/system_data`, `/system_ex`, `/preinst`,
-  `/preinst2`, `/hostapp`, `/data`, `/user`, `/mnt/usb*`, and `/mnt/ext*`.
+- The default rebuild indexes all useful detected roots: `/` plus detected
+  separate system/user/storage roots, including `/system`, `/system_data`,
+  `/system_ex`, `/preinst`, `/preinst2`, `/hostapp`, `/data`, `/user`,
+  `/mnt/usb*`, and `/mnt/ext*`.
+- Root-level directories are discovered dynamically and added when they are
+  separate mount points.
 - Allowed explicit roots are absolute paths without `..` segments, excluding
   pseudo/volatile roots.
 - Rejects non-absolute paths and `..` segments.

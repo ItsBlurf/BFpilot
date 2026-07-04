@@ -28,8 +28,8 @@
 #define BFPILOT_APP_ROOT "/user/app"
 #define BFPILOT_APP_PARENT BFPILOT_APP_ROOT "/"
 #define BFPILOT_DATA_ROOT "/data"
-#define BFPILOT_DATA_DIR "/data/BFpilot"
-#define BFPILOT_LAUNCHER_LOG "/data/BFpilot/launcher-installer.log"
+#define BFPILOT_DATA_DIR "/data/gemBFPILOT"
+#define BFPILOT_LAUNCHER_LOG "/data/gemBFPILOT/launcher-installer.log"
 #define BFPILOT_DIAG_SKIPPED (-2147483000)
 #define BFPILOT_APPINST_AUTHID UINT64_C(0x4801000000000013)
 

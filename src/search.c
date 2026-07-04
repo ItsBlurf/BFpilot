@@ -19,20 +19,22 @@
 #include <sys/types.h>
 #include <time.h>
 #include <unistd.h>
+#include <fcntl.h>
 
 #include "diag.h"
+#include "websrv.h"
 
 #define BFPILOT_SEARCH_ALL_ROOTS_LABEL "all"
 #define BFPILOT_SEARCH_SYSTEM_ROOT_LABEL "system"
 #define BFPILOT_SEARCH_DEFAULT_ROOT BFPILOT_SEARCH_ALL_ROOTS_LABEL
-#define BFPILOT_SEARCH_MAX_ENTRIES 750000UL
+#define BFPILOT_SEARCH_MAX_ENTRIES 2000000UL
 #define BFPILOT_SEARCH_MAX_ROOTS 48
 #define BFPILOT_SEARCH_MAX_QUERY 256
 #define BFPILOT_SEARCH_MAX_TERMS 8
 #define BFPILOT_SEARCH_DEFAULT_LIMIT 200UL
 #define BFPILOT_SEARCH_MAX_LIMIT 1000UL
-#define BFPILOT_SEARCH_PROGRESS_INTERVAL 128UL
-#define BFPILOT_SEARCH_CRAWL_NICE 8
+#define BFPILOT_SEARCH_PROGRESS_INTERVAL 1024UL
+#define BFPILOT_SEARCH_CRAWL_NICE 4
 
 typedef struct json_buf {
   char  *data;
@@ -42,15 +44,23 @@ typedef struct json_buf {
 
 typedef struct search_entry {
   char               *path;
-  char               *lower;
   size_t              name_offset;
   int                 dir;
   unsigned long long  size;
   long                mtime;
 } search_entry_t;
 
+typedef struct string_arena {
+  char *ptr;
+  size_t used;
+  size_t cap;
+  struct string_arena *next;
+} string_arena_t;
+
 typedef struct search_index {
   search_entry_t    *entries;
+  char              *string_block;
+  string_arena_t    *arena;
   size_t             count;
   size_t             cap;
   char               root[1024];
@@ -66,11 +76,6 @@ typedef struct search_index {
   int                truncated;
 } search_index_t;
 
-typedef struct path_stack {
-  char  **items;
-  size_t  count;
-  size_t  cap;
-} path_stack_t;
 
 typedef struct search_state {
   pthread_mutex_t    lock;
@@ -122,6 +127,27 @@ search_monotonic_ms(void) {
   struct timespec ts;
   if(clock_gettime(CLOCK_MONOTONIC, &ts) != 0) return 0;
   return (long)ts.tv_sec * 1000L + (long)(ts.tv_nsec / 1000000L);
+}
+
+
+static void
+search_diag_log(const char *fmt, ...) {
+  char line[1024];
+  va_list ap;
+  va_start(ap, fmt);
+  int n = vsnprintf(line, sizeof(line), fmt ? fmt : "", ap);
+  va_end(ap);
+  if(n <= 0) return;
+  if((size_t)n >= sizeof(line)) n = (int)sizeof(line) - 1;
+  if(n > 0 && line[n-1] != '\n' && (size_t)n < sizeof(line) - 1) {
+    line[n++] = '\n';
+    line[n] = 0;
+  }
+  FILE *file = fopen("/data/gemBFPILOT/search_crawl.log", "a");
+  if(file) {
+    fwrite(line, 1, (size_t)n, file);
+    fclose(file);
+  }
 }
 
 
@@ -233,18 +259,43 @@ search_strdup(const char *s) {
 }
 
 
+
+
 static char *
-search_lower_dup(const char *s) {
-  size_t n = strlen(s ? s : "");
-  char *out = malloc(n + 1);
-  if(!out) return NULL;
-  for(size_t i = 0; i < n; i++) {
-    unsigned char c = (unsigned char)s[i];
-    out[i] = c < 0x80 ? (char)tolower(c) : (char)c;
+search_arena_alloc(string_arena_t **arena, size_t size) {
+  string_arena_t *a = *arena;
+  if(!a || a->used + size > a->cap) {
+    size_t cap = 16 * 1024 * 1024;
+    if(size > cap) cap = size;
+    string_arena_t *new_a = malloc(sizeof(*new_a));
+    if(!new_a) return NULL;
+    new_a->ptr = malloc(cap);
+    if(!new_a->ptr) {
+      free(new_a);
+      free(new_a);
+      return NULL;
+    }
+    new_a->used = 0;
+    new_a->cap = cap;
+    new_a->next = a;
+    *arena = new_a;
+    a = new_a;
   }
-  out[n] = 0;
+  char *res = a->ptr + a->used;
+  a->used += size;
+  return res;
+}
+
+static char *
+search_arena_dup(string_arena_t **arena, const char *s) {
+  size_t n = strlen(s ? s : "");
+  char *out = search_arena_alloc(arena, n + 1);
+  if(!out) return NULL;
+  memcpy(out, s ? s : "", n + 1);
   return out;
 }
+
+
 
 
 static const char *
@@ -302,22 +353,6 @@ search_system_root_label(const char *root) {
 
 
 static int
-search_path_allowed(const char *path) {
-  if(!path || path[0] != '/' || path_has_dotdot_segment(path)) return 0;
-  if(path_starts_with_root(path, "/data")) return 1;
-  if(path_starts_with_root(path, "/user")) return 1;
-  for(int i = 0; i < 8; i++) {
-    char root[32];
-    snprintf(root, sizeof(root), "/mnt/usb%d", i);
-    if(path_starts_with_root(path, root)) return 1;
-    snprintf(root, sizeof(root), "/mnt/ext%d", i);
-    if(path_starts_with_root(path, root)) return 1;
-  }
-  return 0;
-}
-
-
-static int
 search_wide_path_allowed(const char *path) {
   return path && path[0] == '/' && !path_has_dotdot_segment(path);
 }
@@ -327,10 +362,8 @@ static int
 search_skip_system_path(const char *path) {
   static const char *skip[] = {
     "/dev",
-    "/proc",
-    "/sys",
-    "/net",
-    "/run",
+    "/mnt/sandbox",
+    "/mnt/shadowmnt",
     NULL
   };
   for(int i = 0; skip[i]; i++) {
@@ -341,34 +374,27 @@ search_skip_system_path(const char *path) {
 
 
 static void
-add_global_root(char roots[][1024], int *count, const char *root) {
-  if(*count >= BFPILOT_SEARCH_MAX_ROOTS || !search_path_allowed(root)) return;
-  struct stat st;
-  if(lstat(root, &st) != 0 || !S_ISDIR(st.st_mode)) return;
-  for(int i = 0; i < *count; i++) {
-    if(!strcmp(roots[i], root)) return;
-  }
-  snprintf(roots[*count], 1024, "%s", root);
-  (*count)++;
-}
-
-
-static void
 add_system_root(char roots[][1024], int *count, const char *root,
                 int have_base_dev, dev_t base_dev) {
   if(*count >= BFPILOT_SEARCH_MAX_ROOTS ||
      !search_wide_path_allowed(root) ||
      search_skip_system_path(root)) {
+    search_diag_log("ROOT SKIP (rule/full): %s", root);
     return;
   }
   struct stat st;
-  if(lstat(root, &st) != 0 || !S_ISDIR(st.st_mode)) return;
+  if(lstat(root, &st) != 0 || !S_ISDIR(st.st_mode)) {
+    search_diag_log("ROOT SKIP (missing/not dir): %s", root);
+    return;
+  }
   if(strcmp(root, "/") && have_base_dev && st.st_dev == base_dev) {
+    search_diag_log("ROOT SKIP (matches base_dev): %s", root);
     return;
   }
   for(int i = 0; i < *count; i++) {
     if(!strcmp(roots[i], root)) return;
   }
+  search_diag_log("ROOT ADD: %s", root);
   snprintf(roots[*count], 1024, "%s", root);
   (*count)++;
 }
@@ -398,6 +424,19 @@ collect_system_roots(char roots[][1024]) {
     add_system_root(roots, &count, candidates[i], have_base_dev, base_dev);
   }
 
+  DIR *dir = opendir("/");
+  if(dir) {
+    struct dirent *ent;
+    while((ent = readdir(dir)) != NULL) {
+      if(!strcmp(ent->d_name, ".") || !strcmp(ent->d_name, "..")) continue;
+      char child[1024];
+      if(strlen(ent->d_name) + 2 >= sizeof(child)) continue;
+      snprintf(child, sizeof(child), "/%s", ent->d_name);
+      add_system_root(roots, &count, child, have_base_dev, base_dev);
+    }
+    closedir(dir);
+  }
+
   for(int i = 0; i < 8; i++) {
     char root[32];
     snprintf(root, sizeof(root), "/mnt/usb%d", i);
@@ -412,17 +451,7 @@ collect_system_roots(char roots[][1024]) {
 
 static int
 collect_global_roots(char roots[][1024]) {
-  int count = 0;
-  add_global_root(roots, &count, "/data");
-  add_global_root(roots, &count, "/user");
-  for(int i = 0; i < 8; i++) {
-    char root[32];
-    snprintf(root, sizeof(root), "/mnt/usb%d", i);
-    add_global_root(roots, &count, root);
-    snprintf(root, sizeof(root), "/mnt/ext%d", i);
-    add_global_root(roots, &count, root);
-  }
-  return count;
+  return collect_system_roots(roots);
 }
 
 
@@ -437,9 +466,20 @@ join_path(char *out, size_t out_sz, const char *dir, const char *name) {
 static void
 search_index_free(search_index_t *idx) {
   if(!idx) return;
-  for(size_t i = 0; i < idx->count; i++) {
-    free(idx->entries[i].path);
-    free(idx->entries[i].lower);
+  if(idx->string_block) {
+    free(idx->string_block);
+  } else if (idx->arena) {
+    string_arena_t *a = idx->arena;
+    while(a) {
+      string_arena_t *next = a->next;
+      free(a->ptr);
+      free(a);
+      a = next;
+    }
+  } else {
+    for(size_t i = 0; i < idx->count; i++) {
+      free(idx->entries[i].path);
+    }
   }
   free(idx->entries);
   free(idx);
@@ -471,17 +511,13 @@ search_index_add(search_index_t *idx, const char *path, const struct stat *st) {
   }
   if(search_index_reserve(idx, idx->count + 1) != 0) return -1;
 
-  char *path_copy = search_strdup(path);
-  char *lower = search_lower_dup(path);
-  if(!path_copy || !lower) {
-    free(path_copy);
-    free(lower);
+  char *path_copy = search_arena_dup(&idx->arena, path);
+  if(!path_copy) {
     return -1;
   }
 
   search_entry_t *entry = &idx->entries[idx->count++];
   entry->path = path_copy;
-  entry->lower = lower;
   entry->name_offset = search_name_offset(path_copy);
   entry->dir = S_ISDIR(st->st_mode) ? 1 : 0;
   entry->size = st->st_size > 0 ? (unsigned long long)st->st_size : 0;
@@ -489,49 +525,168 @@ search_index_add(search_index_t *idx, const char *path, const struct stat *st) {
 
   if(entry->dir) idx->dirs_indexed++;
   else idx->files_indexed++;
-  idx->memory_estimate += sizeof(*entry) + strlen(path_copy) + 1 +
-                          strlen(lower) + 1;
+  idx->memory_estimate += sizeof(*entry) + strlen(path_copy) + 1;
   return 0;
 }
 
-
-static int
-stack_push(path_stack_t *stack, char *path) {
-  if(stack->count >= stack->cap) {
-    size_t next = stack->cap ? stack->cap * 2 : 256;
-    char **items = realloc(stack->items, next * sizeof(*items));
-    if(!items) return -1;
-    stack->items = items;
-    stack->cap = next;
-  }
-  stack->items[stack->count++] = path;
-  return 0;
-}
-
-
-static char *
-stack_pop(path_stack_t *stack) {
-  if(stack->count == 0) return NULL;
-  return stack->items[--stack->count];
-}
-
-
-static void
-stack_free(path_stack_t *stack) {
-  while(stack->count > 0) free(stack->items[--stack->count]);
-  free(stack->items);
-}
 
 
 static int
 search_cancelled(void) {
   int cancel;
+  if(websrv_exit_requested()) return 1;
   pthread_mutex_lock(&g_search.lock);
   cancel = g_search.cancel;
   pthread_mutex_unlock(&g_search.lock);
   return cancel;
 }
 
+
+#pragma pack(push, 1)
+typedef struct {
+  char magic[12];
+  uint32_t version;
+  uint64_t count;
+  int64_t built_at;
+  int64_t build_ms;
+  uint64_t dirs_scanned;
+  uint64_t files_indexed;
+  uint64_t dirs_indexed;
+  uint64_t skipped;
+  uint64_t errors;
+  uint64_t memory_estimate;
+  char root[1024];
+  uint64_t string_block_size;
+} idx_header_t;
+
+typedef struct {
+  uint32_t path_offset;
+  uint32_t name_offset;
+  int32_t dir;
+  uint64_t size;
+  int64_t mtime;
+} idx_entry_t;
+#pragma pack(pop)
+
+static void
+search_save_index(search_index_t *idx) {
+  if(!idx || idx->count == 0) return;
+  FILE *f = fopen("/data/gemBFPILOT/search.idx", "wb");
+  if(!f) return;
+
+  uint64_t string_block_size = 0;
+  for(size_t i=0; i<idx->count; i++) {
+    string_block_size += strlen(idx->entries[i].path) + 1;
+  }
+
+  idx_header_t hdr = {0};
+  snprintf(hdr.magic, sizeof(hdr.magic), "BFPILOT_IDX");
+  hdr.version = 1;
+  hdr.count = idx->count;
+  hdr.built_at = idx->built_at;
+  hdr.build_ms = idx->build_ms;
+  hdr.dirs_scanned = idx->dirs_scanned;
+  hdr.files_indexed = idx->files_indexed;
+  hdr.dirs_indexed = idx->dirs_indexed;
+  hdr.skipped = idx->skipped;
+  hdr.errors = idx->errors;
+  hdr.memory_estimate = idx->memory_estimate;
+  snprintf(hdr.root, sizeof(hdr.root), "%s", idx->root);
+  hdr.string_block_size = string_block_size;
+
+  fwrite(&hdr, sizeof(hdr), 1, f);
+
+  idx_entry_t *disk_entries = malloc(idx->count * sizeof(idx_entry_t));
+  if(disk_entries) {
+    uint32_t current_offset = 0;
+    for(size_t i=0; i<idx->count; i++) {
+      disk_entries[i].path_offset = current_offset;
+      current_offset += strlen(idx->entries[i].path) + 1;
+      disk_entries[i].name_offset = (uint32_t)idx->entries[i].name_offset;
+      disk_entries[i].dir = idx->entries[i].dir;
+      disk_entries[i].size = idx->entries[i].size;
+      disk_entries[i].mtime = idx->entries[i].mtime;
+    }
+    fwrite(disk_entries, sizeof(idx_entry_t), idx->count, f);
+    free(disk_entries);
+  }
+
+  for(size_t i=0; i<idx->count; i++) {
+    fwrite(idx->entries[i].path, 1, strlen(idx->entries[i].path) + 1, f);
+  }
+
+  fclose(f);
+}
+
+static search_index_t *
+search_load_index(void) {
+  FILE *f = fopen("/data/gemBFPILOT/search.idx", "rb");
+  if(!f) return NULL;
+
+  idx_header_t hdr;
+  if(fread(&hdr, sizeof(hdr), 1, f) != 1) {
+    fclose(f);
+    return NULL;
+  }
+  if(strcmp(hdr.magic, "BFPILOT_IDX") != 0 || hdr.version != 1) {
+    fclose(f);
+    return NULL;
+  }
+
+  search_index_t *idx = calloc(1, sizeof(*idx));
+  if(!idx) {
+    fclose(f);
+    return NULL;
+  }
+
+  idx->entries = malloc(hdr.count * sizeof(search_entry_t));
+  idx->string_block = malloc(hdr.string_block_size);
+  idx_entry_t *disk_entries = malloc(hdr.count * sizeof(idx_entry_t));
+
+  if(!idx->entries || !idx->string_block || !disk_entries) {
+    free(idx->entries);
+    free(idx->string_block);
+    free(disk_entries);
+    free(idx);
+    fclose(f);
+    return NULL;
+  }
+
+  if(fread(disk_entries, sizeof(idx_entry_t), hdr.count, f) != hdr.count) goto fail;
+  if(fread(idx->string_block, 1, hdr.string_block_size, f) != hdr.string_block_size) goto fail;
+
+  for(size_t i=0; i<hdr.count; i++) {
+    idx->entries[i].path = idx->string_block + disk_entries[i].path_offset;
+    idx->entries[i].name_offset = disk_entries[i].name_offset;
+    idx->entries[i].dir = disk_entries[i].dir;
+    idx->entries[i].size = disk_entries[i].size;
+    idx->entries[i].mtime = disk_entries[i].mtime;
+  }
+
+  idx->count = hdr.count;
+  idx->cap = hdr.count;
+  idx->built_at = hdr.built_at;
+  idx->build_ms = hdr.build_ms;
+  idx->dirs_scanned = hdr.dirs_scanned;
+  idx->files_indexed = hdr.files_indexed;
+  idx->dirs_indexed = hdr.dirs_indexed;
+  idx->skipped = hdr.skipped;
+  idx->errors = hdr.errors;
+  idx->memory_estimate = hdr.memory_estimate;
+  snprintf(idx->root, sizeof(idx->root), "%s", hdr.root);
+
+  free(disk_entries);
+  fclose(f);
+  return idx;
+
+fail:
+  free(idx->entries);
+  free(idx->string_block);
+  free(disk_entries);
+  free(idx);
+  fclose(f);
+  return NULL;
+}
 
 static void
 publish_progress(const search_index_t *idx, const char *current,
@@ -589,6 +744,7 @@ finish_build(search_index_t *idx, int rc, const char *error, int saved_errno,
     g_search.stale = g_search.stale_generation != start_generation;
     if(!g_search.stale) g_search.stale_reason[0] = 0;
     snprintf(g_search.error, sizeof(g_search.error), "%s", "");
+    search_save_index(idx);
   } else {
     if(error && error[0]) snprintf(g_search.error, sizeof(g_search.error), "%s", error);
     if(idx) {
@@ -611,9 +767,266 @@ finish_build(search_index_t *idx, int rc, const char *error, int saved_errno,
 }
 
 
+typedef struct {
+  dev_t dev;
+  ino_t ino;
+} visited_dir_t;
+
+typedef struct {
+  visited_dir_t *entries;
+  size_t count;
+  size_t cap;
+} visited_set_t;
+
+static int
+visited_set_add(visited_set_t *set, dev_t dev, ino_t ino) {
+  if (set->count * 2 >= set->cap) {
+    size_t new_cap = set->cap ? set->cap * 2 : 16384;
+    visited_dir_t *new_entries = calloc(new_cap, sizeof(visited_dir_t));
+    if (!new_entries) return -1;
+    for (size_t i = 0; i < set->cap; i++) {
+      if (set->entries[i].dev || set->entries[i].ino) {
+        size_t idx = (set->entries[i].dev ^ set->entries[i].ino) & (new_cap - 1);
+        while (new_entries[idx].dev || new_entries[idx].ino) {
+          idx = (idx + 1) & (new_cap - 1);
+        }
+        new_entries[idx] = set->entries[i];
+      }
+    }
+    free(set->entries);
+    set->entries = new_entries;
+    set->cap = new_cap;
+  }
+  size_t idx = (dev ^ ino) & (set->cap - 1);
+  while (set->entries[idx].dev || set->entries[idx].ino) {
+    if (set->entries[idx].dev == dev && set->entries[idx].ino == ino) return 0;
+    idx = (idx + 1) & (set->cap - 1);
+  }
+  set->entries[idx].dev = dev;
+  set->entries[idx].ino = ino;
+  set->count++;
+  return 1;
+}
+
+static void
+visited_set_free(visited_set_t *set) {
+  free(set->entries);
+  set->entries = NULL;
+  set->count = 0;
+  set->cap = 0;
+}
+
+
+typedef struct {
+  char **dirs;
+  size_t count;
+  size_t cap;
+  size_t head;
+  int done_pushing;
+  int active_workers;
+  pthread_mutex_t lock;
+  pthread_cond_t cond;
+} crawl_queue_t;
+
+typedef struct {
+  search_index_t *idx;
+  visited_set_t *visited;
+  crawl_queue_t queue;
+  int system_mode;
+  int rc;
+  int saved_errno;
+  char error[256];
+  pthread_mutex_t index_lock;
+} crawl_shared_t;
+
+static void *crawler_thread_func(void *arg) {
+  crawl_shared_t *shared = arg;
+  search_index_t *idx = shared->idx;
+  crawl_queue_t *q = &shared->queue;
+
+  for(;;) {
+    pthread_mutex_lock(&q->lock);
+    while(q->head >= q->count && !q->done_pushing && !search_cancelled()) {
+      pthread_cond_wait(&q->cond, &q->lock);
+    }
+    if(search_cancelled() || (q->head >= q->count && q->done_pushing)) {
+      pthread_mutex_unlock(&q->lock);
+      break;
+    }
+
+    char *dir_path = q->dirs[q->head++];
+    q->active_workers++;
+    pthread_mutex_unlock(&q->lock);
+
+    int fd = open(dir_path, O_RDONLY | O_DIRECTORY);
+    if(fd < 0) {
+      pthread_mutex_lock(&shared->index_lock);
+      shared->saved_errno = errno;
+      idx->errors++;
+      pthread_mutex_unlock(&shared->index_lock);
+      search_diag_log("FAIL: open(%s) = %s", dir_path, strerror(errno));
+      free(dir_path);
+
+      pthread_mutex_lock(&q->lock);
+      q->active_workers--;
+      if(q->active_workers == 0 && q->head >= q->count) {
+        pthread_cond_broadcast(&q->cond);
+      }
+      pthread_mutex_unlock(&q->lock);
+      continue;
+    }
+
+    pthread_mutex_lock(&shared->index_lock);
+    idx->dirs_scanned++;
+    if((idx->dirs_scanned % BFPILOT_SEARCH_PROGRESS_INTERVAL) == 0) {
+      publish_progress(idx, dir_path, NULL, 0);
+    }
+    int is_truncated = idx->truncated;
+    pthread_mutex_unlock(&shared->index_lock);
+
+    char buf[65536];
+    int read_errno = 0;
+    for(;;) {
+      int nread = getdents(fd, buf, sizeof(buf));
+      if(nread < 0) {
+        read_errno = errno;
+        break;
+      }
+      if(nread == 0) break;
+
+      for(int i = 0; i < nread; ) {
+        struct dirent *ent = (struct dirent *)(buf + i);
+        if(ent->d_reclen == 0) break;
+        
+        if(!strcmp(ent->d_name, ".") || !strcmp(ent->d_name, "..")) {
+          i += ent->d_reclen;
+          continue;
+        }
+        if(search_cancelled()) break;
+
+        char child[1024];
+        if(strlen(dir_path) + strlen(ent->d_name) + 2 >= sizeof(child)) {
+          pthread_mutex_lock(&shared->index_lock);
+          idx->skipped++;
+          pthread_mutex_unlock(&shared->index_lock);
+          i += ent->d_reclen;
+          continue;
+        }
+        join_path(child, sizeof(child), dir_path, ent->d_name);
+
+        if(shared->system_mode && search_skip_system_path(child)) {
+          pthread_mutex_lock(&shared->index_lock);
+          idx->skipped++;
+          pthread_mutex_unlock(&shared->index_lock);
+          i += ent->d_reclen;
+          continue;
+        }
+
+        struct stat st = {0};
+        int stat_rc = 0;
+        if (ent->d_type == DT_REG) {
+          st.st_mode = S_IFREG | 0644;
+          st.st_size = 0;
+          st.st_mtime = 0;
+        } else {
+          stat_rc = lstat(child, &st);
+        }
+
+        if(stat_rc != 0) {
+          pthread_mutex_lock(&shared->index_lock);
+          idx->errors++;
+          pthread_mutex_unlock(&shared->index_lock);
+          i += ent->d_reclen;
+          continue;
+        }
+
+        pthread_mutex_lock(&shared->index_lock);
+        int add_rc = search_index_add(idx, child, &st);
+        if(add_rc < 0) {
+          shared->rc = -1;
+          shared->saved_errno = ENOMEM;
+          snprintf(shared->error, sizeof(shared->error), "%s", "out of memory");
+          pthread_mutex_unlock(&shared->index_lock);
+          break;
+        }
+
+        if(S_ISDIR(st.st_mode)) {
+          if(!idx->truncated) {
+            /* Use dev+ino to detect symlink loops across any device */
+            if(visited_set_add(shared->visited, st.st_dev, st.st_ino) > 0) {
+              char *copy = search_strdup(child);
+              if(!copy) {
+                shared->rc = -1;
+                shared->saved_errno = ENOMEM;
+                snprintf(shared->error, sizeof(shared->error), "%s", "out of memory");
+                pthread_mutex_unlock(&shared->index_lock);
+                break;
+              }
+              pthread_mutex_lock(&q->lock);
+              if(q->count >= q->cap) {
+                size_t next = q->cap ? q->cap * 2 : 256;
+                char **items = realloc(q->dirs, next * sizeof(*items));
+                if(items) {
+                  q->dirs = items;
+                  q->cap = next;
+                } else {
+                  free(copy);
+                  shared->rc = -1;
+                  shared->saved_errno = ENOMEM;
+                  snprintf(shared->error, sizeof(shared->error), "%s", "out of memory");
+                  pthread_mutex_unlock(&q->lock);
+                  pthread_mutex_unlock(&shared->index_lock);
+                  break;
+                }
+              }
+              q->dirs[q->count++] = copy;
+              pthread_cond_signal(&q->cond);
+              pthread_mutex_unlock(&q->lock);
+            } else {
+              search_diag_log("SKIP LOOP: %s", child);
+            }
+          }
+        }
+
+        if((idx->count % BFPILOT_SEARCH_PROGRESS_INTERVAL) == 0) {
+          publish_progress(idx, child, NULL, 0);
+        }
+        is_truncated = idx->truncated;
+        pthread_mutex_unlock(&shared->index_lock);
+
+        if(is_truncated) break;
+        i += ent->d_reclen;
+      }
+      
+      if(search_cancelled() || shared->rc != 0 || is_truncated) break;
+    }
+
+    close(fd);
+    free(dir_path);
+
+    pthread_mutex_lock(&shared->index_lock);
+    if(read_errno != 0) {
+      shared->saved_errno = read_errno;
+      idx->errors++;
+    }
+    pthread_mutex_unlock(&shared->index_lock);
+
+    pthread_mutex_lock(&q->lock);
+    q->active_workers--;
+    if(q->active_workers == 0 && q->head >= q->count) {
+      pthread_cond_broadcast(&q->cond);
+    }
+    pthread_mutex_unlock(&q->lock);
+
+    if(shared->rc != 0 || is_truncated) break;
+  }
+  return NULL;
+}
+
 static int
 crawl_one_root(search_index_t *idx, const char *root, char *error,
-               size_t error_sz, int *saved_errno, int system_mode) {
+               size_t error_sz, int *saved_errno, int system_mode,
+               visited_set_t *visited) {
   struct stat root_st;
   if(lstat(root, &root_st) != 0) {
     *saved_errno = errno;
@@ -626,8 +1039,6 @@ crawl_one_root(search_index_t *idx, const char *root, char *error,
     return -1;
   }
 
-  dev_t root_dev = root_st.st_dev;
-  idx->root_dev = root_dev;
   int root_add_rc = search_index_add(idx, root, &root_st);
   if(root_add_rc < 0) {
     *saved_errno = ENOMEM;
@@ -636,105 +1047,80 @@ crawl_one_root(search_index_t *idx, const char *root, char *error,
   }
   if(idx->truncated) return 0;
 
-  path_stack_t stack = {0};
+  visited_set_add(visited, root_st.st_dev, root_st.st_ino);
+
+  crawl_shared_t shared = {0};
+  shared.idx = idx;
+  shared.visited = visited;
+  shared.system_mode = system_mode;
+  pthread_mutex_init(&shared.index_lock, NULL);
+  pthread_mutex_init(&shared.queue.lock, NULL);
+  pthread_cond_init(&shared.queue.cond, NULL);
+
   char *root_copy = search_strdup(root);
-  if(!root_copy || stack_push(&stack, root_copy) != 0) {
-    free(root_copy);
-    stack_free(&stack);
+  if(!root_copy) {
     *saved_errno = ENOMEM;
     snprintf(error, error_sz, "%s", "out of memory");
     return -1;
   }
 
-  int rc = 0;
+  shared.queue.dirs = malloc(256 * sizeof(char *));
+  if(!shared.queue.dirs) {
+    free(root_copy);
+    *saved_errno = ENOMEM;
+    snprintf(error, error_sz, "%s", "out of memory");
+    return -1;
+  }
+  shared.queue.cap = 256;
+  shared.queue.dirs[shared.queue.count++] = root_copy;
 
-  while(!search_cancelled()) {
-    char *dir_path = stack_pop(&stack);
-    if(!dir_path) break;
-    DIR *dir = opendir(dir_path);
-    if(!dir) {
-      *saved_errno = errno;
-      idx->errors++;
-      snprintf(error, error_sz, "opendir(%s): %s", dir_path,
-               strerror(*saved_errno));
-      publish_progress(idx, dir_path, error, *saved_errno);
-      free(dir_path);
-      continue;
+  pthread_t threads[8];
+  int thread_count = 0;
+  for(int i=0; i<8; i++) {
+    if(pthread_create(&threads[i], NULL, crawler_thread_func, &shared) == 0) {
+      thread_count++;
     }
-
-    idx->dirs_scanned++;
-    if((idx->dirs_scanned % BFPILOT_SEARCH_PROGRESS_INTERVAL) == 0) {
-      publish_progress(idx, dir_path, NULL, 0);
-    }
-
-    struct dirent *ent;
-    int read_errno = 0;
-    for(;;) {
-      errno = 0;
-      ent = readdir(dir);
-      if(!ent) {
-        read_errno = errno;
-        break;
-      }
-      if(!strcmp(ent->d_name, ".") || !strcmp(ent->d_name, "..")) continue;
-      if(search_cancelled()) break;
-
-      char child[1024];
-      if(strlen(dir_path) + strlen(ent->d_name) + 2 >= sizeof(child)) {
-        idx->skipped++;
-        continue;
-      }
-      join_path(child, sizeof(child), dir_path, ent->d_name);
-
-      if(system_mode && search_skip_system_path(child)) {
-        idx->skipped++;
-        continue;
-      }
-
-      struct stat st;
-      if(lstat(child, &st) != 0) {
-        *saved_errno = errno;
-        idx->errors++;
-        continue;
-      }
-
-      int add_rc = search_index_add(idx, child, &st);
-      if(add_rc < 0) {
-        rc = -1;
-        *saved_errno = ENOMEM;
-        snprintf(error, error_sz, "%s", "out of memory");
-        break;
-      }
-
-      if(S_ISDIR(st.st_mode) && st.st_dev == root_dev && !idx->truncated) {
-        char *copy = search_strdup(child);
-        if(!copy || stack_push(&stack, copy) != 0) {
-          free(copy);
-          rc = -1;
-          *saved_errno = ENOMEM;
-          snprintf(error, error_sz, "%s", "out of memory");
-          break;
-        }
-      }
-
-      if((idx->count % BFPILOT_SEARCH_PROGRESS_INTERVAL) == 0) {
-        publish_progress(idx, child, NULL, 0);
-      }
-      if(idx->truncated) break;
-    }
-    closedir(dir);
-    free(dir_path);
-    if(rc != 0) break;
-    if(read_errno != 0) {
-      *saved_errno = read_errno;
-      idx->errors++;
-    }
-    if(idx->truncated) break;
   }
 
-  stack_free(&stack);
-  publish_progress(idx, root, rc == 0 ? NULL : error, *saved_errno);
-  return rc;
+  if(thread_count == 0) {
+    free(root_copy);
+    free(shared.queue.dirs);
+    *saved_errno = EAGAIN;
+    snprintf(error, error_sz, "%s", "failed to create threads");
+    return -1;
+  }
+
+  pthread_mutex_lock(&shared.queue.lock);
+  shared.queue.done_pushing = 1;
+  while(shared.queue.head < shared.queue.count || shared.queue.active_workers > 0) {
+    if(search_cancelled() || shared.rc != 0 || idx->truncated) {
+      break;
+    }
+    pthread_cond_wait(&shared.queue.cond, &shared.queue.lock);
+  }
+  pthread_cond_broadcast(&shared.queue.cond);
+  pthread_mutex_unlock(&shared.queue.lock);
+
+  for(int i=0; i<thread_count; i++) {
+    pthread_join(threads[i], NULL);
+  }
+
+  for(size_t i = shared.queue.head; i < shared.queue.count; i++) {
+    free(shared.queue.dirs[i]);
+  }
+  free(shared.queue.dirs);
+  pthread_mutex_destroy(&shared.queue.lock);
+  pthread_cond_destroy(&shared.queue.cond);
+  pthread_mutex_destroy(&shared.index_lock);
+
+  if(shared.rc != 0) {
+    *saved_errno = shared.saved_errno;
+    snprintf(error, error_sz, "%s", shared.error);
+    return shared.rc;
+  }
+
+  publish_progress(idx, root, NULL, 0);
+  return 0;
 }
 
 
@@ -780,12 +1166,19 @@ search_worker(void *arg) {
   int saved_errno = 0;
   char error[256] = {0};
 
+  visited_set_t visited = {0};
+
   for(int i = 0; i < root_count && !search_cancelled() && !idx->truncated; i++) {
     publish_progress(idx, roots[i], NULL, 0);
+    /* Reset visited set per-root so separate mount trees don't interfere */
+    visited_set_free(&visited);
+    visited = (visited_set_t){0};
     rc = crawl_one_root(idx, roots[i], error, sizeof(error), &saved_errno,
-                        system);
+                        system || global, &visited);
     if(rc != 0) break;
   }
+  
+  visited_set_free(&visited);
 
   if(search_cancelled() && rc == 0) {
     rc = -1;
@@ -1040,10 +1433,10 @@ entry_matches(const search_entry_t *entry, char **terms, int term_count,
   if(type_filter == 1 && entry->dir) return 0;
   if(type_filter == 2 && !entry->dir) return 0;
 
-  const char *haystack = scope_name ? entry->lower + entry->name_offset
-                                    : entry->lower;
+  const char *haystack = scope_name ? entry->path + entry->name_offset
+                                    : entry->path;
   for(int i = 0; i < term_count; i++) {
-    if(!strstr(haystack, terms[i])) return 0;
+    if(!strcasestr(haystack, terms[i])) return 0;
   }
   return 1;
 }
@@ -1082,14 +1475,10 @@ query_request(const http_request_t *req) {
   unsigned long offset = parse_ulong_arg(req, "offset", 0, 10000000UL);
   if(limit == 0) limit = BFPILOT_SEARCH_DEFAULT_LIMIT;
 
-  char query_lower[BFPILOT_SEARCH_MAX_QUERY];
-  snprintf(query_lower, sizeof(query_lower), "%s", query);
-  for(char *p = query_lower; *p; p++) {
-    unsigned char c = (unsigned char)*p;
-    if(c < 0x80) *p = (char)tolower(c);
-  }
+  char query_buffer[BFPILOT_SEARCH_MAX_QUERY];
+  snprintf(query_buffer, sizeof(query_buffer), "%s", query);
   char *terms[BFPILOT_SEARCH_MAX_TERMS];
-  int term_count = split_query(query_lower, terms, BFPILOT_SEARCH_MAX_TERMS);
+  int term_count = split_query(query_buffer, terms, BFPILOT_SEARCH_MAX_TERMS);
   if(term_count == 0) return serve_error(req, 400, "missing search query");
 
   json_buf_t b = {0};
@@ -1192,8 +1581,35 @@ bfpilot_search_mark_stale(const char *reason) {
 }
 
 
+void
+bfpilot_search_shutdown(void) {
+  pthread_mutex_lock(&g_search.lock);
+  g_search.cancel = 1;
+  pthread_mutex_unlock(&g_search.lock);
+  
+  for(int i = 0; i < 50; i++) {
+    pthread_mutex_lock(&g_search.lock);
+    int running = g_search.running;
+    pthread_mutex_unlock(&g_search.lock);
+    if(!running) break;
+    usleep(20000); // 20ms
+  }
+}
+
 int
 bfpilot_search_request(const http_request_t *req, const char *url) {
+  pthread_mutex_lock(&g_search.lock);
+  if(!g_search.index && !g_search.running) {
+    search_index_t *idx = search_load_index();
+    if(idx) {
+      g_search.index = idx;
+      g_search.stale = 0;
+      g_search.stale_reason[0] = 0;
+      g_search.stale_generation++;
+    }
+  }
+  pthread_mutex_unlock(&g_search.lock);
+
   if(!strcmp(url, "/api/fs/search/status")) return status_request(req);
   if(!strcmp(url, "/api/fs/search/rebuild")) return rebuild_request(req);
   if(!strcmp(url, "/api/fs/search/cancel")) return cancel_request(req);

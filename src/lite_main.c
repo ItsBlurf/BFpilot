@@ -395,6 +395,6 @@ main(int argc, char **argv) {
     }
     sleep(rc == -EADDRINUSE || rc == -EACCES ? 5 : 2);
   }
-
+  _exit(0);
   return 0;
 }

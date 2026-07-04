@@ -33,7 +33,7 @@ extern "C" void Ps5ArchiveInputSample(unsigned long long Bytes,
 extern "C" void Ps5ArchiveOutputSample(unsigned long long Bytes,
                                        unsigned long long Usec);
 
-#define PS5_7Z_OUT_BUFFER_SIZE (8U * 1024U * 1024U)
+#define PS5_7Z_OUT_BUFFER_SIZE (64U * 1024U * 1024U)
 #define PS5_7Z_PREALLOC_MIN_SIZE (64ULL * 1024ULL * 1024ULL)
 
 static bool g_7z_output_error=false;

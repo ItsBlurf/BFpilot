@@ -17,10 +17,10 @@
 #include <unistd.h>
 
 #define BFPILOT_DATA_ROOT "/data"
-#define BFPILOT_DATA_DIR "/data/BFpilot"
+#define BFPILOT_DATA_DIR "/data/gemBFPILOT"
 #define BFPILOT_HOMEBREW_DIR "/data/homebrew"
-#define BFPILOT_LOG_PATH "/data/BFpilot/log.txt"
-#define BFPILOT_CRASH_LOG_PATH "/data/BFpilot/crash.log"
+#define BFPILOT_LOG_PATH "/data/gemBFPILOT/log.txt"
+#define BFPILOT_CRASH_LOG_PATH "/data/gemBFPILOT/crash.log"
 #define BFPILOT_EXT0_ROOT "/mnt/ext0"
 #define BFPILOT_EXT0_HOMEBREW "/mnt/ext0/homebrew"
 

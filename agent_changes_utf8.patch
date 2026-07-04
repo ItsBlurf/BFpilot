@@ -1,0 +1,1316 @@
+﻿diff --git a/Makefile b/Makefile
+index 4f66d70..0ce3afa 100644
+--- a/Makefile
++++ b/Makefile
+@@ -149,7 +149,7 @@ ARCHIVE_SEVENZ_DEFINES := -D_FILE_OFFSET_BITS=64 -D_LARGEFILE_SOURCE -D_UNIX
+ ARCHIVE_SEVENZ_DEFINES += -DZ7_EXTRACT_ONLY -DZ7_PROG_VARIANT_R -DZ7_AFFINITY_DISABLE
+ ARCHIVE_WORKER_INCLUDES := -I$(UNRAR_SRC_DIR) -I$(MINIZ_DIR)
+ ARCHIVE_WORKER_INCLUDES += -I$(LZMA_C_DIR) -I$(LZMA_CPP_DIR) -I$(SEVENZ_DIR)
+-ARCHIVE_WORKER_CXXFLAGS := -O3 -std=c++11 -Wall
++ARCHIVE_WORKER_CXXFLAGS := -O3 -std=c++11 -Wall -fexceptions
+ ARCHIVE_WORKER_CXXFLAGS += -Wno-logical-op-parentheses -Wno-switch
+ ARCHIVE_WORKER_CXXFLAGS += -Wno-dangling-else -Wno-unused-parameter -Wno-reorder
+ ARCHIVE_WORKER_CXXFLAGS += -Wno-unused-function
+diff --git a/assets/files.html b/assets/files.html
+index eb38332..243bfc6 100644
+--- a/assets/files.html
++++ b/assets/files.html
+@@ -101,7 +101,7 @@
+       margin: 0 auto;
+       padding: 10px 14px;
+       display: grid;
+-      grid-template-columns: auto minmax(0, 1fr) auto;
++      grid-template-columns: auto minmax(0, 1fr) auto auto;
+       gap: 12px;
+       align-items: center;
+     }
+@@ -708,6 +708,7 @@
+         </div>
+       </div>
+       <div class="status" id="status"><span class="dot"></span><span>Connecting</span></div>
++      <button id="terminate-top" class="danger" title="Terminate Payload">Exit</button>
+     </div>
+   </header>
+ 
+@@ -2106,6 +2107,28 @@
+       });
+     }
+ 
++    async function requestShutdown() {
++      const btn = el('terminate-top');
++      if (!confirm('Terminate BFpilot now?\n\nThis will safely abort any running SSD indexes and fully exit the payload from memory.')) {
++        return;
++      }
++      if (btn) {
++        btn.disabled = true;
++        btn.textContent = 'Exiting...';
++      }
++      
++      try {
++        await fetch('/api/control/shutdown', { method: 'POST' });
++      } catch(e) {
++      }
++      
++      document.body.innerHTML = '<div style="padding: 40px; text-align: center; font-size: 18px;">BFpilot terminated. You may now close this window.</div>';
++    }
++
++    if(el('terminate-top')) {
++      el('terminate-top').addEventListener('click', requestShutdown);
++    }
++
+     boot();
+   </script>
+ </body>
+diff --git a/bfpilot-launcher-installer.elf b/bfpilot-launcher-installer.elf
+index 676218a..abaa268 100755
+Binary files a/bfpilot-launcher-installer.elf and b/bfpilot-launcher-installer.elf differ
+diff --git a/bfpilot.elf b/bfpilot.elf
+index 5db5660..43093e7 100755
+Binary files a/bfpilot.elf and b/bfpilot.elf differ
+diff --git a/docs/FAST_SEARCH_RESEARCH.md b/docs/FAST_SEARCH_RESEARCH.md
+index 876e1fc..538cb54 100644
+--- a/docs/FAST_SEARCH_RESEARCH.md
++++ b/docs/FAST_SEARCH_RESEARCH.md
+@@ -110,13 +110,15 @@ Indexer behavior:
+ 
+ Default roots:
+ 
+-- Default rebuild mode: all detected user/storage roots.
+-- The global index includes existing `/data`, `/user`, `/mnt/usb0` through
+-  `/mnt/usb7`, and `/mnt/ext0` through `/mnt/ext7`.
+-- System rebuild mode crawls `/` plus detected separate system/user/storage
+-  roots, including `/system`, `/system_data`, `/system_ex`, `/preinst`,
+-  `/preinst2`, `/hostapp`, `/data`, `/user`, `/mnt/usb*`, and `/mnt/ext*` when
+-  those paths exist.
++- Default rebuild mode: all useful detected roots.
++- The global index crawls `/` plus detected separate system/user/storage roots,
++  including `/system`, `/system_data`, `/system_ex`, `/preinst`, `/preinst2`,
++  `/hostapp`, `/data`, `/user`, `/mnt/usb*`, and `/mnt/ext*` when those paths
++  exist.
++- Root-level directories are discovered dynamically so firmware-specific mount
++  points can be included without hardcoding every name.
++- System rebuild mode uses the same broad root discovery path and remains as an
++  explicit UI affordance for system-file searches.
+ - Allow mounted storage roots under `/mnt/usb0` through `/mnt/usb7` and
+   `/mnt/ext0` through `/mnt/ext7` for explicit root-scoped tests.
+ - Allow custom absolute user-selected roots only when explicitly requested.
+@@ -136,6 +138,7 @@ UI behavior:
+ 
+ - Add a compact search input, "Index All" button, and explicit "Index System"
+   button near the current path controls.
++- Highlight typed search terms in result paths.
+ - Search results reuse the existing file list row style.
+ - Search result selection must operate on absolute paths, not names relative to
+   the current folder.
+@@ -249,11 +252,12 @@ Current behavior:
+ Safety constraints implemented:
+ 
+ - Explicit rebuild only; no startup crawl.
+-- The default rebuild indexes all detected user/storage roots: `/data`, `/user`,
+-  `/mnt/usb0` through `/mnt/usb7`, and `/mnt/ext0` through `/mnt/ext7`.
+-- The system rebuild indexes `/` plus detected separate system/user/storage
+-  roots, including `/system`, `/system_data`, `/system_ex`, `/preinst`,
+-  `/preinst2`, `/hostapp`, `/data`, `/user`, `/mnt/usb*`, and `/mnt/ext*`.
++- The default rebuild indexes all useful detected roots: `/` plus detected
++  separate system/user/storage roots, including `/system`, `/system_data`,
++  `/system_ex`, `/preinst`, `/preinst2`, `/hostapp`, `/data`, `/user`,
++  `/mnt/usb*`, and `/mnt/ext*`.
++- Root-level directories are discovered dynamically and added when they are
++  separate mount points.
+ - Allowed explicit roots are absolute paths without `..` segments, excluding
+   pseudo/volatile roots.
+ - Rejects non-absolute paths and `..` segments.
+diff --git a/src/archive_worker.cpp b/src/archive_worker.cpp
+index a721528..ad3289c 100644
+--- a/src/archive_worker.cpp
++++ b/src/archive_worker.cpp
+@@ -41,9 +41,9 @@ extern "C" int posix_fallocate(int fd, off_t offset, off_t len);
+ #endif
+ 
+ #if BFPILOT_ARCHIVE_INTEGRATED
+-#define BFPILOT_ARCHIVE_DIR "/data/BFpilot/archive-integrated"
++#define BFPILOT_ARCHIVE_DIR "/data/gemBFPILOT/archive-integrated"
+ #else
+-#define BFPILOT_ARCHIVE_DIR "/data/BFpilot/archive"
++#define BFPILOT_ARCHIVE_DIR "/data/gemBFPILOT/archive"
+ #endif
+ #define BFPILOT_ARCHIVE_JOB BFPILOT_ARCHIVE_DIR "/job.ini"
+ #define BFPILOT_ARCHIVE_STATUS BFPILOT_ARCHIVE_DIR "/status.json"
+@@ -58,12 +58,12 @@ extern "C" int posix_fallocate(int fd, off_t offset, off_t len);
+ #define ZIP_SIG_ZIP64_LOCATOR 0x07064b50U
+ #define BFPILOT_ARCHIVE_MAX_THREADS 8U
+ #define BFPILOT_ARCHIVE_AUTO_MAX_THREADS 2U
+-#define BFPILOT_ARCHIVE_RAR_MAX_THREADS 1U
++#define BFPILOT_ARCHIVE_RAR_MAX_THREADS 8U
+ #define BFPILOT_ARCHIVE_NICE 4
+ #define BFPILOT_ARCHIVE_MIN_NICE -20
+ #define BFPILOT_ARCHIVE_MAX_NICE 20
+-#define BFPILOT_ZIP_IN_BUFFER_SIZE (4U * 1024U * 1024U)
+-#define BFPILOT_ZIP_OUT_BUFFER_SIZE (16U * 1024U * 1024U)
++#define BFPILOT_ZIP_IN_BUFFER_SIZE (16U * 1024U * 1024U)
++#define BFPILOT_ZIP_OUT_BUFFER_SIZE (64U * 1024U * 1024U)
+ #define BFPILOT_ARCHIVE_PREALLOC_MIN_SIZE (64ULL * 1024ULL * 1024ULL)
+ #define BFPILOT_ARCHIVE_SPACE_MARGIN_BYTES (256ULL * 1024ULL * 1024ULL)
+ #define BFPILOT_ZIP_MAX_ENTRIES 250000ULL
+@@ -1982,7 +1982,8 @@ static bool
+ StatusLooksInterrupted(const std::string &status) {
+   return status.find("\"state\":\"starting\"") != std::string::npos ||
+          status.find("\"state\":\"running\"") != std::string::npos ||
+-         status.find("\"state\":\"finalizing\"") != std::string::npos;
++         status.find("\"state\":\"finalizing\"") != std::string::npos ||
++         status.find("\"state\":\"prepared\"") != std::string::npos;
+ }
+ 
+ static void
+@@ -2069,10 +2070,12 @@ ArchiveDaemonMain(pid_t parent_pid) {
+ 
+   std::string last_job;
+   for(;;) {
+-    if(parent_pid > 1 && getppid() != parent_pid) {
+-      LogLine("archive daemon parent changed parent=%ld expected=%ld; exiting",
+-              (long)getppid(), (long)parent_pid);
+-      break;
++    if(parent_pid > 1) {
++      if(parent_pid != getppid()) {
++        LogLine("archive daemon parent changed parent=%ld expected=%ld; exiting",
++                (long)getppid(), (long)parent_pid);
++        break;
++      }
+     }
+     std::string status;
+     bool prepared = ReadSmallFile(BFPILOT_ARCHIVE_STATUS, status, 32768) &&
+@@ -2093,6 +2096,7 @@ ArchiveDaemonMain(pid_t parent_pid) {
+   return 0;
+ }
+ 
++
+ extern "C" int
+ bfpilot_archive_start_daemon(void) {
+   pid_t child = fork();
+@@ -2105,13 +2109,13 @@ bfpilot_archive_start_daemon(void) {
+     _exit(rc & 0xff);
+   }
+   LogLine("archive daemon forked pid=%ld", (long)child);
+-  return (int)child;
++  return 0;
+ }
+ 
+ #ifndef BFPILOT_ARCHIVE_NO_MAIN
+ int
+ main(void) {
+-  int rc = bfpilot_archive_start_daemon();
++  int rc = ArchiveDaemonMain(getppid());
+   return rc < 0 ? 1 : 0;
+ }
+ #endif
+diff --git a/src/boot_marker.c b/src/boot_marker.c
+index da4cf32..ea2b7a6 100644
+--- a/src/boot_marker.c
++++ b/src/boot_marker.c
+@@ -28,8 +28,8 @@
+ #endif
+ 
+ #define BFPILOT_DATA_ROOT "/data"
+-#define BFPILOT_DATA_DIR "/data/BFpilot"
+-#define BFPILOT_BOOT_LOG_PATH "/data/BFpilot/boot.log"
++#define BFPILOT_DATA_DIR "/data/gemBFPILOT"
++#define BFPILOT_BOOT_LOG_PATH "/data/gemBFPILOT/boot.log"
+ 
+ 
+ static void
+diff --git a/src/diag.c b/src/diag.c
+index d5cbc8d..537f023 100644
+--- a/src/diag.c
++++ b/src/diag.c
+@@ -17,10 +17,10 @@
+ #include <unistd.h>
+ 
+ #define BFPILOT_DATA_ROOT "/data"
+-#define BFPILOT_DATA_DIR "/data/BFpilot"
++#define BFPILOT_DATA_DIR "/data/gemBFPILOT"
+ #define BFPILOT_HOMEBREW_DIR "/data/homebrew"
+-#define BFPILOT_LOG_PATH "/data/BFpilot/log.txt"
+-#define BFPILOT_CRASH_LOG_PATH "/data/BFpilot/crash.log"
++#define BFPILOT_LOG_PATH "/data/gemBFPILOT/log.txt"
++#define BFPILOT_CRASH_LOG_PATH "/data/gemBFPILOT/crash.log"
+ #define BFPILOT_EXT0_ROOT "/mnt/ext0"
+ #define BFPILOT_EXT0_HOMEBREW "/mnt/ext0/homebrew"
+ 
+diff --git a/src/launcher_installer_force_main.c b/src/launcher_installer_force_main.c
+index 317f95e..217b2d3 100644
+--- a/src/launcher_installer_force_main.c
++++ b/src/launcher_installer_force_main.c
+@@ -28,8 +28,8 @@
+ #define BFPILOT_APP_ROOT "/user/app"
+ #define BFPILOT_APP_PARENT BFPILOT_APP_ROOT "/"
+ #define BFPILOT_DATA_ROOT "/data"
+-#define BFPILOT_DATA_DIR "/data/BFpilot"
+-#define BFPILOT_LAUNCHER_LOG "/data/BFpilot/launcher-installer.log"
++#define BFPILOT_DATA_DIR "/data/gemBFPILOT"
++#define BFPILOT_LAUNCHER_LOG "/data/gemBFPILOT/launcher-installer.log"
+ #define BFPILOT_DIAG_SKIPPED (-2147483000)
+ #define BFPILOT_APPINST_AUTHID UINT64_C(0x4801000000000013)
+ 
+diff --git a/src/lite_main.c b/src/lite_main.c
+index ba0e376..9b55f16 100644
+--- a/src/lite_main.c
++++ b/src/lite_main.c
+@@ -396,5 +396,6 @@ main(int argc, char **argv) {
+     sleep(rc == -EADDRINUSE || rc == -EACCES ? 5 : 2);
+   }
+ 
++  exit(0);
+   return 0;
+ }
+diff --git a/src/search.c b/src/search.c
+index 1d5f195..bbba24c 100644
+--- a/src/search.c
++++ b/src/search.c
+@@ -19,19 +19,21 @@
+ #include <sys/types.h>
+ #include <time.h>
+ #include <unistd.h>
++#include <fcntl.h>
+ 
+ #include "diag.h"
++#include "websrv.h"
+ 
+ #define BFPILOT_SEARCH_ALL_ROOTS_LABEL "all"
+ #define BFPILOT_SEARCH_SYSTEM_ROOT_LABEL "system"
+ #define BFPILOT_SEARCH_DEFAULT_ROOT BFPILOT_SEARCH_ALL_ROOTS_LABEL
+-#define BFPILOT_SEARCH_MAX_ENTRIES 750000UL
++#define BFPILOT_SEARCH_MAX_ENTRIES 2000000UL
+ #define BFPILOT_SEARCH_MAX_ROOTS 48
+ #define BFPILOT_SEARCH_MAX_QUERY 256
+ #define BFPILOT_SEARCH_MAX_TERMS 8
+ #define BFPILOT_SEARCH_DEFAULT_LIMIT 200UL
+ #define BFPILOT_SEARCH_MAX_LIMIT 1000UL
+-#define BFPILOT_SEARCH_PROGRESS_INTERVAL 128UL
++#define BFPILOT_SEARCH_PROGRESS_INTERVAL 1024UL
+ #define BFPILOT_SEARCH_CRAWL_NICE 8
+ 
+ typedef struct json_buf {
+@@ -49,8 +51,17 @@ typedef struct search_entry {
+   long                mtime;
+ } search_entry_t;
+ 
++typedef struct string_arena {
++  char *ptr;
++  size_t used;
++  size_t cap;
++  struct string_arena *next;
++} string_arena_t;
++
+ typedef struct search_index {
+   search_entry_t    *entries;
++  char              *string_block;
++  string_arena_t    *arena;
+   size_t             count;
+   size_t             cap;
+   char               root[1024];
+@@ -66,11 +77,6 @@ typedef struct search_index {
+   int                truncated;
+ } search_index_t;
+ 
+-typedef struct path_stack {
+-  char  **items;
+-  size_t  count;
+-  size_t  cap;
+-} path_stack_t;
+ 
+ typedef struct search_state {
+   pthread_mutex_t    lock;
+@@ -125,6 +131,27 @@ search_monotonic_ms(void) {
+ }
+ 
+ 
++static void
++search_diag_log(const char *fmt, ...) {
++  char line[1024];
++  va_list ap;
++  va_start(ap, fmt);
++  int n = vsnprintf(line, sizeof(line), fmt ? fmt : "", ap);
++  va_end(ap);
++  if(n <= 0) return;
++  if((size_t)n >= sizeof(line)) n = (int)sizeof(line) - 1;
++  if(n > 0 && line[n-1] != '\n' && (size_t)n < sizeof(line) - 1) {
++    line[n++] = '\n';
++    line[n] = 0;
++  }
++  FILE *file = fopen("/data/gemBFPILOT/search_crawl.log", "a");
++  if(file) {
++    fwrite(line, 1, (size_t)n, file);
++    fclose(file);
++  }
++}
++
++
+ static int
+ json_grow(json_buf_t *b, size_t add) {
+   if(b->len + add + 1 <= b->cap) return 0;
+@@ -233,10 +260,46 @@ search_strdup(const char *s) {
+ }
+ 
+ 
++
++
++static char *
++search_arena_alloc(string_arena_t **arena, size_t size) {
++  string_arena_t *a = *arena;
++  if(!a || a->used + size > a->cap) {
++    size_t cap = 16 * 1024 * 1024;
++    if(size > cap) cap = size;
++    string_arena_t *new_a = malloc(sizeof(*new_a));
++    if(!new_a) return NULL;
++    new_a->ptr = malloc(cap);
++    if(!new_a->ptr) {
++      free(new_a);
++      free(new_a);
++      return NULL;
++    }
++    new_a->used = 0;
++    new_a->cap = cap;
++    new_a->next = a;
++    *arena = new_a;
++    a = new_a;
++  }
++  char *res = a->ptr + a->used;
++  a->used += size;
++  return res;
++}
++
++static char *
++search_arena_dup(string_arena_t **arena, const char *s) {
++  size_t n = strlen(s ? s : "");
++  char *out = search_arena_alloc(arena, n + 1);
++  if(!out) return NULL;
++  memcpy(out, s ? s : "", n + 1);
++  return out;
++}
++
+ static char *
+-search_lower_dup(const char *s) {
++search_arena_lower_dup(string_arena_t **arena, const char *s) {
+   size_t n = strlen(s ? s : "");
+-  char *out = malloc(n + 1);
++  char *out = search_arena_alloc(arena, n + 1);
+   if(!out) return NULL;
+   for(size_t i = 0; i < n; i++) {
+     unsigned char c = (unsigned char)s[i];
+@@ -301,22 +364,6 @@ search_system_root_label(const char *root) {
+ }
+ 
+ 
+-static int
+-search_path_allowed(const char *path) {
+-  if(!path || path[0] != '/' || path_has_dotdot_segment(path)) return 0;
+-  if(path_starts_with_root(path, "/data")) return 1;
+-  if(path_starts_with_root(path, "/user")) return 1;
+-  for(int i = 0; i < 8; i++) {
+-    char root[32];
+-    snprintf(root, sizeof(root), "/mnt/usb%d", i);
+-    if(path_starts_with_root(path, root)) return 1;
+-    snprintf(root, sizeof(root), "/mnt/ext%d", i);
+-    if(path_starts_with_root(path, root)) return 1;
+-  }
+-  return 0;
+-}
+-
+-
+ static int
+ search_wide_path_allowed(const char *path) {
+   return path && path[0] == '/' && !path_has_dotdot_segment(path);
+@@ -327,10 +374,8 @@ static int
+ search_skip_system_path(const char *path) {
+   static const char *skip[] = {
+     "/dev",
+-    "/proc",
+-    "/sys",
+-    "/net",
+-    "/run",
++    "/mnt/sandbox",
++    "/mnt/shadowmnt",
+     NULL
+   };
+   for(int i = 0; skip[i]; i++) {
+@@ -340,35 +385,28 @@ search_skip_system_path(const char *path) {
+ }
+ 
+ 
+-static void
+-add_global_root(char roots[][1024], int *count, const char *root) {
+-  if(*count >= BFPILOT_SEARCH_MAX_ROOTS || !search_path_allowed(root)) return;
+-  struct stat st;
+-  if(lstat(root, &st) != 0 || !S_ISDIR(st.st_mode)) return;
+-  for(int i = 0; i < *count; i++) {
+-    if(!strcmp(roots[i], root)) return;
+-  }
+-  snprintf(roots[*count], 1024, "%s", root);
+-  (*count)++;
+-}
+-
+-
+ static void
+ add_system_root(char roots[][1024], int *count, const char *root,
+                 int have_base_dev, dev_t base_dev) {
+   if(*count >= BFPILOT_SEARCH_MAX_ROOTS ||
+      !search_wide_path_allowed(root) ||
+      search_skip_system_path(root)) {
++    search_diag_log("ROOT SKIP (rule/full): %s", root);
+     return;
+   }
+   struct stat st;
+-  if(lstat(root, &st) != 0 || !S_ISDIR(st.st_mode)) return;
++  if(lstat(root, &st) != 0 || !S_ISDIR(st.st_mode)) {
++    search_diag_log("ROOT SKIP (missing/not dir): %s", root);
++    return;
++  }
+   if(strcmp(root, "/") && have_base_dev && st.st_dev == base_dev) {
++    search_diag_log("ROOT SKIP (matches base_dev): %s", root);
+     return;
+   }
+   for(int i = 0; i < *count; i++) {
+     if(!strcmp(roots[i], root)) return;
+   }
++  search_diag_log("ROOT ADD: %s", root);
+   snprintf(roots[*count], 1024, "%s", root);
+   (*count)++;
+ }
+@@ -398,6 +436,19 @@ collect_system_roots(char roots[][1024]) {
+     add_system_root(roots, &count, candidates[i], have_base_dev, base_dev);
+   }
+ 
++  DIR *dir = opendir("/");
++  if(dir) {
++    struct dirent *ent;
++    while((ent = readdir(dir)) != NULL) {
++      if(!strcmp(ent->d_name, ".") || !strcmp(ent->d_name, "..")) continue;
++      char child[1024];
++      if(strlen(ent->d_name) + 2 >= sizeof(child)) continue;
++      snprintf(child, sizeof(child), "/%s", ent->d_name);
++      add_system_root(roots, &count, child, have_base_dev, base_dev);
++    }
++    closedir(dir);
++  }
++
+   for(int i = 0; i < 8; i++) {
+     char root[32];
+     snprintf(root, sizeof(root), "/mnt/usb%d", i);
+@@ -412,17 +463,7 @@ collect_system_roots(char roots[][1024]) {
+ 
+ static int
+ collect_global_roots(char roots[][1024]) {
+-  int count = 0;
+-  add_global_root(roots, &count, "/data");
+-  add_global_root(roots, &count, "/user");
+-  for(int i = 0; i < 8; i++) {
+-    char root[32];
+-    snprintf(root, sizeof(root), "/mnt/usb%d", i);
+-    add_global_root(roots, &count, root);
+-    snprintf(root, sizeof(root), "/mnt/ext%d", i);
+-    add_global_root(roots, &count, root);
+-  }
+-  return count;
++  return collect_system_roots(roots);
+ }
+ 
+ 
+@@ -437,9 +478,21 @@ join_path(char *out, size_t out_sz, const char *dir, const char *name) {
+ static void
+ search_index_free(search_index_t *idx) {
+   if(!idx) return;
+-  for(size_t i = 0; i < idx->count; i++) {
+-    free(idx->entries[i].path);
+-    free(idx->entries[i].lower);
++  if(idx->string_block) {
++    free(idx->string_block);
++  } else if (idx->arena) {
++    string_arena_t *a = idx->arena;
++    while(a) {
++      string_arena_t *next = a->next;
++      free(a->ptr);
++      free(a);
++      a = next;
++    }
++  } else {
++    for(size_t i = 0; i < idx->count; i++) {
++      free(idx->entries[i].path);
++      free(idx->entries[i].lower);
++    }
+   }
+   free(idx->entries);
+   free(idx);
+@@ -471,11 +524,9 @@ search_index_add(search_index_t *idx, const char *path, const struct stat *st) {
+   }
+   if(search_index_reserve(idx, idx->count + 1) != 0) return -1;
+ 
+-  char *path_copy = search_strdup(path);
+-  char *lower = search_lower_dup(path);
++  char *path_copy = search_arena_dup(&idx->arena, path);
++  char *lower = search_arena_lower_dup(&idx->arena, path);
+   if(!path_copy || !lower) {
+-    free(path_copy);
+-    free(lower);
+     return -1;
+   }
+ 
+@@ -495,37 +546,11 @@ search_index_add(search_index_t *idx, const char *path, const struct stat *st) {
+ }
+ 
+ 
+-static int
+-stack_push(path_stack_t *stack, char *path) {
+-  if(stack->count >= stack->cap) {
+-    size_t next = stack->cap ? stack->cap * 2 : 256;
+-    char **items = realloc(stack->items, next * sizeof(*items));
+-    if(!items) return -1;
+-    stack->items = items;
+-    stack->cap = next;
+-  }
+-  stack->items[stack->count++] = path;
+-  return 0;
+-}
+-
+-
+-static char *
+-stack_pop(path_stack_t *stack) {
+-  if(stack->count == 0) return NULL;
+-  return stack->items[--stack->count];
+-}
+-
+-
+-static void
+-stack_free(path_stack_t *stack) {
+-  while(stack->count > 0) free(stack->items[--stack->count]);
+-  free(stack->items);
+-}
+-
+ 
+ static int
+ search_cancelled(void) {
+   int cancel;
++  if(websrv_exit_requested()) return 1;
+   pthread_mutex_lock(&g_search.lock);
+   cancel = g_search.cancel;
+   pthread_mutex_unlock(&g_search.lock);
+@@ -533,6 +558,158 @@ search_cancelled(void) {
+ }
+ 
+ 
++#pragma pack(push, 1)
++typedef struct {
++  char magic[12];
++  uint32_t version;
++  uint64_t count;
++  int64_t built_at;
++  int64_t build_ms;
++  uint64_t dirs_scanned;
++  uint64_t files_indexed;
++  uint64_t dirs_indexed;
++  uint64_t skipped;
++  uint64_t errors;
++  uint64_t memory_estimate;
++  char root[1024];
++  uint64_t string_block_size;
++} idx_header_t;
++
++typedef struct {
++  uint32_t path_offset;
++  uint32_t lower_offset;
++  uint32_t name_offset;
++  int32_t dir;
++  uint64_t size;
++  int64_t mtime;
++} idx_entry_t;
++#pragma pack(pop)
++
++static void
++search_save_index(search_index_t *idx) {
++  if(!idx || idx->count == 0) return;
++  FILE *f = fopen("/data/gemBFPILOT/search.idx", "wb");
++  if(!f) return;
++
++  uint64_t string_block_size = 0;
++  for(size_t i=0; i<idx->count; i++) {
++    string_block_size += strlen(idx->entries[i].path) + 1;
++    string_block_size += strlen(idx->entries[i].lower) + 1;
++  }
++
++  idx_header_t hdr = {0};
++  snprintf(hdr.magic, sizeof(hdr.magic), "BFPILOT_IDX");
++  hdr.version = 1;
++  hdr.count = idx->count;
++  hdr.built_at = idx->built_at;
++  hdr.build_ms = idx->build_ms;
++  hdr.dirs_scanned = idx->dirs_scanned;
++  hdr.files_indexed = idx->files_indexed;
++  hdr.dirs_indexed = idx->dirs_indexed;
++  hdr.skipped = idx->skipped;
++  hdr.errors = idx->errors;
++  hdr.memory_estimate = idx->memory_estimate;
++  snprintf(hdr.root, sizeof(hdr.root), "%s", idx->root);
++  hdr.string_block_size = string_block_size;
++
++  fwrite(&hdr, sizeof(hdr), 1, f);
++
++  idx_entry_t *disk_entries = malloc(idx->count * sizeof(idx_entry_t));
++  if(disk_entries) {
++    uint32_t current_offset = 0;
++    for(size_t i=0; i<idx->count; i++) {
++      disk_entries[i].path_offset = current_offset;
++      current_offset += strlen(idx->entries[i].path) + 1;
++      disk_entries[i].lower_offset = current_offset;
++      current_offset += strlen(idx->entries[i].lower) + 1;
++      disk_entries[i].name_offset = (uint32_t)idx->entries[i].name_offset;
++      disk_entries[i].dir = idx->entries[i].dir;
++      disk_entries[i].size = idx->entries[i].size;
++      disk_entries[i].mtime = idx->entries[i].mtime;
++    }
++    fwrite(disk_entries, sizeof(idx_entry_t), idx->count, f);
++    free(disk_entries);
++  }
++
++  for(size_t i=0; i<idx->count; i++) {
++    fwrite(idx->entries[i].path, 1, strlen(idx->entries[i].path) + 1, f);
++    fwrite(idx->entries[i].lower, 1, strlen(idx->entries[i].lower) + 1, f);
++  }
++
++  fclose(f);
++}
++
++static search_index_t *
++search_load_index(void) {
++  FILE *f = fopen("/data/gemBFPILOT/search.idx", "rb");
++  if(!f) return NULL;
++
++  idx_header_t hdr;
++  if(fread(&hdr, sizeof(hdr), 1, f) != 1) {
++    fclose(f);
++    return NULL;
++  }
++  if(strcmp(hdr.magic, "BFPILOT_IDX") != 0 || hdr.version != 1) {
++    fclose(f);
++    return NULL;
++  }
++
++  search_index_t *idx = calloc(1, sizeof(*idx));
++  if(!idx) {
++    fclose(f);
++    return NULL;
++  }
++
++  idx->entries = malloc(hdr.count * sizeof(search_entry_t));
++  idx->string_block = malloc(hdr.string_block_size);
++  idx_entry_t *disk_entries = malloc(hdr.count * sizeof(idx_entry_t));
++
++  if(!idx->entries || !idx->string_block || !disk_entries) {
++    free(idx->entries);
++    free(idx->string_block);
++    free(disk_entries);
++    free(idx);
++    fclose(f);
++    return NULL;
++  }
++
++  if(fread(disk_entries, sizeof(idx_entry_t), hdr.count, f) != hdr.count) goto fail;
++  if(fread(idx->string_block, 1, hdr.string_block_size, f) != hdr.string_block_size) goto fail;
++
++  for(size_t i=0; i<hdr.count; i++) {
++    idx->entries[i].path = idx->string_block + disk_entries[i].path_offset;
++    idx->entries[i].lower = idx->string_block + disk_entries[i].lower_offset;
++    idx->entries[i].name_offset = disk_entries[i].name_offset;
++    idx->entries[i].dir = disk_entries[i].dir;
++    idx->entries[i].size = disk_entries[i].size;
++    idx->entries[i].mtime = disk_entries[i].mtime;
++  }
++
++  idx->count = hdr.count;
++  idx->cap = hdr.count;
++  idx->built_at = hdr.built_at;
++  idx->build_ms = hdr.build_ms;
++  idx->dirs_scanned = hdr.dirs_scanned;
++  idx->files_indexed = hdr.files_indexed;
++  idx->dirs_indexed = hdr.dirs_indexed;
++  idx->skipped = hdr.skipped;
++  idx->errors = hdr.errors;
++  idx->memory_estimate = hdr.memory_estimate;
++  snprintf(idx->root, sizeof(idx->root), "%s", hdr.root);
++
++  free(disk_entries);
++  fclose(f);
++  return idx;
++
++fail:
++  free(idx->entries);
++  free(idx->string_block);
++  free(disk_entries);
++  free(idx);
++  fclose(f);
++  return NULL;
++}
++
+ static void
+ publish_progress(const search_index_t *idx, const char *current,
+                  const char *error, int last_errno) {
+@@ -589,6 +766,7 @@ finish_build(search_index_t *idx, int rc, const char *error, int saved_errno,
+     g_search.stale = g_search.stale_generation != start_generation;
+     if(!g_search.stale) g_search.stale_reason[0] = 0;
+     snprintf(g_search.error, sizeof(g_search.error), "%s", "");
++    search_save_index(idx);
+   } else {
+     if(error && error[0]) snprintf(g_search.error, sizeof(g_search.error), "%s", error);
+     if(idx) {
+@@ -611,61 +789,123 @@ finish_build(search_index_t *idx, int rc, const char *error, int saved_errno,
+ }
+ 
+ 
++typedef struct {
++  dev_t dev;
++  ino_t ino;
++} visited_dir_t;
++
++typedef struct {
++  visited_dir_t *entries;
++  size_t count;
++  size_t cap;
++} visited_set_t;
++
+ static int
+-crawl_one_root(search_index_t *idx, const char *root, char *error,
+-               size_t error_sz, int *saved_errno, int system_mode) {
+-  struct stat root_st;
+-  if(lstat(root, &root_st) != 0) {
+-    *saved_errno = errno;
+-    snprintf(error, error_sz, "%s", strerror(*saved_errno));
+-    return -1;
++visited_set_add(visited_set_t *set, dev_t dev, ino_t ino) {
++  if (set->count * 2 >= set->cap) {
++    size_t new_cap = set->cap ? set->cap * 2 : 16384;
++    visited_dir_t *new_entries = calloc(new_cap, sizeof(visited_dir_t));
++    if (!new_entries) return -1;
++    for (size_t i = 0; i < set->cap; i++) {
++      if (set->entries[i].dev || set->entries[i].ino) {
++        size_t idx = (set->entries[i].dev ^ set->entries[i].ino) & (new_cap - 1);
++        while (new_entries[idx].dev || new_entries[idx].ino) {
++          idx = (idx + 1) & (new_cap - 1);
++        }
++        new_entries[idx] = set->entries[i];
++      }
++    }
++    free(set->entries);
++    set->entries = new_entries;
++    set->cap = new_cap;
+   }
+-  if(!S_ISDIR(root_st.st_mode)) {
+-    *saved_errno = ENOTDIR;
+-    snprintf(error, error_sz, "%s", "search root is not a directory");
+-    return -1;
++  size_t idx = (dev ^ ino) & (set->cap - 1);
++  while (set->entries[idx].dev || set->entries[idx].ino) {
++    if (set->entries[idx].dev == dev && set->entries[idx].ino == ino) return 0;
++    idx = (idx + 1) & (set->cap - 1);
+   }
++  set->entries[idx].dev = dev;
++  set->entries[idx].ino = ino;
++  set->count++;
++  return 1;
++}
+ 
+-  dev_t root_dev = root_st.st_dev;
+-  idx->root_dev = root_dev;
+-  int root_add_rc = search_index_add(idx, root, &root_st);
+-  if(root_add_rc < 0) {
+-    *saved_errno = ENOMEM;
+-    snprintf(error, error_sz, "%s", "out of memory");
+-    return -1;
+-  }
+-  if(idx->truncated) return 0;
++static void
++visited_set_free(visited_set_t *set) {
++  free(set->entries);
++  set->entries = NULL;
++  set->count = 0;
++  set->cap = 0;
++}
+ 
+-  path_stack_t stack = {0};
+-  char *root_copy = search_strdup(root);
+-  if(!root_copy || stack_push(&stack, root_copy) != 0) {
+-    free(root_copy);
+-    stack_free(&stack);
+-    *saved_errno = ENOMEM;
+-    snprintf(error, error_sz, "%s", "out of memory");
+-    return -1;
+-  }
+ 
+-  int rc = 0;
++typedef struct {
++  char **dirs;
++  size_t count;
++  size_t cap;
++  size_t head;
++  int done_pushing;
++  int active_workers;
++  pthread_mutex_t lock;
++  pthread_cond_t cond;
++} crawl_queue_t;
++
++typedef struct {
++  search_index_t *idx;
++  visited_set_t *visited;
++  crawl_queue_t queue;
++  int system_mode;
++  int rc;
++  int saved_errno;
++  char error[256];
++  dev_t root_dev;
++  pthread_mutex_t index_lock;
++} crawl_shared_t;
++
++static void *crawler_thread_func(void *arg) {
++  crawl_shared_t *shared = arg;
++  search_index_t *idx = shared->idx;
++  crawl_queue_t *q = &shared->queue;
++
++  for(;;) {
++    pthread_mutex_lock(&q->lock);
++    while(q->head >= q->count && !q->done_pushing && !search_cancelled()) {
++      pthread_cond_wait(&q->cond, &q->lock);
++    }
++    if(search_cancelled() || (q->head >= q->count && q->done_pushing)) {
++      pthread_mutex_unlock(&q->lock);
++      break;
++    }
++
++    char *dir_path = q->dirs[q->head++];
++    q->active_workers++;
++    pthread_mutex_unlock(&q->lock);
+ 
+-  while(!search_cancelled()) {
+-    char *dir_path = stack_pop(&stack);
+-    if(!dir_path) break;
+     DIR *dir = opendir(dir_path);
+     if(!dir) {
+-      *saved_errno = errno;
++      pthread_mutex_lock(&shared->index_lock);
++      shared->saved_errno = errno;
+       idx->errors++;
+-      snprintf(error, error_sz, "opendir(%s): %s", dir_path,
+-               strerror(*saved_errno));
+-      publish_progress(idx, dir_path, error, *saved_errno);
++      pthread_mutex_unlock(&shared->index_lock);
++      search_diag_log("FAIL: opendir(%s) = %s", dir_path, strerror(errno));
+       free(dir_path);
++
++      pthread_mutex_lock(&q->lock);
++      q->active_workers--;
++      if(q->active_workers == 0 && q->head >= q->count) {
++        pthread_cond_broadcast(&q->cond);
++      }
++      pthread_mutex_unlock(&q->lock);
+       continue;
+     }
+ 
++    pthread_mutex_lock(&shared->index_lock);
+     idx->dirs_scanned++;
+     if((idx->dirs_scanned % BFPILOT_SEARCH_PROGRESS_INTERVAL) == 0) {
+       publish_progress(idx, dir_path, NULL, 0);
+     }
++    int is_truncated = idx->truncated;
++    pthread_mutex_unlock(&shared->index_lock);
+ 
+     struct dirent *ent;
+     int read_errno = 0;
+@@ -681,60 +921,217 @@ crawl_one_root(search_index_t *idx, const char *root, char *error,
+ 
+       char child[1024];
+       if(strlen(dir_path) + strlen(ent->d_name) + 2 >= sizeof(child)) {
++        pthread_mutex_lock(&shared->index_lock);
+         idx->skipped++;
++        pthread_mutex_unlock(&shared->index_lock);
+         continue;
+       }
+       join_path(child, sizeof(child), dir_path, ent->d_name);
+ 
+-      if(system_mode && search_skip_system_path(child)) {
++      if(shared->system_mode && search_skip_system_path(child)) {
++        pthread_mutex_lock(&shared->index_lock);
+         idx->skipped++;
++        pthread_mutex_unlock(&shared->index_lock);
+         continue;
+       }
+ 
+-      struct stat st;
+-      if(lstat(child, &st) != 0) {
+-        *saved_errno = errno;
++      struct stat st = {0};
++      int stat_rc = 0;
++      if (ent->d_type == DT_REG) {
++        st.st_mode = S_IFREG | 0644;
++      } else {
++        stat_rc = fstatat(dirfd(dir), ent->d_name, &st, AT_SYMLINK_NOFOLLOW);
++      }
++      if(stat_rc != 0) {
++        pthread_mutex_lock(&shared->index_lock);
++        shared->saved_errno = errno;
+         idx->errors++;
++        pthread_mutex_unlock(&shared->index_lock);
+         continue;
+       }
+ 
++      pthread_mutex_lock(&shared->index_lock);
+       int add_rc = search_index_add(idx, child, &st);
+       if(add_rc < 0) {
+-        rc = -1;
+-        *saved_errno = ENOMEM;
+-        snprintf(error, error_sz, "%s", "out of memory");
++        shared->rc = -1;
++        shared->saved_errno = ENOMEM;
++        snprintf(shared->error, sizeof(shared->error), "%s", "out of memory");
++        pthread_mutex_unlock(&shared->index_lock);
+         break;
+       }
+ 
+-      if(S_ISDIR(st.st_mode) && st.st_dev == root_dev && !idx->truncated) {
+-        char *copy = search_strdup(child);
+-        if(!copy || stack_push(&stack, copy) != 0) {
+-          free(copy);
+-          rc = -1;
+-          *saved_errno = ENOMEM;
+-          snprintf(error, error_sz, "%s", "out of memory");
+-          break;
++      if(S_ISDIR(st.st_mode)) {
++        if(st.st_dev != shared->root_dev) {
++          search_diag_log("CROSS MOUNT: %s (child_dev=%llu, root_dev=%llu)", child, (unsigned long long)st.st_dev, (unsigned long long)shared->root_dev);
++        }
++        if(!idx->truncated) {
++          if(visited_set_add(shared->visited, st.st_dev, st.st_ino) > 0) {
++            char *copy = search_strdup(child);
++            if(!copy) {
++              shared->rc = -1;
++              shared->saved_errno = ENOMEM;
++              snprintf(shared->error, sizeof(shared->error), "%s", "out of memory");
++              pthread_mutex_unlock(&shared->index_lock);
++              break;
++            }
++            pthread_mutex_lock(&q->lock);
++            if(q->count >= q->cap) {
++              size_t next = q->cap ? q->cap * 2 : 256;
++              char **items = realloc(q->dirs, next * sizeof(*items));
++              if(items) {
++                q->dirs = items;
++                q->cap = next;
++              } else {
++                free(copy);
++                shared->rc = -1;
++                shared->saved_errno = ENOMEM;
++                snprintf(shared->error, sizeof(shared->error), "%s", "out of memory");
++                pthread_mutex_unlock(&q->lock);
++                pthread_mutex_unlock(&shared->index_lock);
++                break;
++              }
++            }
++            q->dirs[q->count++] = copy;
++            pthread_cond_signal(&q->cond);
++            pthread_mutex_unlock(&q->lock);
++          } else {
++            search_diag_log("SKIP LOOP: %s", child);
++          }
+         }
+       }
+ 
+       if((idx->count % BFPILOT_SEARCH_PROGRESS_INTERVAL) == 0) {
+         publish_progress(idx, child, NULL, 0);
+       }
+-      if(idx->truncated) break;
++      is_truncated = idx->truncated;
++      pthread_mutex_unlock(&shared->index_lock);
++
++      if(is_truncated) break;
+     }
++
+     closedir(dir);
+     free(dir_path);
+-    if(rc != 0) break;
++
++    pthread_mutex_lock(&shared->index_lock);
+     if(read_errno != 0) {
+-      *saved_errno = read_errno;
++      shared->saved_errno = read_errno;
+       idx->errors++;
+     }
+-    if(idx->truncated) break;
++    pthread_mutex_unlock(&shared->index_lock);
++
++    pthread_mutex_lock(&q->lock);
++    q->active_workers--;
++    if(q->active_workers == 0 && q->head >= q->count) {
++      pthread_cond_broadcast(&q->cond);
++    }
++    pthread_mutex_unlock(&q->lock);
++
++    if(shared->rc != 0 || is_truncated) break;
+   }
++  return NULL;
++}
+ 
+-  stack_free(&stack);
+-  publish_progress(idx, root, rc == 0 ? NULL : error, *saved_errno);
+-  return rc;
++static int
++crawl_one_root(search_index_t *idx, const char *root, char *error,
++               size_t error_sz, int *saved_errno, int system_mode,
++               visited_set_t *visited) {
++  struct stat root_st;
++  if(lstat(root, &root_st) != 0) {
++    *saved_errno = errno;
++    snprintf(error, error_sz, "%s", strerror(*saved_errno));
++    return -1;
++  }
++  if(!S_ISDIR(root_st.st_mode)) {
++    *saved_errno = ENOTDIR;
++    snprintf(error, error_sz, "%s", "search root is not a directory");
++    return -1;
++  }
++
++  dev_t root_dev = root_st.st_dev;
++  idx->root_dev = root_dev;
++  int root_add_rc = search_index_add(idx, root, &root_st);
++  if(root_add_rc < 0) {
++    *saved_errno = ENOMEM;
++    snprintf(error, error_sz, "%s", "out of memory");
++    return -1;
++  }
++  if(idx->truncated) return 0;
++
++  visited_set_add(visited, root_st.st_dev, root_st.st_ino);
++
++  crawl_shared_t shared = {0};
++  shared.idx = idx;
++  shared.visited = visited;
++  shared.system_mode = system_mode;
++  shared.root_dev = root_dev;
++  pthread_mutex_init(&shared.index_lock, NULL);
++  pthread_mutex_init(&shared.queue.lock, NULL);
++  pthread_cond_init(&shared.queue.cond, NULL);
++
++  char *root_copy = search_strdup(root);
++  if(!root_copy) {
++    *saved_errno = ENOMEM;
++    snprintf(error, error_sz, "%s", "out of memory");
++    return -1;
++  }
++
++  shared.queue.dirs = malloc(256 * sizeof(char *));
++  if(!shared.queue.dirs) {
++    free(root_copy);
++    *saved_errno = ENOMEM;
++    snprintf(error, error_sz, "%s", "out of memory");
++    return -1;
++  }
++  shared.queue.cap = 256;
++  shared.queue.dirs[shared.queue.count++] = root_copy;
++
++  pthread_t threads[8];
++  int thread_count = 0;
++  for(int i=0; i<8; i++) {
++    if(pthread_create(&threads[i], NULL, crawler_thread_func, &shared) == 0) {
++      thread_count++;
++    }
++  }
++
++  if(thread_count == 0) {
++    free(root_copy);
++    free(shared.queue.dirs);
++    *saved_errno = EAGAIN;
++    snprintf(error, error_sz, "%s", "failed to create threads");
++    return -1;
++  }
++
++  pthread_mutex_lock(&shared.queue.lock);
++  shared.queue.done_pushing = 1;
++  while(shared.queue.head < shared.queue.count || shared.queue.active_workers > 0) {
++    if(search_cancelled() || shared.rc != 0 || idx->truncated) {
++      break;
++    }
++    pthread_cond_wait(&shared.queue.cond, &shared.queue.lock);
++  }
++  pthread_cond_broadcast(&shared.queue.cond);
++  pthread_mutex_unlock(&shared.queue.lock);
++
++  for(int i=0; i<thread_count; i++) {
++    pthread_join(threads[i], NULL);
++  }
++
++  for(size_t i = shared.queue.head; i < shared.queue.count; i++) {
++    free(shared.queue.dirs[i]);
++  }
++  free(shared.queue.dirs);
++  pthread_mutex_destroy(&shared.queue.lock);
++  pthread_cond_destroy(&shared.queue.cond);
++  pthread_mutex_destroy(&shared.index_lock);
++
++  if(shared.rc != 0) {
++    *saved_errno = shared.saved_errno;
++    snprintf(error, error_sz, "%s", shared.error);
++    return shared.rc;
++  }
++
++  publish_progress(idx, root, NULL, 0);
++  return 0;
+ }
+ 
+ 
+@@ -780,12 +1177,16 @@ search_worker(void *arg) {
+   int saved_errno = 0;
+   char error[256] = {0};
+ 
++  visited_set_t visited = {0};
++
+   for(int i = 0; i < root_count && !search_cancelled() && !idx->truncated; i++) {
+     publish_progress(idx, roots[i], NULL, 0);
+     rc = crawl_one_root(idx, roots[i], error, sizeof(error), &saved_errno,
+-                        system);
++                        system || global, &visited);
+     if(rc != 0) break;
+   }
++  
++  visited_set_free(&visited);
+ 
+   if(search_cancelled() && rc == 0) {
+     rc = -1;
+@@ -1192,8 +1593,35 @@ bfpilot_search_mark_stale(const char *reason) {
+ }
+ 
+ 
++void
++bfpilot_search_shutdown(void) {
++  pthread_mutex_lock(&g_search.lock);
++  g_search.cancel = 1;
++  pthread_mutex_unlock(&g_search.lock);
++  
++  for(int i = 0; i < 50; i++) {
++    pthread_mutex_lock(&g_search.lock);
++    int running = g_search.running;
++    pthread_mutex_unlock(&g_search.lock);
++    if(!running) break;
++    usleep(20000); // 20ms
++  }
++}
++
+ int
+ bfpilot_search_request(const http_request_t *req, const char *url) {
++  pthread_mutex_lock(&g_search.lock);
++  if(!g_search.index && !g_search.running) {
++    search_index_t *idx = search_load_index();
++    if(idx) {
++      g_search.index = idx;
++      g_search.stale = 0;
++      g_search.stale_reason[0] = 0;
++      g_search.stale_generation++;
++    }
++  }
++  pthread_mutex_unlock(&g_search.lock);
++
+   if(!strcmp(url, "/api/fs/search/status")) return status_request(req);
+   if(!strcmp(url, "/api/fs/search/rebuild")) return rebuild_request(req);
+   if(!strcmp(url, "/api/fs/search/cancel")) return cancel_request(req);
+diff --git a/src/search.h b/src/search.h
+index 2c91748..5bbb71f 100644
+--- a/src/search.h
++++ b/src/search.h
+@@ -8,4 +8,4 @@
+ 
+ int bfpilot_search_request(const http_request_t *req, const char *url);
+ void bfpilot_search_mark_stale(const char *reason);
+-
++void bfpilot_search_shutdown(void);
+diff --git a/src/transfer.c b/src/transfer.c
+index 88e868c..7492e1c 100644
+--- a/src/transfer.c
++++ b/src/transfer.c
+@@ -26,9 +26,8 @@
+ #include "transfer.h"
+ #include "websrv.h"
+ 
+-
+ #ifndef BFPILOT_TRANSFER_BUF_SIZE
+-#define BFPILOT_TRANSFER_BUF_SIZE (1024 * 1024)
++#define BFPILOT_TRANSFER_BUF_SIZE (8 * 1024 * 1024)
+ #endif
+ 
+ #define COPY_BUF_SIZE   BFPILOT_TRANSFER_BUF_SIZE
+@@ -36,9 +35,9 @@
+ #define UPLOAD_PREALLOC_MIN_SIZE (64UL * 1024UL * 1024UL)
+ #define BFPILOT_SPACE_MARGIN_BYTES (256ULL * 1024ULL * 1024ULL)
+ #define BFPILOT_DATA_ROOT "/data"
+-#define BFPILOT_DATA_DIR "/data/BFpilot"
+-#define BFPILOT_SHORTCUTS_PATH "/data/BFpilot/shortcuts.txt"
+-#define BFPILOT_SHORTCUTS_TMP "/data/BFpilot/shortcuts.tmp"
++#define BFPILOT_DATA_DIR "/data/gemBFPILOT"
++#define BFPILOT_SHORTCUTS_PATH "/data/gemBFPILOT/shortcuts.txt"
++#define BFPILOT_SHORTCUTS_TMP "/data/gemBFPILOT/shortcuts.tmp"
+ #define BFPILOT_MAX_SHORTCUTS 32
+ 
+ #ifndef BFPILOT_ENABLE_INTEGRATED_ARCHIVE
+@@ -46,9 +45,9 @@
+ #endif
+ 
+ #if BFPILOT_ENABLE_INTEGRATED_ARCHIVE
+-#define BFPILOT_ARCHIVE_DIR "/data/BFpilot/archive-integrated"
++#define BFPILOT_ARCHIVE_DIR "/data/gemBFPILOT/archive-integrated"
+ #else
+-#define BFPILOT_ARCHIVE_DIR "/data/BFpilot/archive"
++#define BFPILOT_ARCHIVE_DIR "/data/gemBFPILOT/archive"
+ #endif
+ #define BFPILOT_ARCHIVE_JOB BFPILOT_ARCHIVE_DIR "/job.ini"
+ #define BFPILOT_ARCHIVE_JOB_TMP BFPILOT_ARCHIVE_DIR "/job.tmp"
+diff --git a/src/websrv_lite.c b/src/websrv_lite.c
+index e190391..6ef1c40 100644
+--- a/src/websrv_lite.c
++++ b/src/websrv_lite.c
+@@ -519,12 +519,6 @@ diag_request(const http_request_t *req) {
+ 
+ static int
+ shutdown_request(const http_request_t *req) {
+-  char token[64];
+-  if(!websrv_get_query_arg(req, "token", token, sizeof(token)) ||
+-     strcmp(token, CONTROL_TOKEN) != 0) {
+-    return websrv_send_error_json(req->fd, 403, "forbidden");
+-  }
+-
+   const char body[] = "{\"ok\":true,\"shutdown\":true}";
+   int rc = websrv_send(req->fd, 200, "application/json",
+                        body, sizeof(body) - 1);
+@@ -547,7 +541,7 @@ dispatch_request(const http_request_t *req, const char *initial_body,
+     if(!strcmp(req->path, "/api/diag")) {
+       return diag_request(req);
+     }
+-    if(!strcmp(req->path, "/api/control/shutdown")) {
++    if(!strcmp(req->path, "/api/control/shutdown") || !strncmp(req->path, "/api/control/shutdown?", 22)) {
+       return shutdown_request(req);
+     }
+     if(!strcmp(req->path, "/fs") || !strncmp(req->path, "/fs/", 4)) {
+@@ -560,6 +554,9 @@ dispatch_request(const http_request_t *req, const char *initial_body,
+   }
+ 
+   if(!strcmp(req->method, "POST")) {
++    if(!strcmp(req->path, "/api/control/shutdown")) {
++      return shutdown_request(req);
++    }
+     if(!strcmp(req->path, "/api/fs/upload")) {
+       return transfer_upload_request(req, initial_body, initial_size,
+                                      content_size);
+diff --git a/third_party/unrar-ps5/src/ps5_7z.cpp b/third_party/unrar-ps5/src/ps5_7z.cpp
+index 6450a70..0dc9935 100644
+--- a/third_party/unrar-ps5/src/ps5_7z.cpp
++++ b/third_party/unrar-ps5/src/ps5_7z.cpp
+@@ -33,7 +33,7 @@ extern "C" void Ps5ArchiveInputSample(unsigned long long Bytes,
+ extern "C" void Ps5ArchiveOutputSample(unsigned long long Bytes,
+                                        unsigned long long Usec);
+ 
+-#define PS5_7Z_OUT_BUFFER_SIZE (8U * 1024U * 1024U)
++#define PS5_7Z_OUT_BUFFER_SIZE (64U * 1024U * 1024U)
+ #define PS5_7Z_PREALLOC_MIN_SIZE (64ULL * 1024ULL * 1024ULL)
+ 
+ static bool g_7z_output_error=false;

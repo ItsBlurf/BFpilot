@@ -15,6 +15,7 @@
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <sys/socket.h>
 
 #include "asset.h"
@@ -519,12 +520,6 @@ diag_request(const http_request_t *req) {
 
 static int
 shutdown_request(const http_request_t *req) {
-  char token[64];
-  if(!websrv_get_query_arg(req, "token", token, sizeof(token)) ||
-     strcmp(token, CONTROL_TOKEN) != 0) {
-    return websrv_send_error_json(req->fd, 403, "forbidden");
-  }
-
   const char body[] = "{\"ok\":true,\"shutdown\":true}";
   int rc = websrv_send(req->fd, 200, "application/json",
                        body, sizeof(body) - 1);
@@ -547,7 +542,7 @@ dispatch_request(const http_request_t *req, const char *initial_body,
     if(!strcmp(req->path, "/api/diag")) {
       return diag_request(req);
     }
-    if(!strcmp(req->path, "/api/control/shutdown")) {
+    if(!strcmp(req->path, "/api/control/shutdown") || !strncmp(req->path, "/api/control/shutdown?", 22)) {
       return shutdown_request(req);
     }
     if(!strcmp(req->path, "/fs") || !strncmp(req->path, "/fs/", 4)) {
@@ -560,6 +555,9 @@ dispatch_request(const http_request_t *req, const char *initial_body,
   }
 
   if(!strcmp(req->method, "POST")) {
+    if(!strcmp(req->path, "/api/control/shutdown")) {
+      return shutdown_request(req);
+    }
     if(!strcmp(req->path, "/api/fs/upload")) {
       return transfer_upload_request(req, initial_body, initial_size,
                                      content_size);
@@ -745,6 +743,12 @@ websrv_listen(unsigned short port, websrv_ready_cb_t ready_cb,
       if(active) close(srvfd);
       return -err;
     }
+
+    int bufsize = 2 * 1024 * 1024;
+    setsockopt(connfd, SOL_SOCKET, SO_SNDBUF, &bufsize, sizeof(bufsize));
+    setsockopt(connfd, SOL_SOCKET, SO_RCVBUF, &bufsize, sizeof(bufsize));
+    int flag = 1;
+    setsockopt(connfd, IPPROTO_TCP, TCP_NODELAY, &flag, sizeof(flag));
 
     client_arg_t *client = calloc(1, sizeof(*client));
     if(!client) {
