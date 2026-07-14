@@ -1,67 +1,44 @@
-# BFpilot PC→PS5 upload performance (research + applied)
+# Upload performance
 
-## Reality (PS5 architecture / scene measurements)
+## What the PS5 actually does
 
-| Limit | Practical meaning |
-| --- | --- |
-| Gigabit LAN | ≈ **110–112 MiB/s** ceiling; cannot beat without faster net |
-| `/data` PFS writes | Often **much** slower than raw SSD (encryption, VFS, scheduler, kstuff) |
-| USB/ext | Sometimes faster than `/data` (different stack) |
-| Firmware variance | zftpd-reported internal upload band ≈ 20–113 MB/s across FW |
+| | |
+|---|---|
+| Gigabit LAN | ~110–112 MiB/s ceiling |
+| `/data` writes | Usually way slower than raw SSD (PFS / crypto / scheduler) |
+| USB/ext | Sometimes faster than `/data` |
+| FW variance | zftpd-style uploads land roughly 20–113 MB/s depending on FW |
 
-Context: scene measurements (zftpd/ftpsrv STOR patterns, ps5upload-style analysis) and FreeBSD socket behavior on Prospero.
+## What we ship (v0.4.0)
 
-## What was already good (pre this pass)
+* Single-buffer STOR: `recv` → `write` (2 MiB)
+* HTTP keep-alive, up to 64 requests per connection
+* Download stream buffer 1 MiB
+* Listen SO_RCVBUF 4 MiB, SO_SNDBUF 2 MiB, backlog 32
+* Free-space check + temp file then rename
+* UI stops spamming toasts every file on multi-upload
 
-- Single-buffer STOR: `recv` → `write` → repeat (no double-buffer stall with small RCVBUF)
-- No multi-GB `posix_fallocate` during streaming body (was causing 1–2 MB/s collapse)
-- No `TCP_NODELAY` on bulk upload (tiny segments thrash PFS)
-- Listen `SO_RCVBUF` 4 MiB (accepted sockets inherit)
-- Free-space preflight via `statvfs`
-- Staging temp + rename
+## What we don't do
 
-## Applied optimizations (safe / compatibility-first)
+* Parallel writers into `/data` (often slower)
+* Double-buffer upload
+* Whole-file `posix_fallocate` while the browser is still POSTing
+* `TCP_NODELAY` on bulk transfer
+* `sendfile` / aggressive `F_NOCACHE` (panic risk on some media)
 
-| Change | Why safe | Expected impact |
-| --- | --- | --- |
-| **HTTP/1.1 keep-alive** (up to 64 req/conn) | Same semantics; close still works | **Multi-file**: cut TCP handshake + slow-start per file |
-| **Upload buf 2 MiB** (was 1 MiB) | Still single-buffer STOR cadence | Fewer PFS `write` syscalls on write-bound FW |
-| **Download stream buf 1 MiB** (was 64 KiB) | Read path only | Faster `/fs` downloads |
-| **Listen SO_SNDBUF 2 MiB** + post-accept try | Kernel may cap | Better download window when inherited |
-| **Listen backlog 32** (was 16) | Standard | Fewer accept drops under burst |
-| **UI: less toast spam** (every 8 files) | Client-only | Less PS5 browser main-thread thrash |
-| **Explicit `Content-Type: application/octet-stream`** | Spec-friendly | Cleaner request shape |
+## Measuring
 
-## Explicitly avoided (unstable or false speed)
+1. Inject `bfpilot.elf`
+2. Upload something big (≥500 MB) to `/data` and check `averageMBps` / `recvMs` / `writeMs` in the response
+3. Multi-file uploads should gain most from keep-alive
+4. Wired beats Wi-Fi
 
-| Idea | Why not |
-| --- | --- |
-| Parallel multi-writer to `/data` | PFS often serializes; can **slow** large transfers |
-| Double-buffer upload | zftpd: stalls when RCVBUF small / window closes |
-| Whole-file `posix_fallocate` during POST | Fills RCVBUF while browser streams → collapse |
-| `TCP_NODELAY` on bulk | Tiny segments + PFS thrash |
-| `F_NOCACHE` + later `sendfile` | Panic risk on some media |
+Log line looks like:
 
-## How to measure after deploy
-
-1. Rebuild and inject `bfpilot.elf`  
-2. Upload one large file (≥500 MB) to `/data/...` and note JSON `averageMBps`, `recvMs`, `writeMs`  
-3. Upload many small files — multi-file benefits most from keep-alive  
-4. Compare Wi-Fi vs wired (wired expected much faster)
-
-Server log line:
-
-```text
+```
 upload end ... average_mbps=… recv_ms=… write_ms=… buf_size=2097152
 ```
 
-If `write_ms` ≫ `recv_ms` → disk-bound (normal on slow FW `/data`).  
-If `recv_ms` ≫ `write_ms` → network or window (check LAN, RCVBUF effective log at listen).
+`write_ms` >> `recv_ms` → disk bound. The other way around → network / window.
 
-## Related files
-
-- `src/transfer.c` — upload STOR loop  
-- `src/websrv_lite.c` — listen buffers, keep-alive client loop  
-- `src/fs.c` — download stream buffer  
-- `assets/files.html` — browser upload queue  
-- `scripts/goal_verify_io.py` — structural gates  
+Code: `src/transfer.c`, `src/websrv_lite.c`, `src/fs.c`, `assets/files.html`.
