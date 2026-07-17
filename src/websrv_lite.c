@@ -531,7 +531,8 @@ diag_request(const http_request_t *req) {
                    "\"/api/fs/transfer/stats\","
                    "\"/api/fs/archive/support\","
                    "\"/api/fs/archive/status\","
-                   "\"/api/fs/archive/prepare\"]}",
+                   "\"/api/fs/archive/prepare\","
+                   "\"/api/fs/launch\"]}",
                    VERSION_TAG, BUILD_VERSION, BFPILOT_BUILD_MODE,
                    (long)getpid(), (long)now,
                    bfpilot_diag_uptime(),

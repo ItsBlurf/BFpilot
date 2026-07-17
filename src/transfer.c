@@ -22,6 +22,7 @@
 #include <unistd.h>
 
 #include "diag.h"
+#include "payload_launch.h"
 #include "search.h"
 #include "transfer.h"
 #include "websrv.h"
@@ -2301,6 +2302,7 @@ transfer_request(const http_request_t *req, const char *url) {
   if(!strcmp(url, "/api/fs/archive/status")) return archive_status_handler(req);
   if(!strcmp(url, "/api/fs/archive/support")) return archive_support_handler(req);
   if(!strcmp(url, "/api/fs/job/cancel")) return cancel_handler(req);
+  if(!strcmp(url, "/api/fs/launch")) return bfpilot_launch_request(req);
   return serve_error(req, 404, "no such endpoint");
 }
 

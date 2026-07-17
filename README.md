@@ -8,17 +8,17 @@ http://<PS5_IP>:5905/
 
 Works from the PS5 browser or any PC/phone on the same network. No extra app after you inject it.
 
-Version **v0.4.0**. Tested on FW **11.60**.
+Version **v0.4.1**. Tested on FW **11.60**.
 
 ## Payloads
 
 | File | What it is |
 |------|------------|
-| `bfpilot.elf` | File manager + archive extract. Inject this. |
-| `bfpilot-launcher-installer.elf` | Optional home menu tile (`BFPL00001` → `http://127.0.0.1:5905/`) |
+| `bfpilot.elf` | File manager + archive extract. Inject this first. |
+| `bfpilot-launcher-installer.elf` | Home menu **Media** tile (`BFPL00001` → `http://127.0.0.1:5905/`). Put a copy under `/data/BFpilot/` so the main ELF can auto-run it once the UI is up. |
 | `bfpilot-archive-worker.elf` | Build-only diagnostic. You don't need this for normal use. |
 
-Releases only ship the first two.
+Releases ship the first two. Keep the installer next to the main payload (or under `/data/BFpilot/`) if you want the tile installed automatically.
 
 ## Features
 
@@ -27,6 +27,7 @@ Releases only ship the first two.
 - Places: `/`, `/data`, `/data/homebrew`, `/user`, `/mnt`, USB/ext when plugged in, custom shortcuts
 - Upload files or a whole folder (folder picker needs browser support)
 - Download, copy, move, rename, mkdir, recursive delete
+- **Load payload**: double-click `.elf`/`.bin`/`.js` (or toolbar) to send it to elfldr on port **9021**
 - Progress + cancel on big jobs; overwrite/merge/skip when the destination already exists
 - Free space check before copy/move when size is known
 - Folder size on click

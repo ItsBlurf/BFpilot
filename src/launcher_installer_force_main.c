@@ -53,6 +53,7 @@ typedef int (*app_install_title_dir_fn)(const char *, const char *, void *);
 int sceUserServiceInitialize(void *);
 void sceUserServiceTerminate(void);
 int sceAppInstUtilInitialize(void);
+int sceAppInstUtilTerminate(void);
 int sceAppInstUtilAppInstallAll(void *);
 
 
@@ -191,6 +192,7 @@ main(void) {
     bfpilot_notify("BFpilot launcher installer", "AppInst init failed");
     return 1;
   }
+  installer_log("home tile category=Media applicationCategoryType=65536");
 
   snprintf(app_dir, sizeof(app_dir), BFPILOT_APP_ROOT "/%s",
            BFPILOT_APP_TITLE_ID);
@@ -275,9 +277,11 @@ main(void) {
                 title_dir_rc, install_all_rc, set_authid_rc,
                 restore_authid_rc);
 
+  sceAppInstUtilTerminate();
   sceUserServiceTerminate();
   if(final_rc == 0) {
-    bfpilot_notify("BFpilot launcher installer", "installed or refreshed");
+    bfpilot_notify("BFpilot launcher installer",
+                   "Media tile installed or refreshed");
     return 0;
   }
 

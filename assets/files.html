@@ -791,6 +791,7 @@
         <button id="new-folder">New Folder</button>
         <button id="rename">Rename</button>
         <button id="download">Download</button>
+        <button id="load-payload" class="primary" title="Send selected .elf/.bin to elfldr on port 9021">Load payload</button>
         <button id="edit-file" class="primary">Edit</button>
         <button id="extract" class="primary">Extract</button>
         <button id="upload-files" class="warn">Upload Files</button>
@@ -1660,6 +1661,8 @@
         const next = entryPath(entry);
         if (entry.dir) {
           openPath(next);
+        } else if (canLaunchPayload(entry)) {
+          launchPayloadPath(next);
         } else if (canEdit(entry)) {
           openEditor(next);
         } else if (canViewImage(entry)) {
@@ -2308,6 +2311,39 @@
       return entry && !entry.dir && isTextName(entry.name) && entry.size < 5 * 1024 * 1024;
     }
 
+    function canLaunchPayload(entry) {
+      if (!entry || entry.dir || !entry.name) return false;
+      return /\.(elf|bin|js)$/i.test(entry.name);
+    }
+
+    async function launchPayloadPath(path) {
+      const name = path.split('/').pop();
+      if (!confirm('Load payload via elfldr (port 9021)?\n\n' + name)) return;
+      try {
+        const data = await api('/api/fs/launch?path=' + encodeURIComponent(path));
+        if (data && data.ok) {
+          toast('Sent to elfldr: ' + name);
+        } else {
+          toast((data && data.error) || 'Launch failed', 'err');
+        }
+      } catch (err) {
+        toast('Launch failed: ' + (err.message || err), 'err');
+      }
+    }
+
+    async function loadPayloadSelected() {
+      const entries = selectedEntries().filter(canLaunchPayload);
+      if (!entries.length) {
+        toast('Select an .elf / .bin / .js payload', 'err');
+        return;
+      }
+      if (entries.length > 1) {
+        toast('Select a single payload to load', 'err');
+        return;
+      }
+      await launchPayloadPath(entryPath(entries[0]));
+    }
+
     function openEditor(path) {
       editorCurrentPath = path;
       el('editor-textarea').value = 'Loading...';
@@ -2578,6 +2614,7 @@
       el('new-folder').addEventListener('click', makeFolder);
       el('rename').addEventListener('click', renameOne);
       el('download').addEventListener('click', downloadSelected);
+      el('load-payload').addEventListener('click', loadPayloadSelected);
       el('extract').addEventListener('click', extractSelected);
       el('delete').addEventListener('click', deleteSelected);
       el('copy').addEventListener('click', () => transfer('copy'));

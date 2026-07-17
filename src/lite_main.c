@@ -25,10 +25,11 @@
 #include "boot_marker.h"
 #include "diag.h"
 #include "notify.h"
+#include "search.h"
+#include "tile_bootstrap.h"
 #include "transfer.h"
 #include "version.h"
 #include "websrv.h"
-#include "search.h"
 
 #define BFPILOT_RELOAD_TOKEN "bs5fm-local-reload"
 
@@ -296,6 +297,9 @@ on_web_ready(unsigned short port, void *arg) {
     state->notified = 1;
   }
 
+  /* Home tile (Media) via separate installer ELF + elfldr — keeps AppInst out of main. */
+  bfpilot_tile_bootstrap_try();
+
   debug_notify("BFpilot debug", "web server ready");
 }
 
@@ -343,7 +347,8 @@ main(int argc, char **argv) {
 #else
   puts("  archive: prepare jobs only; inject bfpilot-archive-worker.elf to extract");
 #endif
-  puts("  ps5 app: launcher installer is a separate optional payload");
+  puts("  ps5 app: Media tile auto-install if launcher ELF is present");
+  puts("  payloads: double-click .elf/.bin to load via elfldr :9021");
   printf("  web ui: http://%s:%u/\n", ready.ip, (unsigned int)ready.port);
   puts("  inject/deploy port: 9021");
   puts("");

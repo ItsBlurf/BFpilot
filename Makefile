@@ -24,8 +24,8 @@ PYTHON ?= python3
 # Ship / daily use must stay 5905.
 WEB_PORT ?= 5905
 
-VERSION_TAG := bfpilot-v0.4.0
-BUILD_VERSION ?= v0.4.0
+VERSION_TAG := bfpilot-v0.4.1
+BUILD_VERSION ?= v0.4.1
 
 LLVM_CONFIG ?= $(if $(wildcard $(PS5_PAYLOAD_SDK)/bin/prospero-llvm-config),$(PS5_PAYLOAD_SDK)/bin/prospero-llvm-config,$(CURDIR)/build-tools/llvm-config)
 LLVM_BINDIR ?= $(shell "$(LLVM_CONFIG)" --bindir 2>/dev/null || dirname "$$(command -v clang 2>/dev/null || command -v clang.exe 2>/dev/null || command -v llvm-strip 2>/dev/null || command -v llvm-strip.exe 2>/dev/null || echo clang)" 2>/dev/null || echo .)
@@ -46,6 +46,8 @@ WEB_SRCS += src/mime.c
 WEB_SRCS += src/notify.c
 WEB_SRCS += src/search.c
 WEB_SRCS += src/transfer.c
+WEB_SRCS += src/payload_launch.c
+WEB_SRCS += src/tile_bootstrap.c
 
 LAUNCHER_INSTALLER_SRCS := src/launcher_installer_force_main.c
 LAUNCHER_INSTALLER_SRCS += src/boot_marker.c

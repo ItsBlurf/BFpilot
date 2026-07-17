@@ -12,8 +12,13 @@ Main release payload. Test this first on every firmware and loader.
 - Starts the HTTP file manager on port `5905`.
 - Starts the integrated archive daemon for RAR, 7z, split 7z, and ZIP
   extraction.
-- Does not install or refresh a launcher tile.
-- Does not include integrated launcher installer source.
+- Can **load other payloads** by streaming them to elfldr (`127.0.0.1:9021`)
+  via `/api/fs/launch` (no AppInst).
+- Can **auto-bootstrap the home tile** by injecting
+  `bfpilot-launcher-installer.elf` once if that ELF is found under
+  `/data/BFpilot/` (or a few USB/homebrew paths). Still does **not** link
+  AppInstUtil itself.
+- Does not include integrated launcher installer source in the main link.
 - Does not link AppInstUtil.
 - Does not depend on SystemService, UserService, AppInstUtil, or `kernel_sys`.
 - Writes boot/runtime/crash diagnostics under `/data/BFpilot`.
@@ -25,15 +30,18 @@ Broad firmware support comes from avoiding imports that can fail before
 
 ### `bfpilot-launcher-installer.elf`
 
-Isolated optional payload for installing or refreshing `/user/app/BFPL00001`.
-Run it only after `bfpilot.elf` works.
+Isolated payload for installing or refreshing `/user/app/BFPL00001` as a
+**Media** category home tile. Prefer putting a copy at
+`/data/BFpilot/bfpilot-launcher-installer.elf` so `bfpilot.elf` can start it
+automatically after the web UI is ready (or inject it yourself once).
 
 - Direct-links the working websrv-style installer dependency set:
   `kernel_sys`, SystemService, UserService, and AppInstUtil.
 - Initializes UserService.
 - Temporarily sets authid `0x4801000000000013`.
 - Validates/stages embedded `param.json` and `icon0.png`.
-- Registers the tile through AppInst.
+- `param.json` uses `applicationCategoryType: 65536` (Media tab).
+- Registers the tile through AppInst; terminates AppInst when done.
 - Restores the original authid before exit.
 - Logs to `/data/BFpilot/launcher-installer.log`.
 

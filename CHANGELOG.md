@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.4.1
+
+* Home tile installs as **Media** category (`applicationCategoryType` 65536), same idea as Payload Manager
+* After the web UI is up, auto-injects `bfpilot-launcher-installer.elf` if found under `/data/BFpilot/` (or common USB/homebrew paths) so the PS5 tile installs without merging AppInst into the main ELF
+* **Load payload**: double-click `.elf`/`.bin`/`.js` or use the toolbar button — streams the file to elfldr on `127.0.0.1:9021`
+* New API: `GET /api/fs/launch?path=...`
+* Launcher installer calls `sceAppInstUtilTerminate` when done
+
 ## v0.4.0 Stable (2026-07-14)
 
 Upload speed + Index All stability. Tested on FW 11.60.
