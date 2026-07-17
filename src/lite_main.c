@@ -22,9 +22,11 @@
 #include <net/if.h>
 #include <netinet/in.h>
 
+#include "app_installer.h"
 #include "boot_marker.h"
 #include "diag.h"
 #include "notify.h"
+#include "paths.h"
 #include "search.h"
 #include "tile_bootstrap.h"
 #include "transfer.h"
@@ -297,9 +299,6 @@ on_web_ready(unsigned short port, void *arg) {
     state->notified = 1;
   }
 
-  /* Home tile (Media) via separate installer ELF + elfldr — keeps AppInst out of main. */
-  bfpilot_tile_bootstrap_try();
-
   debug_notify("BFpilot debug", "web server ready");
 }
 
@@ -322,24 +321,24 @@ main(int argc, char **argv) {
               "disable_launcher=%d",
               BFPILOT_SDK_PATH, BFPILOT_ENABLE_LAUNCHER,
               BFPILOT_DISABLE_LAUNCHER);
-  bfpilot_log("diagnostic paths log=/data/BFpilot/log.txt crash=/data/BFpilot/"
-              "crash.log");
+  bfpilot_log("diagnostic paths log=%s crash=%s data_dir=%s",
+              BFPILOT_LOG_PATH, BFPILOT_CRASH_LOG_PATH, BFPILOT_DATA_DIR);
 
   ready_state_t ready;
   memset(&ready, 0, sizeof(ready));
   detect_lan_ip(ready.ip, sizeof(ready.ip));
   ready.port = runtime_port_requested(argc, argv);
   websrv_set_runtime_port(ready.port);
-  websrv_set_runtime_diag(1);
+  websrv_set_runtime_diag(0);
   bfpilot_log("runtime web_port=%u", (unsigned int)ready.port);
-  bfpilot_log("runtime launcher=separate_payload");
+  bfpilot_log("runtime launcher=embedded_media_tile");
 
   puts(".----------------------------------------------.");
   puts("|  BFpilot                                     |");
   printf("|  %-18s  browser file manager        |\n", VERSION_TAG);
   puts("'----------------------------------------------'");
   puts("");
-  puts("  active: standalone web file manager");
+  puts("  active: file manager + Media home tile (single ELF)");
   printf("  mode: %s\n", BFPILOT_BUILD_MODE);
   puts("  scope: browse, upload, download, copy, move, delete, rename, mkdir");
 #if BFPILOT_ENABLE_INTEGRATED_ARCHIVE
@@ -347,8 +346,9 @@ main(int argc, char **argv) {
 #else
   puts("  archive: prepare jobs only; inject bfpilot-archive-worker.elf to extract");
 #endif
-  puts("  ps5 app: Media tile auto-install if launcher ELF is present");
+  puts("  ps5 app: Media category tile install from this payload (65536)");
   puts("  payloads: double-click .elf/.bin to load via elfldr :9021");
+  printf("  data dir: %s (only)\n", BFPILOT_DATA_DIR);
   printf("  web ui: http://%s:%u/\n", ready.ip, (unsigned int)ready.port);
   puts("  inject/deploy port: 9021");
   puts("");
@@ -366,10 +366,17 @@ main(int argc, char **argv) {
 #endif
 
   bfpilot_diag_set_service_rcs(BFPILOT_DIAG_SKIPPED, BFPILOT_DIAG_SKIPPED);
-  bfpilot_diag_set_launcher_status("separate_payload", BFPILOT_DIAG_SKIPPED);
   bfpilot_log("sceNetCtlInit rc=skipped");
-  bfpilot_log("sceUserServiceInitialize rc=skipped");
-  bfpilot_log("launcher skipped: separate payload");
+
+  /* Payload Manager model: install Media home tile from the main ELF. */
+  {
+    int install_rc = bfpilot_install_app_if_needed();
+    bfpilot_log("embedded Media tile install rc=%d", install_rc);
+    if(install_rc != 0) {
+      /* Optional recovery: separate installer under /data/BFpilot/ only. */
+      bfpilot_tile_bootstrap_try();
+    }
+  }
 
   bfpilot_checkpoint("handoff check");
   debug_notify("BFpilot debug", "handoff check");

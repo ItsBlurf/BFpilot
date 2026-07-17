@@ -24,12 +24,8 @@
 #include "notify.h"
 #include "version.h"
 
-#define BFPILOT_APP_TITLE_ID "BFPL00001"
-#define BFPILOT_APP_ROOT "/user/app"
-#define BFPILOT_APP_PARENT BFPILOT_APP_ROOT "/"
-#define BFPILOT_DATA_ROOT "/data"
-#define BFPILOT_DATA_DIR "/data/BFpilot"
-#define BFPILOT_LAUNCHER_LOG "/data/BFpilot/launcher-installer.log"
+#include "paths.h"
+
 #define BFPILOT_DIAG_SKIPPED (-2147483000)
 #define BFPILOT_APPINST_AUTHID UINT64_C(0x4801000000000013)
 

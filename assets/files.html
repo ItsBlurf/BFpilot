@@ -315,20 +315,32 @@
 
     .actions {
       display: flex;
-      gap: 8px;
-      overflow-x: auto;
-      padding: 9px 10px;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 6px;
+      overflow-x: hidden;
+      overflow-y: visible;
+      padding: 8px 10px;
       border-bottom: 1px solid var(--line);
+    }
+
+    .actions button {
+      min-height: 32px;
+      padding: 0 9px;
+      font-size: 13px;
+      flex: 0 0 auto;
     }
 
     .count {
       margin-left: auto;
-      min-height: 34px;
+      min-height: 32px;
       display: inline-flex;
       align-items: center;
       color: var(--muted);
       font-size: 12px;
       white-space: nowrap;
+      flex: 1 1 auto;
+      justify-content: flex-end;
     }
 
     .file-head,
@@ -697,7 +709,14 @@
       }
 
       .actions {
-        flex-wrap: nowrap;
+        flex-wrap: wrap;
+        gap: 5px;
+      }
+
+      .actions button {
+        min-height: 30px;
+        padding: 0 8px;
+        font-size: 12px;
       }
 
       .file-head,

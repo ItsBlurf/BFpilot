@@ -23,6 +23,7 @@
 
 #include "diag.h"
 #include "path_ops.h"
+#include "paths.h"
 #include "payload_launch.h"
 #include "search.h"
 #include "transfer.h"
@@ -47,10 +48,7 @@
 #define COPY_BUF_SIZE   BFPILOT_TRANSFER_BUF_SIZE
 #define UPLOAD_BUF_SIZE BFPILOT_UPLOAD_BUF_SIZE
 #define BFPILOT_SPACE_MARGIN_BYTES (256ULL * 1024ULL * 1024ULL)
-#define BFPILOT_DATA_ROOT "/data"
-#define BFPILOT_DATA_DIR "/data/BFpilot"
-#define BFPILOT_SHORTCUTS_PATH "/data/BFpilot/shortcuts.txt"
-#define BFPILOT_SHORTCUTS_TMP "/data/BFpilot/shortcuts.tmp"
+
 #define BFPILOT_MAX_SHORTCUTS 32
 
 #ifndef BFPILOT_ENABLE_INTEGRATED_ARCHIVE
@@ -58,9 +56,9 @@
 #endif
 
 #if BFPILOT_ENABLE_INTEGRATED_ARCHIVE
-#define BFPILOT_ARCHIVE_DIR "/data/BFpilot/archive-integrated"
+#define BFPILOT_ARCHIVE_DIR BFPILOT_ARCHIVE_INTEGRATED_DIR
 #else
-#define BFPILOT_ARCHIVE_DIR "/data/BFpilot/archive"
+#define BFPILOT_ARCHIVE_DIR BFPILOT_ARCHIVE_STANDALONE_DIR
 #endif
 #define BFPILOT_ARCHIVE_JOB BFPILOT_ARCHIVE_DIR "/job.ini"
 #define BFPILOT_ARCHIVE_JOB_TMP BFPILOT_ARCHIVE_DIR "/job.tmp"

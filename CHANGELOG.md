@@ -2,15 +2,16 @@
 
 ## v0.4.1
 
-* Home tile installs as **Media** category (`applicationCategoryType` 65536), same idea as Payload Manager
-* After the web UI is up, auto-injects `bfpilot-launcher-installer.elf` if found under `/data/BFpilot/` (or common USB/homebrew paths) so the PS5 tile installs without merging AppInst into the main ELF
-* **Load payload**: double-click `.elf`/`.bin`/`.js` or use the toolbar button — streams the file to elfldr on `127.0.0.1:9021`
+* **Single ELF** like Payload Manager: `bfpilot.elf` runs the port-5905 file manager **and** installs the PS5 home **Media** tile (`applicationCategoryType` 65536, title `BFPL00001`, deeplink `http://127.0.0.1:5905/`) via embedded AppInst
+* Optional recovery installer `bfpilot-launcher-installer.elf` only under `/data/BFpilot/` (not a separate data tree)
+* **One data directory**: all logs/index/shortcuts/archive state under `/data/BFpilot` only (no `/data/bfpilot`, `/data/BFPILOT`, or `/data/bfpilot-launcher-installer` roots)
+* Action bar wraps (no horizontal scrollbar) for New Folder / Rename / Download / Load payload / chmod / Extract / Upload / Delete
+* **Load payload**: double-click `.elf`/`.bin`/`.js` or toolbar — streams to elfldr on `127.0.0.1:9021`
 * New API: `GET /api/fs/launch?path=...`
-* Launcher installer calls `sceAppInstUtilTerminate` when done
-* **chmod** UI + `GET /api/fs/chmod?path=&mode=` (presets 444/644/755/777) for offline appmeta icon use-case (#10)
-* Single-click folder name opens directory (#7); checkboxes still multi-select (#11)
-* Case-insensitive path resolve on list/Go when exact path misses (#8)
-* Extract still covers zip/rar/7z including `.7z.001` (#9)
+* **chmod** UI + `GET /api/fs/chmod?path=&mode=` (presets 444/644/755/777) (#10)
+* Single-click folder name opens directory (#7); checkboxes multi-select (#11)
+* Case-insensitive path resolve on list/Go (#8)
+* Extract zip/rar/7z including `.7z.001` (#9)
 * Version strings locked to **v0.4.1** (#12)
 
 ## v0.4.0 Stable (2026-07-14)

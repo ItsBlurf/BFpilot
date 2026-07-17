@@ -19,11 +19,8 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 
-#define BFPILOT_DATA_ROOT "/data"
-#define BFPILOT_DATA_DIR "/data/BFpilot"
-#define BFPILOT_HOMEBREW_DIR "/data/homebrew"
-#define BFPILOT_LOG_PATH "/data/BFpilot/log.txt"
-#define BFPILOT_CRASH_LOG_PATH "/data/BFpilot/crash.log"
+#include "paths.h"
+
 #define BFPILOT_EXT0_ROOT "/mnt/ext0"
 #define BFPILOT_EXT0_HOMEBREW "/mnt/ext0/homebrew"
 

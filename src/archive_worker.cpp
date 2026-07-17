@@ -44,10 +44,11 @@ extern "C" int posix_fallocate(int fd, off_t offset, off_t len);
 #define BFPILOT_ARCHIVE_INTEGRATED 0
 #endif
 
+#include "paths.h"
 #if BFPILOT_ARCHIVE_INTEGRATED
-#define BFPILOT_ARCHIVE_DIR "/data/BFpilot/archive-integrated"
+#define BFPILOT_ARCHIVE_DIR BFPILOT_ARCHIVE_INTEGRATED_DIR
 #else
-#define BFPILOT_ARCHIVE_DIR "/data/BFpilot/archive"
+#define BFPILOT_ARCHIVE_DIR BFPILOT_ARCHIVE_STANDALONE_DIR
 #endif
 #define BFPILOT_ARCHIVE_JOB BFPILOT_ARCHIVE_DIR "/job.ini"
 #define BFPILOT_ARCHIVE_STATUS BFPILOT_ARCHIVE_DIR "/status.json"

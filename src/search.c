@@ -22,6 +22,7 @@
 #include <fcntl.h>
 
 #include "diag.h"
+#include "paths.h"
 #include "websrv.h"
 
 #define BFPILOT_SEARCH_ALL_ROOTS_LABEL "all"
@@ -154,7 +155,7 @@ search_diag_log(const char *fmt, ...) {
     line[n++] = '\n';
     line[n] = 0;
   }
-  FILE *file = fopen("/data/BFpilot/search_crawl.log", "a");
+  FILE *file = fopen(BFPILOT_SEARCH_CRAWL_LOG, "a");
   if(file) {
     fwrite(line, 1, (size_t)n, file);
     fclose(file);
@@ -642,7 +643,7 @@ typedef struct {
 static void
 search_save_index(search_index_t *idx) {
   if(!idx || idx->count == 0) return;
-  FILE *f = fopen("/data/BFpilot/search.idx.tmp", "wb");
+  FILE *f = fopen(BFPILOT_SEARCH_IDX_TMP, "wb");
   if(!f) return;
 
   uint64_t string_block_size = 0;
@@ -701,15 +702,15 @@ search_save_index(search_index_t *idx) {
   fclose(f);
 
   if(ok) {
-    rename("/data/BFpilot/search.idx.tmp", "/data/BFpilot/search.idx");
+    rename(BFPILOT_SEARCH_IDX_TMP, BFPILOT_SEARCH_IDX);
   } else {
-    unlink("/data/BFpilot/search.idx.tmp");
+    unlink(BFPILOT_SEARCH_IDX_TMP);
   }
 }
 
 static search_index_t *
 search_load_index(void) {
-  FILE *f = fopen("/data/BFpilot/search.idx", "rb");
+  FILE *f = fopen(BFPILOT_SEARCH_IDX, "rb");
   if(!f) return NULL;
 
   idx_header_t hdr;

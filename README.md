@@ -6,7 +6,7 @@ PS5 payload that runs a browser file manager on port **5905**:
 http://<PS5_IP>:5905/
 ```
 
-Works from the PS5 browser or any PC/phone on the same network. No extra app after you inject it.
+Works from the PS5 browser or any PC/phone on the same network.
 
 Version **v0.4.1**. Tested on FW **11.60**.
 
@@ -14,11 +14,13 @@ Version **v0.4.1**. Tested on FW **11.60**.
 
 | File | What it is |
 |------|------------|
-| `bfpilot.elf` | File manager + archive extract. Inject this first. |
-| `bfpilot-launcher-installer.elf` | Home menu **Media** tile (`BFPL00001` → `http://127.0.0.1:5905/`). Put a copy under `/data/BFpilot/` so the main ELF can auto-run it once the UI is up. |
+| `bfpilot.elf` | **Primary** — file manager + archive extract + **Media home tile** install (same single-ELF model as Payload Manager). Inject this. |
+| `bfpilot-launcher-installer.elf` | Optional recovery tile installer only. If needed, place the **file** under `/data/BFpilot/` (not a separate folder under `/data`). |
 | `bfpilot-archive-worker.elf` | Build-only diagnostic. You don't need this for normal use. |
 
-Releases ship the first two. Keep the installer next to the main payload (or under `/data/BFpilot/`) if you want the tile installed automatically.
+Normal use is just `bfpilot.elf`. On boot it installs/refreshes the **Media** shelf tile (`BFPL00001` → `http://127.0.0.1:5905/`).
+
+**Data layout:** everything lives under **`/data/BFpilot`** only (logs, search index, shortcuts, archive jobs). Do not create `/data/bfpilot`, `/data/BFPILOT`, or `/data/bfpilot-launcher-installer` trees.
 
 ## Features
 
