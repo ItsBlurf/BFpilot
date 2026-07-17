@@ -22,6 +22,7 @@
 #include <unistd.h>
 
 #include "diag.h"
+#include "path_ops.h"
 #include "payload_launch.h"
 #include "search.h"
 #include "transfer.h"
@@ -191,10 +192,20 @@ static void drain_body(int fd, size_t already_read, size_t content_size);
 
 static int
 path_is_safe(const char *p) {
-  if(!p || !*p) return 0;
-  if(p[0] != '/') return 0;
-  if(strstr(p, "..")) return 0;
-  return 1;
+  return bfpilot_path_is_safe(p);
+}
+
+/* Resolve path; on ENOENT try case-insensitive segments (#8). */
+static int
+path_for_list(const char *in, char *out, size_t out_sz) {
+  struct stat st;
+  if(!bfpilot_path_is_safe(in)) return -EINVAL;
+  if(lstat(in, &st) == 0) {
+    if(strlen(in) >= out_sz) return -ENAMETOOLONG;
+    memcpy(out, in, strlen(in) + 1);
+    return 0;
+  }
+  return bfpilot_path_resolve_ci(in, out, out_sz);
 }
 
 
@@ -968,14 +979,53 @@ delete_worker(void *arg) {
 
 
 static int
+chmod_request(const http_request_t *req) {
+  char path[1024];
+  char mode_s[16];
+  char resolved[1024];
+  mode_t mode = 0;
+  int rc;
+  struct stat st;
+  char body[256];
+
+  if(!websrv_get_query_arg(req, "path", path, sizeof(path)) ||
+     !websrv_get_query_arg(req, "mode", mode_s, sizeof(mode_s))) {
+    return serve_error(req, 400, "missing path or mode");
+  }
+  if(bfpilot_parse_mode_octal(mode_s, &mode) != 0) {
+    return serve_error(req, 400, "bad mode (use octal like 444 or 755)");
+  }
+  if(path_for_list(path, resolved, sizeof(resolved)) != 0) {
+    return serve_error(req, 404, "path not found");
+  }
+  rc = bfpilot_path_chmod(resolved, mode);
+  if(rc != 0) {
+    snprintf(body, sizeof(body),
+             "{\"ok\":false,\"error\":\"chmod failed\",\"errno\":%d}", -rc);
+    return websrv_send_text(req->fd, 500, "application/json", body);
+  }
+  if(lstat(resolved, &st) != 0) {
+    return serve_error(req, 500, "chmod ok but stat failed");
+  }
+  snprintf(body, sizeof(body),
+           "{\"ok\":true,\"path_ok\":true,\"mode\":%o,\"mode_bits\":%u}",
+           (unsigned)(st.st_mode & 07777), (unsigned)(st.st_mode & 07777));
+  return websrv_send_text(req->fd, 200, "application/json", body);
+}
+
+static int
 list_request(const http_request_t *req) {
+  char path_in[1024];
   char path[1024];
   char fast[32];
   int fast_mode = websrv_get_query_arg(req, "fast", fast, sizeof(fast)) &&
                   strcmp(fast, "0") != 0;
-  if(!websrv_get_query_arg(req, "path", path, sizeof(path)) ||
-     !path_is_safe(path)) {
+  if(!websrv_get_query_arg(req, "path", path_in, sizeof(path_in)) ||
+     !path_is_safe(path_in)) {
     return serve_error(req, 400, "missing or unsafe path");
+  }
+  if(path_for_list(path_in, path, sizeof(path)) != 0) {
+    return serve_error(req, 404, "path not found");
   }
 
   DIR *d = opendir(path);
@@ -2303,6 +2353,7 @@ transfer_request(const http_request_t *req, const char *url) {
   if(!strcmp(url, "/api/fs/archive/support")) return archive_support_handler(req);
   if(!strcmp(url, "/api/fs/job/cancel")) return cancel_handler(req);
   if(!strcmp(url, "/api/fs/launch")) return bfpilot_launch_request(req);
+  if(!strcmp(url, "/api/fs/chmod")) return chmod_request(req);
   return serve_error(req, 404, "no such endpoint");
 }
 

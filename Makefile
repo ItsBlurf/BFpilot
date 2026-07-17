@@ -48,6 +48,7 @@ WEB_SRCS += src/search.c
 WEB_SRCS += src/transfer.c
 WEB_SRCS += src/payload_launch.c
 WEB_SRCS += src/tile_bootstrap.c
+WEB_SRCS += src/path_ops.c
 
 LAUNCHER_INSTALLER_SRCS := src/launcher_installer_force_main.c
 LAUNCHER_INSTALLER_SRCS += src/boot_marker.c

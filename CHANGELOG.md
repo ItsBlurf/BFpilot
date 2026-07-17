@@ -7,6 +7,11 @@
 * **Load payload**: double-click `.elf`/`.bin`/`.js` or use the toolbar button — streams the file to elfldr on `127.0.0.1:9021`
 * New API: `GET /api/fs/launch?path=...`
 * Launcher installer calls `sceAppInstUtilTerminate` when done
+* **chmod** UI + `GET /api/fs/chmod?path=&mode=` (presets 444/644/755/777) for offline appmeta icon use-case (#10)
+* Single-click folder name opens directory (#7); checkboxes still multi-select (#11)
+* Case-insensitive path resolve on list/Go when exact path misses (#8)
+* Extract still covers zip/rar/7z including `.7z.001` (#9)
+* Version strings locked to **v0.4.1** (#12)
 
 ## v0.4.0 Stable (2026-07-14)
 

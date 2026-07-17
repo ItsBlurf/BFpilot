@@ -792,6 +792,8 @@
         <button id="rename">Rename</button>
         <button id="download">Download</button>
         <button id="load-payload" class="primary" title="Send selected .elf/.bin to elfldr on port 9021">Load payload</button>
+        <button id="open-folder" title="Open selected folder">Open</button>
+        <button id="chmod" title="Set permissions on selected paths">chmod</button>
         <button id="edit-file" class="primary">Edit</button>
         <button id="extract" class="primary">Extract</button>
         <button id="upload-files" class="warn">Upload Files</button>
@@ -1646,7 +1648,19 @@
           openPath(parentPath(state.path));
           return;
         }
-        if (event.ctrlKey || event.metaKey || event.target.closest('.chk-col')) {
+        /* Checkbox column: multi-select (PS5-friendly) */
+        if (event.target.closest('.chk-col')) {
+          if (state.selected.has(key)) state.selected.delete(key);
+          else state.selected.add(key);
+          drawList();
+          return;
+        }
+        /* Click folder name (or whole row without ctrl) opens directory (#7) */
+        if (entry.dir && !event.ctrlKey && !event.metaKey) {
+          openPath(entryPath(entry));
+          return;
+        }
+        if (event.ctrlKey || event.metaKey) {
           if (state.selected.has(key)) state.selected.delete(key);
           else state.selected.add(key);
         } else {
@@ -2344,6 +2358,51 @@
       await launchPayloadPath(entryPath(entries[0]));
     }
 
+    async function openSelectedFolder() {
+      const entries = selectedEntries();
+      if (entries.length === 1 && entries[0].dir) {
+        await openPath(entryPath(entries[0]));
+        return;
+      }
+      toast('Select one folder to open', 'err');
+    }
+
+    async function chmodSelected() {
+      const entries = selectedEntries();
+      if (!entries.length) {
+        toast('Select files or folders first', 'err');
+        return;
+      }
+      const choice = prompt(
+        'Set mode for ' + entries.length + ' item(s).\n' +
+        'Presets: 444 (read-only, appmeta icons), 644, 755, 777\n' +
+        'Enter octal mode:',
+        '444'
+      );
+      if (choice == null) return;
+      const mode = String(choice).trim();
+      if (!/^[0-7]{3,4}$/.test(mode)) {
+        toast('Bad mode (use 444, 644, 755, 777, ...)', 'err');
+        return;
+      }
+      let ok = 0;
+      let fail = 0;
+      for (const entry of entries) {
+        try {
+          const data = await api(
+            '/api/fs/chmod?path=' + encodeURIComponent(entryPath(entry)) +
+            '&mode=' + encodeURIComponent(mode)
+          );
+          if (data && data.ok) ok++;
+          else fail++;
+        } catch (err) {
+          fail++;
+        }
+      }
+      toast('chmod ' + mode + ': ' + ok + ' ok' + (fail ? (', ' + fail + ' failed') : ''));
+      await refreshCurrentView();
+    }
+
     function openEditor(path) {
       editorCurrentPath = path;
       el('editor-textarea').value = 'Loading...';
@@ -2615,6 +2674,8 @@
       el('rename').addEventListener('click', renameOne);
       el('download').addEventListener('click', downloadSelected);
       el('load-payload').addEventListener('click', loadPayloadSelected);
+      el('open-folder').addEventListener('click', openSelectedFolder);
+      el('chmod').addEventListener('click', chmodSelected);
       el('extract').addEventListener('click', extractSelected);
       el('delete').addEventListener('click', deleteSelected);
       el('copy').addEventListener('click', () => transfer('copy'));
