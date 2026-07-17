@@ -1,40 +1,35 @@
 # BFpilot Compatibility Strategy
 
-BFpilot follows the **Payload Manager** model: one primary ELF provides the
-web service **and** the PS5 home **Media** tile install. An optional separate
-installer remains for recovery only.
+BFpilot keeps the file manager/archive runtime and the fragile launcher
+installer as **separate payloads**. AppInst in the main ELF breaks some
+loaders; the Media tile installer is proven working on its own.
 
 ## Payload Roles
 
-### `bfpilot.elf` (primary)
+### `bfpilot.elf`
 
 Main release payload. Test this first on every firmware and loader.
 
 - Starts the HTTP file manager on port `5905`.
 - Starts the integrated archive daemon for RAR, 7z, split 7z, and ZIP
   extraction.
-- **Installs/refreshes the Media home tile** (`BFPL00001`, category 65536,
-  deeplink `http://127.0.0.1:5905/`) from embedded `assets-app/param.json` +
-  `icon0.png` via AppInstUtil (same idea as Payload Manager `app_installer.c`).
 - Can **load other payloads** by streaming them to elfldr (`127.0.0.1:9021`)
-  via `/api/fs/launch`.
-- Optional **recovery**: if embedded install fails and
-  `/data/BFpilot/bfpilot-launcher-installer.elf` exists as a **file**, injects
-  it once via elfldr.
-- Writes boot/runtime/crash diagnostics under **`/data/BFpilot` only**.
-- Writes integrated archive job/status/logs under
-  `/data/BFpilot/archive-integrated`.
+  via `/api/fs/launch` (no AppInst).
+- Can **auto-bootstrap the home tile** by injecting
+  `bfpilot-launcher-installer.elf` once if that ELF is found under
+  `/data/BFpilot/` (or USB/homebrew paths). Does **not** link AppInstUtil.
+- Does not depend on SystemService, UserService, AppInstUtil, or `kernel_sys`.
+- Writes boot/runtime/crash diagnostics under `/data/BFpilot` only.
 
-### `bfpilot-launcher-installer.elf` (optional recovery)
+### `bfpilot-launcher-installer.elf`
 
-Isolated payload for installing or refreshing `/user/app/BFPL00001` if the
-main ELF’s embedded install fails on a particular loader. Place the **file**
-at `/data/BFpilot/bfpilot-launcher-installer.elf` — do **not** create a
-sibling directory tree under `/data`.
+Isolated payload for installing or refreshing `/user/app/BFPL00001` as a
+**Media** category home tile (`applicationCategoryType: 65536`).
 
-- Direct-links AppInstUtil + UserService + SystemService + `kernel_sys`.
+- Direct-links `kernel_sys`, SystemService, UserService, and AppInstUtil.
 - Temporarily sets authid `0x4801000000000013`.
-- Stages embedded param/icon; Media category `65536`.
+- Stages embedded `param.json` and `icon0.png`.
+- Registers the tile through AppInst; terminates AppInst when done.
 - Logs to `/data/BFpilot/launcher-installer.log`.
 
 The tile target is:
@@ -49,15 +44,6 @@ deeplinkUri: http://127.0.0.1:5905/
 
 Canonical: **`/data/BFpilot`**
 
-Do not introduce:
-
-- `/data/bfpilot`
-- `/data/BFPILOT`
-- `/data/bfpilot-launcher-installer` (as a directory root)
-
-Installer/helper ELFs are files under the canonical dir, not separate trees.
-
-## Archive worker
-
-`bfpilot-archive-worker.elf` is a build diagnostic / standalone extractor.
-Integrated extract in `bfpilot.elf` is the normal path.
+Do not introduce alternate roots (`/data/bfpilot`, `/data/BFPILOT`, or an
+installer directory tree). The installer ELF is a **file** under the
+canonical dir when used for auto-bootstrap.

@@ -49,7 +49,6 @@ WEB_SRCS += src/transfer.c
 WEB_SRCS += src/payload_launch.c
 WEB_SRCS += src/tile_bootstrap.c
 WEB_SRCS += src/path_ops.c
-WEB_SRCS += src/app_installer.c
 
 LAUNCHER_INSTALLER_SRCS := src/launcher_installer_force_main.c
 LAUNCHER_INSTALLER_SRCS += src/boot_marker.c
@@ -143,9 +142,9 @@ BFPILOT_CFLAGS += -DBFPILOT_PAYLOAD_NAME=\"bfpilot\"
 BFPILOT_CFLAGS += -DBFPILOT_BUILD_MODE=\"file-manager\"
 BFPILOT_CFLAGS += -DBFPILOT_WEB_PORT=$(WEB_PORT)
 BFPILOT_CFLAGS += -DBFPILOT_DEBUG_NOTIFICATIONS=0
-# Embedded Media-tile AppInst in main ELF (Payload Manager model).
-BFPILOT_CFLAGS += -DBFPILOT_ENABLE_LAUNCHER=1
-BFPILOT_CFLAGS += -DBFPILOT_DISABLE_LAUNCHER=0
+# AppInst stays in separate launcher-installer only (main ELF must not link it).
+BFPILOT_CFLAGS += -DBFPILOT_ENABLE_LAUNCHER=0
+BFPILOT_CFLAGS += -DBFPILOT_DISABLE_LAUNCHER=1
 BFPILOT_CFLAGS += -DBFPILOT_ENABLE_INTEGRATED_ARCHIVE=$(ENABLE_ARCHIVE)
 
 ifeq ($(ENABLE_ARCHIVE),1)
@@ -219,16 +218,10 @@ WINDOWS_CXX_LINK_PREFIX += -L"$(PS5_PAYLOAD_SDK_SHELL)/target/lib"
 WINDOWS_CXX_LINK_PREFIX += -L"$(PS5_PAYLOAD_SDK_SHELL)/target/user/homebrew/lib" -L.
 WINDOWS_CXX_LINK_PREFIX += -l:crt1.o -l:crti.o -l:crtbegin.o
 WINDOWS_CXX_LINK_PREFIX += -lunwind -lc++abi -lc++ -lc
-# Main ELF = file manager + Media tile install (AppInst + UserService).
-WINDOWS_CXX_LINK_SUFFIX := -lSceNotification -lSceAppInstUtil -lSceUserService
-WINDOWS_CXX_LINK_SUFFIX += -lSceSystemService -lkernel_sys -lkernel_web
-WINDOWS_CXX_LINK_SUFFIX += -lSceLibcInternal -lSceNet -lpthread
-WINDOWS_CXX_LINK_SUFFIX += -lc_stub_weak -lkernel_stub_weak
+# Main ELF = file manager only (no AppInst — loaders reject it in this payload).
+WINDOWS_CXX_LINK_SUFFIX := -lSceNotification -lkernel_web -lSceLibcInternal
+WINDOWS_CXX_LINK_SUFFIX += -lSceNet -lpthread -lc_stub_weak -lkernel_stub_weak
 WINDOWS_CXX_LINK_SUFFIX += -l:crtend.o -l:crtn.o
-# Archive worker has no AppInst (avoid pulling privileged libs into worker).
-WINDOWS_CXX_LINK_SUFFIX_ARCHIVE := -lSceNotification -lkernel_web -lSceLibcInternal
-WINDOWS_CXX_LINK_SUFFIX_ARCHIVE += -lSceNet -lpthread -lc_stub_weak -lkernel_stub_weak
-WINDOWS_CXX_LINK_SUFFIX_ARCHIVE += -l:crtend.o -l:crtn.o
 define run
 $(RUN_ENV) && $(1)
 endef
@@ -276,14 +269,12 @@ build/bfpilot-archive/%.o: %.c Makefile
 	$(call run,mkdir -p $(dir $@))
 	$(call run,$(CC_CMD) $(ARCHIVE_WORKER_CFLAGS) $(ARCHIVE_WORKER_DEFINES) $(ARCHIVE_SEVENZ_DEFINES) $(ARCHIVE_WORKER_INCLUDES) -DBFPILOT_ARCHIVE_INTEGRATED=1 -c $< -o $@)
 
-# AppInst libs for main + optional recovery installer.
-BFPILOT_APPINST_LDLIBS := -lSceAppInstUtil -lSceUserService -lSceSystemService
-
 ifeq ($(HOST_IS_WINDOWS),1)
-$(BFPILOT_BIN): $(BFPILOT_OBJS) $(if $(filter 1,$(ENABLE_ARCHIVE)),$(BFPILOT_ARCHIVE_OBJS)) $(APP_ASSETS)
+$(BFPILOT_BIN): $(BFPILOT_OBJS) $(if $(filter 1,$(ENABLE_ARCHIVE)),$(BFPILOT_ARCHIVE_OBJS))
 	$(file >build/bfpilot-link.rsp,$(BFPILOT_OBJS) $(BFPILOT_LINK_ARCHIVE_OBJS))
 	$(call run,$(WINDOWS_CXX_LD_CMD) -o $@ $(WINDOWS_CXX_LINK_PREFIX) @build/bfpilot-link.rsp $(WINDOWS_CXX_LINK_SUFFIX))
 	$(call run,$(STRIP_CMD) --strip-all $@)
+	$(call run,$(PYTHON) scripts/scrub_main_payload.py $@)
 
 $(LAUNCHER_INSTALLER_BIN): $(LAUNCHER_INSTALLER_OBJS) $(APP_ASSETS)
 	$(call run,$(LD_CMD) -o $@ $(WINDOWS_LINK_PREFIX) $(LAUNCHER_INSTALLER_OBJS) $(WINDOWS_APPINST_SUFFIX))
@@ -291,12 +282,13 @@ $(LAUNCHER_INSTALLER_BIN): $(LAUNCHER_INSTALLER_OBJS) $(APP_ASSETS)
 
 $(ARCHIVE_WORKER_BIN): $(ARCHIVE_WORKER_OBJS)
 	$(file >build/archive-worker-link.rsp,$(ARCHIVE_WORKER_OBJS))
-	$(call run,$(WINDOWS_CXX_LD_CMD) -o $@ $(WINDOWS_CXX_LINK_PREFIX) @build/archive-worker-link.rsp $(WINDOWS_CXX_LINK_SUFFIX_ARCHIVE))
+	$(call run,$(WINDOWS_CXX_LD_CMD) -o $@ $(WINDOWS_CXX_LINK_PREFIX) @build/archive-worker-link.rsp $(WINDOWS_CXX_LINK_SUFFIX))
 	$(call run,$(STRIP_CMD) --strip-all $@)
 else
-$(BFPILOT_BIN): $(BFPILOT_OBJS) $(if $(filter 1,$(ENABLE_ARCHIVE)),$(BFPILOT_ARCHIVE_OBJS)) $(APP_ASSETS)
-	$(call run,$(CXX_CMD) $(COMMON_LDFLAGS) -o $@ $(BFPILOT_OBJS) $(BFPILOT_LINK_ARCHIVE_OBJS) $(ARCHIVE_WORKER_LDFLAGS) $(BFPILOT_APPINST_LDLIBS) $(PRIVILEGED_APPINST_LDLIBS))
+$(BFPILOT_BIN): $(BFPILOT_OBJS) $(if $(filter 1,$(ENABLE_ARCHIVE)),$(BFPILOT_ARCHIVE_OBJS))
+	$(call run,$(CXX_CMD) $(COMMON_LDFLAGS) -o $@ $(BFPILOT_OBJS) $(BFPILOT_LINK_ARCHIVE_OBJS) $(ARCHIVE_WORKER_LDFLAGS))
 	$(call run,$(STRIP_CMD) --strip-all $@)
+	$(call run,$(PYTHON) scripts/scrub_main_payload.py $@)
 
 $(LAUNCHER_INSTALLER_BIN): $(LAUNCHER_INSTALLER_OBJS) $(APP_ASSETS)
 	$(call run,$(CC_CMD) $(LAUNCHER_INSTALLER_CFLAGS) $(COMMON_LDFLAGS) -o $@ $(LAUNCHER_INSTALLER_OBJS) $(PRIVILEGED_APPINST_LDLIBS))

@@ -2,9 +2,9 @@
 
 ## v0.4.1
 
-* **Single ELF** like Payload Manager: `bfpilot.elf` runs the port-5905 file manager **and** installs the PS5 home **Media** tile (`applicationCategoryType` 65536, title `BFPL00001`, deeplink `http://127.0.0.1:5905/`) via embedded AppInst
-* Optional recovery installer `bfpilot-launcher-installer.elf` only under `/data/BFpilot/` (not a separate data tree)
-* **One data directory**: all logs/index/shortcuts/archive state under `/data/BFpilot` only (no `/data/bfpilot`, `/data/BFPILOT`, or `/data/bfpilot-launcher-installer` roots)
+* **Separate payloads** (stable model): `bfpilot.elf` = file manager only; `bfpilot-launcher-installer.elf` = home **Media** tile (`applicationCategoryType` 65536, `BFPL00001` → `http://127.0.0.1:5905/`)
+* Main ELF does **not** link AppInst (loaders reject all-in-one); inject the installer separately or place it under `/data/BFpilot/` so the main ELF can auto-start it after the UI is up
+* **One data directory**: all logs/index/shortcuts/archive state under `/data/BFpilot` only
 * Action bar wraps (no horizontal scrollbar) for New Folder / Rename / Download / Load payload / chmod / Extract / Upload / Delete
 * **Load payload**: double-click `.elf`/`.bin`/`.js` or toolbar — streams to elfldr on `127.0.0.1:9021`
 * New API: `GET /api/fs/launch?path=...`

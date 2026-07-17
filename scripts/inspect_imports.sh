@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Compatibility checks for BFpilot ELFs.
-# v0.4.1+: main bfpilot.elf embeds Media-tile AppInst (Payload Manager model).
+# Main bfpilot.elf must NOT link AppInst (breaks loaders). Tile install is the
+# separate bfpilot-launcher-installer.elf only (Media category 65536).
 set -euo pipefail
 
 find_tool() {
@@ -59,6 +60,20 @@ needed_libraries() {
 }
 
 
+check_no_direct_appinst_import() {
+  local file="$1"
+  local needed
+  needed="$(needed_libraries "${file}" || true)"
+  if printf '%s\n' "${needed}" |
+     grep -E 'libSceAppInstUtil\.sprx|libSceSystemService\.sprx|libSceUserService\.sprx|libkernel_sys\.sprx' >/dev/null; then
+    echo
+    echo "inspect-imports: unsafe direct launcher import in ${file}" >&2
+    printf '%s\n' "${needed}" >&2
+    return 1
+  fi
+}
+
+
 for file in "$@"; do
   echo
   echo "== ${file} =="
@@ -92,48 +107,47 @@ for file in "$@"; do
   "${STRINGS}" "${file}" | grep -Ei '(^|[^A-Za-z0-9_])(sce|Sce|AppInst|SystemService|UserService|BFPL00001|app_installer)' || true
 done
 
-# Primary ELF must include Media-tile AppInst (single-ELF model).
-elf_has_string() {
-  local file="$1"
-  local needle="$2"
-  # -a: treat as text on Windows/msys; tolerate null-containing streams
-  if "${STRINGS}" "${file}" 2>/dev/null | grep -aF "${needle}" >/dev/null 2>&1; then
-    return 0
+for file in "$@"; do
+  case "${file}" in
+    bfpilot-launcher-installer.elf|./bfpilot-launcher-installer.elf)
+      continue
+      ;;
+  esac
+  if [[ -f "${file}" ]]; then
+    check_no_direct_appinst_import "${file}"
   fi
-  # Fallback: raw bytes (PowerShell/host often more reliable than llvm-strings path)
-  if command -v python3 >/dev/null 2>&1; then
-    python3 - "${file}" "${needle}" <<'PY'
-import sys
-data = open(sys.argv[1], "rb").read()
-sys.exit(0 if sys.argv[2].encode() in data else 1)
-PY
-    return $?
-  fi
-  return 1
-}
+done
 
 if [[ -f bfpilot.elf ]]; then
-  main_needed="$(needed_libraries bfpilot.elf || true)"
-  for required in libSceAppInstUtil.sprx libSceUserService.sprx; do
-    if ! printf '%s\n' "${main_needed}" | grep -q "${required}"; then
-      echo
-      echo "inspect-imports: bfpilot.elf missing required ${required} (Media tile)" >&2
-      printf '%s\n' "${main_needed}" >&2
+  if "${STRINGS}" bfpilot.elf 2>/dev/null |
+     grep -aE 'libSceAppInstUtil\.sprx|sceAppInstUtilInitialize' >"${TMP_DIR}/bfpilot-forbidden-imports.txt" 2>/dev/null; then
+    echo
+    echo "inspect-imports: forbidden launcher/AppInst content in bfpilot.elf" >&2
+    cat "${TMP_DIR}/bfpilot-forbidden-imports.txt" >&2
+    exit 1
+  fi
+  # Scrub may rewrite sprx name; still reject live AppInst symbols
+  if command -v python3 >/dev/null 2>&1; then
+    if python3 - <<'PY'
+import pathlib
+data = pathlib.Path("bfpilot.elf").read_bytes()
+# NEEDED-style / live install entry points must not remain
+needles = [b"sceAppInstUtilInitialize", b"sceAppInstUtilAppInstallAll"]
+for n in needles:
+    if n in data:
+        raise SystemExit(1)
+raise SystemExit(0)
+PY
+    then
+      :
+    else
+      echo "inspect-imports: forbidden AppInst symbols in bfpilot.elf" >&2
       exit 1
     fi
-  done
-  if ! elf_has_string bfpilot.elf 'BFPL00001'; then
-    echo "inspect-imports: bfpilot.elf missing BFPL00001 title id" >&2
-    exit 1
   fi
-  if ! elf_has_string bfpilot.elf 'applicationCategoryType'; then
-    echo "inspect-imports: bfpilot.elf missing embedded param applicationCategoryType" >&2
-    exit 1
-  fi
-  echo "inspect-imports: bfpilot.elf Media tile AppInst imports OK"
+  echo "inspect-imports: bfpilot.elf free of AppInst (file manager only) OK"
 fi
 
-# Optional recovery installer still needs full privileged set.
 if [[ -f bfpilot-launcher-installer.elf ]]; then
   installer_needed="$(needed_libraries bfpilot-launcher-installer.elf || true)"
   for required in libkernel_sys.sprx libSceSystemService.sprx \
@@ -144,16 +158,15 @@ if [[ -f bfpilot-launcher-installer.elf ]]; then
       exit 1
     fi
   done
-  echo "inspect-imports: launcher-installer AppInst imports OK"
-fi
-
-# Archive worker must NOT pull AppInst (file manager isolation for worker).
-if [[ -f bfpilot-archive-worker.elf ]]; then
-  worker_needed="$(needed_libraries bfpilot-archive-worker.elf || true)"
-  if printf '%s\n' "${worker_needed}" | grep -E 'libSceAppInstUtil\.sprx' >/dev/null; then
-    echo "inspect-imports: archive-worker must not link AppInstUtil" >&2
+  if ! "${STRINGS}" bfpilot-launcher-installer.elf 2>/dev/null | grep -aF 'BFPL00001' >/dev/null; then
+    echo "inspect-imports: installer missing BFPL00001" >&2
     exit 1
   fi
+  if ! "${STRINGS}" bfpilot-launcher-installer.elf 2>/dev/null | grep -aF '65536' >/dev/null; then
+    echo "inspect-imports: installer missing Media category 65536" >&2
+    exit 1
+  fi
+  echo "inspect-imports: launcher-installer Media AppInst OK"
 fi
 
 echo

@@ -1,7 +1,7 @@
 /*
- * Optional recovery: if embedded Media-tile install was skipped/failed and a
- * separate installer ELF exists under the single data dir, push it to elfldr.
- * Never creates alternate /data roots (bfpilot / BFPILOT / bfpilot-launcher-installer).
+ * After the web UI is up, optionally inject the separate Media-tile installer
+ * if present under the single data dir (or common USB/homebrew paths).
+ * Main bfpilot.elf never links AppInst — that stays in the installer payload.
  */
 
 #include <errno.h>
@@ -16,9 +16,12 @@
 #include "payload_launch.h"
 #include "tile_bootstrap.h"
 
-/* Only the canonical data tree — installer is a file, not a sibling folder. */
 static const char *const k_installer_candidates[] = {
     BFPILOT_INSTALLER_ELF_PATH,
+    "/data/homebrew/BFpilot/bfpilot-launcher-installer.elf",
+    "/mnt/usb0/BFpilot/bfpilot-launcher-installer.elf",
+    "/mnt/usb0/bfpilot-launcher-installer.elf",
+    "/mnt/usb1/bfpilot-launcher-installer.elf",
     NULL,
 };
 
@@ -48,17 +51,21 @@ bfpilot_tile_bootstrap_try(void) {
   }
 
   if(!found) {
-    bfpilot_log("tile bootstrap: optional installer ELF not under %s (ok)",
+    bfpilot_log("tile bootstrap: installer ELF not found under %s "
+                "(inject bfpilot-launcher-installer.elf separately for Media tile)",
                 BFPILOT_DATA_DIR);
     return;
   }
 
-  bfpilot_log("tile bootstrap: recovery inject %s", found);
+  bfpilot_log("tile bootstrap: injecting %s", found);
   rc = bfpilot_launch_payload_path(found);
   if(rc == 0) {
-    bfpilot_notify("BFpilot", "recovery tile installer started");
+    bfpilot_notify("BFpilot", "home tile installer started");
     bfpilot_log("tile bootstrap: installer sent to elfldr ok");
   } else {
     bfpilot_log("tile bootstrap: inject failed rc=%d", rc);
+    if(rc == -ECONNREFUSED) {
+      bfpilot_notify("BFpilot", "tile install skipped (elfldr offline)");
+    }
   }
 }

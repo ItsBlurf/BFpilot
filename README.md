@@ -14,13 +14,13 @@ Version **v0.4.1**. Tested on FW **11.60**.
 
 | File | What it is |
 |------|------------|
-| `bfpilot.elf` | **Primary** — file manager + archive extract + **Media home tile** install (same single-ELF model as Payload Manager). Inject this. |
-| `bfpilot-launcher-installer.elf` | Optional recovery tile installer only. If needed, place the **file** under `/data/BFpilot/` (not a separate folder under `/data`). |
+| `bfpilot.elf` | File manager + archive extract (port **5905**). Inject this for the UI. **No AppInst** in this ELF. |
+| `bfpilot-launcher-installer.elf` | Home menu **Media** tile (`BFPL00001` → `http://127.0.0.1:5905/`). Inject once, or put the **file** under `/data/BFpilot/` so the main ELF auto-starts it after the UI is up. |
 | `bfpilot-archive-worker.elf` | Build-only diagnostic. You don't need this for normal use. |
 
-Normal use is just `bfpilot.elf`. On boot it installs/refreshes the **Media** shelf tile (`BFPL00001` → `http://127.0.0.1:5905/`).
+**Typical use:** inject `bfpilot.elf`, then inject `bfpilot-launcher-installer.elf` once for the Media shelf tile (or keep a copy at `/data/BFpilot/bfpilot-launcher-installer.elf`).
 
-**Data layout:** everything lives under **`/data/BFpilot`** only (logs, search index, shortcuts, archive jobs). Do not create `/data/bfpilot`, `/data/BFPILOT`, or `/data/bfpilot-launcher-installer` trees.
+**Data layout:** everything lives under **`/data/BFpilot`** only (logs, search index, shortcuts, archive jobs).
 
 ## Features
 
