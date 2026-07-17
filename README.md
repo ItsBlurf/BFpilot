@@ -138,3 +138,10 @@ See [docs/COMPATIBILITY_STRATEGY.md](docs/COMPATIBILITY_STRATEGY.md). Archives: 
 - [LZMA SDK](https://www.7-zip.org/sdk.html) (Igor Pavlov)
 
 Third-party code under `third_party/` keeps its own licenses.
+
+## License
+
+This project is licensed under the **MIT License**. See [LICENSE](./LICENSE) for the full text.
+
+Copyright (c) ItsBlurf and contributors.  
+**No warranty** — the software is provided "as is", without warranty of any kind; authors are not liable for claims arising from use of the software.
