@@ -1040,7 +1040,8 @@ crawl_one_root(search_index_t *idx, const char *root, char *error,
       }
 
       struct stat st = {0};
-      if(lstat(child, &st) != 0) {
+      /* Anchor metadata lookup to the already-open parent directory. */
+      if(fstatat(dirfd(dir), ent->d_name, &st, AT_SYMLINK_NOFOLLOW) != 0) {
         int e = errno;
         idx->errors++;
         if(e == EIO || e == ESTALE || e == EFAULT || e == EBADF) {
@@ -1583,6 +1584,7 @@ query_request(const http_request_t *req) {
   unsigned long scanned = 0;
   unsigned long matched = 0;
   unsigned long returned = 0;
+  int stopped_early = 0;
   int first = 1;
   int stale = 0;
   int truncated = 0;
@@ -1623,7 +1625,10 @@ query_request(const http_request_t *req) {
     }
     matched++;
     if(matched <= offset) continue;
-    if(returned >= limit) continue;
+    if(returned >= limit) {
+      stopped_early = 1;
+      break;
+    }
 
     int json_ok = 1;
     if(!first && json_append(&b, ",") != 0) json_ok = 0;
@@ -1647,9 +1652,10 @@ query_request(const http_request_t *req) {
 
   if(json_appendf(&b,
                   "],\"scanned\":%lu,\"matched\":%lu,\"returned\":%lu,"
-                  "\"hasMore\":%s,\"elapsedMs\":%ld}",
+                  "\"matchedExact\":%s,\"hasMore\":%s,\"elapsedMs\":%ld}",
                   scanned, matched, returned,
-                  matched > offset + returned ? "true" : "false",
+                  stopped_early ? "false" : "true",
+                  stopped_early ? "true" : "false",
                   elapsed_ms > 0 ? elapsed_ms : 0) != 0) {
     pthread_mutex_unlock(&g_search.lock);
     free(b.data);

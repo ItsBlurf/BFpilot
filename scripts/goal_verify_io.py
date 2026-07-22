@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Structural + pure-logic verification for BFpilot I/O and index safety.
 
-Drives real source files under projects/GemBfpilot (not a reimplementation of
-upload). Exit 0 only if all checks pass. Writes a report path if --out given.
+Drives the real source files in the current BFpilot working tree (not a
+reimplementation of upload). Exit 0 only if all checks pass. Writes a report
+path if --out is given.
 """
 from __future__ import annotations
 

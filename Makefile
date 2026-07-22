@@ -3,7 +3,7 @@
 SHELL := bash
 
 ifeq ($(strip $(PS5_PAYLOAD_SDK)),)
-ifeq ($(filter ps5-diag ps5-smoke ps5-storage-audit ps5-archive-perf,$(MAKECMDGOALS)),)
+ifeq ($(filter ps5-diag ps5-smoke ps5-storage-audit ps5-archive-perf ps5-transfer-perf,$(MAKECMDGOALS)),)
 $(error PS5_PAYLOAD_SDK is required, e.g. export PS5_PAYLOAD_SDK=/path/to/ps5-payload-sdk)
 endif
 else
@@ -334,8 +334,11 @@ ps5-storage-audit:
 ps5-archive-perf:
 	$(call run,$(PYTHON) scripts/ps5_archive_perf.py)
 
+ps5-transfer-perf:
+	$(call run,$(PYTHON) scripts/ps5_transfer_perf.py)
+
 clean:
 	$(call run,rm -rf $(BFPILOT_BIN) $(LAUNCHER_INSTALLER_BIN) $(ARCHIVE_WORKER_BIN) build gen)
 
 .SECONDARY: $(GEN_SRCS)
-.PHONY: all bfpilot bfpilot-lite launcher-installer archive-worker inspect-imports clean deploy-bfpilot deploy-launcher-installer ps5-diag ps5-smoke ps5-storage-audit ps5-archive-perf
+.PHONY: all bfpilot bfpilot-lite launcher-installer archive-worker inspect-imports clean deploy-bfpilot deploy-launcher-installer ps5-diag ps5-smoke ps5-storage-audit ps5-archive-perf ps5-transfer-perf

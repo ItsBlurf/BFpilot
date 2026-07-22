@@ -6,6 +6,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <pthread.h>
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -15,6 +16,7 @@
 
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <time.h>
 
 #include "fs.h"
 #include "mime.h"
@@ -23,9 +25,62 @@
 
 /* Download path buffer — larger sequential reads reduce syscall/PFS overhead */
 #ifndef BFPILOT_STREAM_BUF_SIZE
-#define BFPILOT_STREAM_BUF_SIZE (1024 * 1024)
+#define BFPILOT_STREAM_BUF_SIZE (2 * 1024 * 1024)
 #endif
 #define STREAM_BUF_SIZE BFPILOT_STREAM_BUF_SIZE
+#define BFPILOT_IO_ALIGNMENT 0x4000U
+
+
+static pthread_mutex_t g_download_lock = PTHREAD_MUTEX_INITIALIZER;
+static bfpilot_download_stats_t g_download_stats;
+
+
+static long
+monotonic_ms(void) {
+  struct timespec ts;
+  if(clock_gettime(CLOCK_MONOTONIC, &ts) != 0) return 0;
+  return (long)ts.tv_sec * 1000L + (long)(ts.tv_nsec / 1000000L);
+}
+
+
+static void *
+alloc_io_buffer(size_t size, int *aligned_out) {
+  void *buffer = NULL;
+  if(aligned_out) *aligned_out = 0;
+  if(posix_memalign(&buffer, BFPILOT_IO_ALIGNMENT, size) == 0) {
+    if(aligned_out) *aligned_out = 1;
+    return buffer;
+  }
+  return malloc(size);
+}
+
+
+void
+bfpilot_fs_get_download_stats(bfpilot_download_stats_t *out) {
+  if(!out) return;
+  pthread_mutex_lock(&g_download_lock);
+  *out = g_download_stats;
+  pthread_mutex_unlock(&g_download_lock);
+}
+
+
+static void
+record_download(const char *path, const struct stat *st, size_t bytes,
+                long elapsed_ms, long read_ms, long send_ms,
+                int buffer_aligned, int error_code) {
+  pthread_mutex_lock(&g_download_lock);
+  g_download_stats.elapsed_ms = elapsed_ms;
+  g_download_stats.read_ms = read_ms;
+  g_download_stats.send_ms = send_ms;
+  g_download_stats.bytes = (unsigned long)bytes;
+  g_download_stats.source_dev = st ? (unsigned long)st->st_dev : 0;
+  g_download_stats.buffer_size = (unsigned int)STREAM_BUF_SIZE;
+  g_download_stats.buffer_aligned = buffer_aligned;
+  g_download_stats.error_code = error_code;
+  snprintf(g_download_stats.path, sizeof(g_download_stats.path), "%s",
+           path ? path : "");
+  pthread_mutex_unlock(&g_download_lock);
+}
 
 
 typedef struct dynbuf {
@@ -171,12 +226,14 @@ dir_json_request(const http_request_t *req, const char *path, DIR *dir,
   struct dirent *entry;
   int first = 1;
 
-  if(buf_append(&b, "[") != 0) goto fail;
+  if(buf_grow(&b, 64U * 1024U) != 0 || buf_append(&b, "[") != 0) goto fail;
   while((entry = readdir(dir))) {
     if(!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) continue;
 
     struct stat st;
-    if(fstatat(dirfd(dir), entry->d_name, &st, 0) != 0) continue;
+    if(fstatat(dirfd(dir), entry->d_name, &st, AT_SYMLINK_NOFOLLOW) != 0) {
+      continue;
+    }
 
     if(!first && buf_append(&b, ",") != 0) goto fail;
     first = 0;
@@ -239,7 +296,7 @@ dir_request(const http_request_t *req, const char *path) {
   DIR *dir = opendir(path);
   if(!dir) return websrv_send_error_json(req->fd, 404, strerror(errno));
 
-  if(stat(path, &st) != 0) {
+  if(fstat(dirfd(dir), &st) != 0) {
     closedir(dir);
     return websrv_send_error_json(req->fd, 404, strerror(errno));
   }
@@ -262,6 +319,12 @@ file_request(const http_request_t *req, const char *path) {
   if(fstat(fd, &st) != 0) {
     close(fd);
     return websrv_send_error_json(req->fd, 404, strerror(errno));
+  }
+
+  if(!S_ISREG(st.st_mode) || st.st_size < 0 ||
+     (uintmax_t)st.st_size > (uintmax_t)SIZE_MAX) {
+    close(fd);
+    return websrv_send_error_json(req->fd, 404, "not a regular file");
   }
 
   size_t file_size = (size_t)st.st_size;
@@ -291,32 +354,65 @@ file_request(const http_request_t *req, const char *path) {
     return -1;
   }
 
-  char *buf = malloc(STREAM_BUF_SIZE);
+  int buffer_aligned = 0;
+  char *buf = alloc_io_buffer(STREAM_BUF_SIZE, &buffer_aligned);
   if(!buf) {
     close(fd);
     return -1;
   }
 
+
+#ifdef POSIX_FADV_SEQUENTIAL
+  (void)posix_fadvise(fd, offset, (off_t)content_size,
+                      POSIX_FADV_SEQUENTIAL);
+#endif
+
   int rc = 0;
+  int saved_errno = 0;
+  size_t sent_bytes = 0;
   size_t remaining = content_size;
+  long started_ms = monotonic_ms();
+  long read_ms = 0;
+  long send_ms = 0;
   while(remaining > 0) {
     size_t to_read = remaining < STREAM_BUF_SIZE ? remaining : STREAM_BUF_SIZE;
+    long read_started = monotonic_ms();
     ssize_t n = read(fd, buf, to_read);
+    read_ms += monotonic_ms() - read_started;
     if(n < 0) {
       if(errno == EINTR) continue;
+      saved_errno = errno;
       rc = -1;
       break;
     }
-    if(n == 0) break;
+    if(n == 0) {
+      saved_errno = EIO;
+      errno = saved_errno;
+      rc = -1;
+      break;
+    }
+    long send_started = monotonic_ms();
     if(websrv_write_all(req->fd, buf, (size_t)n) != 0) {
+      saved_errno = errno ? errno : EPIPE;
       rc = -1;
       break;
     }
+    send_ms += monotonic_ms() - send_started;
     remaining -= (size_t)n;
+    sent_bytes += (size_t)n;
   }
 
   free(buf);
-  close(fd);
+  if(close(fd) != 0 && rc == 0) {
+    saved_errno = errno;
+    rc = -1;
+  }
+  long ended_ms = monotonic_ms();
+  long elapsed_ms = ended_ms > started_ms ? ended_ms - started_ms : 0;
+  record_download(path, &st, sent_bytes, elapsed_ms, read_ms, send_ms,
+                  buffer_aligned,
+                  rc == 0 ? 0 : (saved_errno ? saved_errno : EIO));
+  if(rc != 0) errno = saved_errno ? saved_errno : EIO;
   return rc;
 }
 

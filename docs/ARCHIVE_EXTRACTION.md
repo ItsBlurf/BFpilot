@@ -14,9 +14,15 @@ Job/status/log: `job.ini`, `status.json`, `archive-worker.log`, `daemon.lock`.
 
 From `/api/fs/archive/support`:
 
-* **RAR** — RAR4/5, passwords, multipart (`.partN.rar` / `.rNN`). RAR stays single-thread for stability.
+* **RAR** — RAR4/5, passwords, multipart (`.partN.rar` / `.rNN`). Decoder
+  threads are bounded at eight and reported in archive telemetry.
 * **7z** — LZMA/LZMA2, passwords, `.7z.001` splits
 * **ZIP** — stored/deflate/ZIP64, ZipCrypto only (AES zip is rejected). Split zip not enabled.
+
+ZIP extraction uses page-aligned 16 MiB input and 64 MiB output buffers,
+sequential input hints, known-size output preallocation, and a 256 MiB
+writeback checkpoint for sustained large members. RAR and 7z keep their
+existing bounded decoder thread selection and output buffering.
 
 ## Limits
 

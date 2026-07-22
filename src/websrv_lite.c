@@ -39,7 +39,7 @@
 #define BFPILOT_LISTEN_RCVBUF (4 * 1024 * 1024)
 #endif
 #ifndef BFPILOT_CONN_SNDBUF
-#define BFPILOT_CONN_SNDBUF (2 * 1024 * 1024)
+#define BFPILOT_CONN_SNDBUF (4 * 1024 * 1024)
 #endif
 #ifndef BFPILOT_HTTP_KEEPALIVE_MAX
 #define BFPILOT_HTTP_KEEPALIVE_MAX 64
@@ -861,6 +861,13 @@ websrv_listen(unsigned short port, websrv_ready_cb_t ready_cb,
     if(setsockopt(srvfd, SOL_SOCKET, SO_SNDBUF, &sndbuf, sizeof(sndbuf)) != 0) {
       bfpilot_log("setsockopt SO_SNDBUF listen port %u failed errno=%d",
                   (unsigned int)port, errno);
+    } else {
+      int got = 0;
+      socklen_t gl = sizeof(got);
+      if(getsockopt(srvfd, SOL_SOCKET, SO_SNDBUF, &got, &gl) == 0) {
+        bfpilot_log("listen SO_SNDBUF requested=%d effective=%d port=%u",
+                    sndbuf, got, (unsigned int)port);
+      }
     }
   }
 
@@ -939,10 +946,26 @@ websrv_listen(unsigned short port, websrv_ready_cb_t ready_cb,
      * Never TCP_NODELAY on bulk HTTP — tiny segments thrash PFS writes.
      */
     {
+      static int logged_effective_buffers = 0;
       int rcvbuf = BFPILOT_LISTEN_RCVBUF;
       int sndbuf = BFPILOT_CONN_SNDBUF;
       (void)setsockopt(connfd, SOL_SOCKET, SO_RCVBUF, &rcvbuf, sizeof(rcvbuf));
       (void)setsockopt(connfd, SOL_SOCKET, SO_SNDBUF, &sndbuf, sizeof(sndbuf));
+      if(!logged_effective_buffers) {
+        int actual_rcv = 0, actual_snd = 0;
+        socklen_t rlen = sizeof(actual_rcv), slen = sizeof(actual_snd);
+        int have_rcv = getsockopt(connfd, SOL_SOCKET, SO_RCVBUF,
+                                  &actual_rcv, &rlen) == 0;
+        int have_snd = getsockopt(connfd, SOL_SOCKET, SO_SNDBUF,
+                                  &actual_snd, &slen) == 0;
+        if(have_rcv || have_snd) {
+          bfpilot_log("accepted socket buffers requested_rcv=%d effective_rcv=%d "
+                      "requested_snd=%d effective_snd=%d",
+                      rcvbuf, have_rcv ? actual_rcv : -1, sndbuf,
+                      have_snd ? actual_snd : -1);
+        }
+        logged_effective_buffers = 1;
+      }
     }
 
     client_arg_t *client = calloc(1, sizeof(*client));

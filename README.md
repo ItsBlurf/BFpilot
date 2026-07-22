@@ -65,14 +65,18 @@ on FW **11.60**.
 - Exit button shuts down cleanly and frees port 5905 (loader on 9021 stays up)
 - New files/dirs get mode `0777`
 
-### Upload / network (v0.4.0)
+### Transfer performance
 
 - HTTP keep-alive (up to 64 requests per connection)
-- 2 MiB upload buffer, 1 MiB download buffer
-- Listen socket asks for 4 MiB RCVBUF / 2 MiB SNDBUF
+- 2 MiB page-aligned upload and download buffers
+- Listen socket asks for 4 MiB RCVBUF / 4 MiB SNDBUF
+- Large copies use a bounded two-slot 8 MiB read/write pipeline; small files
+  use the serial fallback
+- Sustained copy/upload/ZIP output checkpoints writeback every 256 MiB
 - No bulk `TCP_NODELAY`, no multi-GB `posix_fallocate` while uploading
 
-More detail: [docs/UPLOAD_PERFORMANCE.md](docs/UPLOAD_PERFORMANCE.md)
+More detail: [upload tuning](docs/UPLOAD_PERFORMANCE.md) and the
+[performance/stability design](docs/PERFORMANCE_STABILITY.md).
 
 ## Install
 
@@ -128,6 +132,7 @@ Slim build without archives: `make bfpilot-lite`
 PS5_IP=<PS5_IP> BF_WEB_PORT=5905 make ps5-diag
 PS5_IP=<PS5_IP> BF_WEB_PORT=5905 BF_ALLOW_PS5_WRITE=1 make ps5-smoke
 python3 scripts/goal_verify_io.py
+BF_ALLOW_PS5_WRITE=1 PS5_IP=<PS5_IP> make ps5-transfer-perf
 ```
 
 ## Compatibility

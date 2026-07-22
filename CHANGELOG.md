@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased performance pass
+
+* Large regular-file copies overlap sequential reads with one writer through
+  two fixed 8 MiB, PS5-page-aligned slots; small files and initialization
+  failures retain the serial path
+* Copy/upload/large ZIP output adds coarse 256 MiB writeback checkpoints to
+  prevent unbounded dirty-page growth during sustained multi-gigabyte writes
+* Upload, serial copy, pipelined copy, and ZIP buffers request 16 KiB alignment
+* Downloads use a 2 MiB aligned sequential buffer and request a 4 MiB TCP send
+  window; filesystem-dependent `sendfile` remains disabled for PS5 safety
+* Directory listing and Index All metadata lookups are anchored to the open
+  parent directory with `AT_SYMLINK_NOFOLLOW`
+* Search returns as soon as the requested page plus one match is known and
+  reports whether the match count is exact, avoiding full two-million-entry
+  scans for common first-page queries
+* Transfer telemetry now exposes copy mode, checkpoint count, buffer alignment,
+  per-stage timing, effective socket buffers, and last-download throughput
+
 ## v0.4.2 Test Build (2026-07-22)
 
 * Create and edit common UTF-8 text/source files (`.txt`, `.ini`, `.json`,

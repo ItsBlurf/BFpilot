@@ -69,6 +69,8 @@ extern "C" int posix_fallocate(int fd, off_t offset, off_t len);
 #define BFPILOT_ARCHIVE_MAX_NICE 20
 #define BFPILOT_ZIP_IN_BUFFER_SIZE (16U * 1024U * 1024U)
 #define BFPILOT_ZIP_OUT_BUFFER_SIZE (64U * 1024U * 1024U)
+#define BFPILOT_ARCHIVE_IO_ALIGNMENT 0x4000U
+#define BFPILOT_ARCHIVE_WRITEBACK_SYNC_BYTES (256ULL * 1024ULL * 1024ULL)
 #define BFPILOT_ARCHIVE_PREALLOC_MIN_SIZE (64ULL * 1024ULL * 1024ULL)
 #define BFPILOT_ARCHIVE_SPACE_MARGIN_BYTES (256ULL * 1024ULL * 1024ULL)
 #define BFPILOT_ZIP_MAX_ENTRIES 250000ULL
@@ -846,6 +848,28 @@ TimedWriteAll(int fd, const void *data, size_t size) {
   return ok;
 }
 
+
+static bool
+ArchiveWritebackCheckpoint(int fd, unsigned long long &bytes_since_sync,
+                           const char *context, std::string &error) {
+  if(bytes_since_sync < BFPILOT_ARCHIVE_WRITEBACK_SYNC_BYTES) return true;
+  unsigned long long started = NowUsec();
+  if(fsync(fd) != 0) {
+    int saved_errno = errno;
+    error = "failed to checkpoint extracted file";
+    LogLine("archive writeback checkpoint failed context=%s errno=%d",
+            context ? context : "output", saved_errno);
+    errno = saved_errno;
+    return false;
+  }
+  unsigned long long ended = NowUsec();
+  LogLine("archive writeback checkpoint context=%s bytes=%llu elapsed_ms=%llu",
+          context ? context : "output", bytes_since_sync,
+          ended > started ? (ended - started) / 1000ULL : 0);
+  bytes_since_sync = 0;
+  return true;
+}
+
 static bool
 LoadConfig(ArchiveConfig &cfg, std::string &error) {
   cfg.source.clear();
@@ -1270,6 +1294,9 @@ public:
         Close();
         return false;
       }
+#ifdef POSIX_FADV_SEQUENTIAL
+      (void)posix_fadvise(fd, 0, 0, POSIX_FADV_SEQUENTIAL);
+#endif
       fds.push_back(fd);
     }
 
@@ -1337,17 +1364,30 @@ private:
 };
 
 struct ZipIoBuffers {
-  std::vector<unsigned char> in;
-  std::vector<unsigned char> out;
+  unsigned char *in;
+  unsigned char *out;
+
+  ZipIoBuffers() : in(NULL), out(NULL) {}
+  ~ZipIoBuffers() {
+    free(in);
+    free(out);
+  }
 
   bool Init(std::string &error) {
-    try {
-      in.resize(BFPILOT_ZIP_IN_BUFFER_SIZE);
-      out.resize(BFPILOT_ZIP_OUT_BUFFER_SIZE);
-    } catch(...) {
+    if(posix_memalign((void **)&in, BFPILOT_ARCHIVE_IO_ALIGNMENT,
+                      BFPILOT_ZIP_IN_BUFFER_SIZE) != 0 ||
+       posix_memalign((void **)&out, BFPILOT_ARCHIVE_IO_ALIGNMENT,
+                      BFPILOT_ZIP_OUT_BUFFER_SIZE) != 0) {
+      free(in);
+      free(out);
+      in = NULL;
+      out = NULL;
       error = "out of memory";
       return false;
     }
+    LogLine("zip io buffers input=%u output=%u alignment=%u",
+            BFPILOT_ZIP_IN_BUFFER_SIZE, BFPILOT_ZIP_OUT_BUFFER_SIZE,
+            BFPILOT_ARCHIVE_IO_ALIGNMENT);
     return true;
   }
 };
@@ -1623,12 +1663,13 @@ OpenZipEntryData(ZipMultiVolume &mv, const ZipEntry &entry, unsigned long long &
 
 static bool
 WriteZipStoredFile(ZipMultiVolume &mv, int out_fd, ZipEntry &entry,
-                   unsigned long long data_offset, ZipCrypto *crypto,
-                   ZipIoBuffers &buffers, std::string &error) {
-  std::vector<unsigned char> &buf = buffers.in;
+                    unsigned long long data_offset, ZipCrypto *crypto,
+                    ZipIoBuffers &buffers, std::string &error) {
+  unsigned char *buf = buffers.in;
   unsigned long long remaining = entry.compressed_size;
   mz_ulong crc = MZ_CRC32_INIT;
   unsigned long long written = 0;
+  unsigned long long bytes_since_sync = 0;
 
   if(!mv.Seek(data_offset)) {
     error = "failed to seek stored zip data";
@@ -1641,17 +1682,23 @@ WriteZipStoredFile(ZipMultiVolume &mv, int out_fd, ZipEntry &entry,
       return false;
     }
     size_t want =
-        (size_t)std::min<unsigned long long>(remaining, buf.size());
-    if(!TimedReadExact(mv, buf.data(), want)) {
+        (size_t)std::min<unsigned long long>(remaining,
+                                             BFPILOT_ZIP_IN_BUFFER_SIZE);
+    if(!TimedReadExact(mv, buf, want)) {
       error = "failed to read stored zip data";
       return false;
     }
-    if(crypto) crypto->decrypt_buffer(buf.data(), want);
-    if(!TimedWriteAll(out_fd, buf.data(), want)) {
+    if(crypto) crypto->decrypt_buffer(buf, want);
+    if(!TimedWriteAll(out_fd, buf, want)) {
       error = "failed to write extracted zip file";
       return false;
     }
-    crc = mz_crc32(crc, buf.data(), want);
+    bytes_since_sync += want;
+    if(!ArchiveWritebackCheckpoint(out_fd, bytes_since_sync, "zip-stored",
+                                   error)) {
+      return false;
+    }
+    crc = mz_crc32(crc, buf, want);
     remaining -= want;
     written += want;
     g_status.bytes_written += want;
@@ -1675,12 +1722,13 @@ WriteZipStoredFile(ZipMultiVolume &mv, int out_fd, ZipEntry &entry,
 
 static bool
 WriteZipDeflatedFile(ZipMultiVolume &mv, int out_fd, ZipEntry &entry,
-                     unsigned long long data_offset, ZipCrypto *crypto,
-                     ZipIoBuffers &buffers, std::string &error) {
-  std::vector<unsigned char> &inbuf = buffers.in;
-  std::vector<unsigned char> &outbuf = buffers.out;
+                      unsigned long long data_offset, ZipCrypto *crypto,
+                      ZipIoBuffers &buffers, std::string &error) {
+  unsigned char *inbuf = buffers.in;
+  unsigned char *outbuf = buffers.out;
   unsigned long long remaining = entry.compressed_size;
   unsigned long long written = 0;
+  unsigned long long bytes_since_sync = 0;
   mz_ulong crc = MZ_CRC32_INIT;
 
   mz_stream stream;
@@ -1708,28 +1756,30 @@ WriteZipDeflatedFile(ZipMultiVolume &mv, int out_fd, ZipEntry &entry,
     }
     if(stream.avail_in == 0 && remaining > 0) {
       size_t want =
-          (size_t)std::min<unsigned long long>(remaining, inbuf.size());
-      if(!TimedReadExact(mv, inbuf.data(), want)) {
+          (size_t)std::min<unsigned long long>(remaining,
+                                               BFPILOT_ZIP_IN_BUFFER_SIZE);
+      if(!TimedReadExact(mv, inbuf, want)) {
         error = "failed to read deflated zip data";
         ok = false;
         break;
       }
-      if(crypto) crypto->decrypt_buffer(inbuf.data(), want);
+      if(crypto) crypto->decrypt_buffer(inbuf, want);
       remaining -= want;
-      stream.next_in = inbuf.data();
+      stream.next_in = inbuf;
       stream.avail_in = (mz_uint)want;
     }
 
     unsigned long long remaining_out =
         entry.uncompressed_size > written ? entry.uncompressed_size - written
                                           : 0;
-    int flush = (remaining == 0 && remaining_out <= outbuf.size())
-                    ? MZ_FINISH
-                    : MZ_NO_FLUSH;
-    stream.next_out = outbuf.data();
-    stream.avail_out = (mz_uint)outbuf.size();
+    int flush =
+        (remaining == 0 && remaining_out <= BFPILOT_ZIP_OUT_BUFFER_SIZE)
+                     ? MZ_FINISH
+                     : MZ_NO_FLUSH;
+    stream.next_out = outbuf;
+    stream.avail_out = (mz_uint)BFPILOT_ZIP_OUT_BUFFER_SIZE;
     zrc = mz_inflate(&stream, flush);
-    size_t produced = outbuf.size() - stream.avail_out;
+    size_t produced = BFPILOT_ZIP_OUT_BUFFER_SIZE - stream.avail_out;
     if(produced > 0) {
       if(written > entry.uncompressed_size ||
          produced > entry.uncompressed_size - written) {
@@ -1737,12 +1787,18 @@ WriteZipDeflatedFile(ZipMultiVolume &mv, int out_fd, ZipEntry &entry,
         ok = false;
         break;
       }
-      if(!TimedWriteAll(out_fd, outbuf.data(), produced)) {
+      if(!TimedWriteAll(out_fd, outbuf, produced)) {
         error = "failed to write extracted zip file";
         ok = false;
         break;
       }
-      crc = mz_crc32(crc, outbuf.data(), produced);
+      bytes_since_sync += produced;
+      if(!ArchiveWritebackCheckpoint(out_fd, bytes_since_sync,
+                                     "zip-deflate", error)) {
+        ok = false;
+        break;
+      }
+      crc = mz_crc32(crc, outbuf, produced);
       written += produced;
       g_status.bytes_written += produced;
       g_status.percent = g_status.total_bytes > 0
