@@ -1,5 +1,29 @@
 # Changelog
 
+## v0.4.2 Test Build (2026-07-22)
+
+* Create and edit common UTF-8 text/source files (`.txt`, `.ini`, `.json`,
+  `.xml`, `.cfg`, `.log`, `.sh`, `.bat`, `.py`, `.c`, `.cpp`, `.h`, `.hpp`,
+  `.html`, `.htm`, `.css`, `.js`, `.lua`, `.md`, `.csv`, `.yaml`, `.yml`,
+  `.conf`, `.sql`) with a 5 MiB server limit, optimistic version checking,
+  permission preservation, `fsync`, and atomic replacement; existing UTF-8
+  BOM and dominant newline style are preserved
+* Upload drop zone accepts files and recursively enumerates dropped folders
+  when the browser exposes the WebKit entry API; folder uploads remain
+  sequential and preserve relative paths
+* Copy overwrite keeps the existing file until the staged replacement succeeds
+* Existing directory conflicts now use validated staged merge semantics
+* Copy/delete preparation and recursion are physical, same-device walks with
+  checked paths, a 64-level depth cap, and first-error abort behavior
+* Copy/move/delete UI actions use form POST bodies to avoid long encoded URLs
+* Upload/copy staging names are collision-resistant within the same second
+* ShadowMountPlus warning before writes to its common scan locations
+* Upload, copy, delete, editor-save, and integrated archive jobs are mutually
+  excluded; uploads report backend byte progress, and copied source files are
+  reopened with no-follow and inode/device verification
+* Windows launcher builds now use the PS5 FreeBSD PIE linker profile, with
+  automated ELF-header validation for every produced payload
+
 ## v0.4.1
 
 * **Separate payloads** (stable model): `bfpilot.elf` = file manager only; `bfpilot-launcher-installer.elf` = home **Media** tile (`applicationCategoryType` 65536, `BFPL00001` → `http://127.0.0.1:5905/`)

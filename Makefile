@@ -24,8 +24,8 @@ PYTHON ?= python3
 # Ship / daily use must stay 5905.
 WEB_PORT ?= 5905
 
-VERSION_TAG := bfpilot-v0.4.1
-BUILD_VERSION ?= v0.4.1
+VERSION_TAG := bfpilot-v0.4.2-test
+BUILD_VERSION ?= v0.4.2-test
 
 LLVM_CONFIG ?= $(if $(wildcard $(PS5_PAYLOAD_SDK)/bin/prospero-llvm-config),$(PS5_PAYLOAD_SDK)/bin/prospero-llvm-config,$(CURDIR)/build-tools/llvm-config)
 LLVM_BINDIR ?= $(shell "$(LLVM_CONFIG)" --bindir 2>/dev/null || dirname "$$(command -v clang 2>/dev/null || command -v clang.exe 2>/dev/null || command -v llvm-strip 2>/dev/null || command -v llvm-strip.exe 2>/dev/null || echo clang)" 2>/dev/null || echo .)
@@ -46,6 +46,7 @@ WEB_SRCS += src/mime.c
 WEB_SRCS += src/notify.c
 WEB_SRCS += src/search.c
 WEB_SRCS += src/transfer.c
+WEB_SRCS += src/text_format.c
 WEB_SRCS += src/payload_launch.c
 WEB_SRCS += src/tile_bootstrap.c
 WEB_SRCS += src/path_ops.c
@@ -192,9 +193,18 @@ LLVM_BINDIR_SHELL := $(subst \,/,$(LLVM_BINDIR))
 RUN_ENV := cd "$(CURDIR_POSIX)" && export LLVM_CONFIG="$(LLVM_CONFIG_SHELL)" && export LLVM_BINDIR="$(LLVM_BINDIR_SHELL)" && export PATH="$(LLVM_BINDIR_SHELL):$$PATH"
 STRIP_CMD := "$(LLVM_BINDIR_SHELL)/llvm-strip"
 LD_CMD := "$(PS5_PAYLOAD_SDK_SHELL)/win/prospero-lld.exe"
-WINDOWS_LINK_PREFIX := --gc-sections --sysroot="$(PS5_PAYLOAD_SDK_SHELL)"
+WINDOWS_LINK_PREFIX := -m elf_x86_64_fbsd --sysroot="$(PS5_PAYLOAD_SDK_SHELL)"
+WINDOWS_LINK_PREFIX += -pie --eh-frame-hdr --hash-style=sysv --build-id=uuid
+WINDOWS_LINK_PREFIX += --unresolved-symbols=report-all -z now
+WINDOWS_LINK_PREFIX += -z start-stop-visibility=hidden -z rodynamic
+WINDOWS_LINK_PREFIX += -z common-page-size=0x4000 -z max-page-size=0x4000
+WINDOWS_LINK_PREFIX += -z dead-reloc-in-nonalloc=.debug_*=0xffffffffffffffff
+WINDOWS_LINK_PREFIX += -z dead-reloc-in-nonalloc=.debug_ranges=0xfffffffffffffffe
+WINDOWS_LINK_PREFIX += -z dead-reloc-in-nonalloc=.debug_loc=0xfffffffffffffffe
+WINDOWS_LINK_PREFIX += --default-script main.script --lto=full
+WINDOWS_LINK_PREFIX += -plugin-opt=-emit-jump-table-sizes-section --gc-sections
 WINDOWS_LINK_PREFIX += -L"$(PS5_PAYLOAD_SDK_SHELL)/target/lib"
-WINDOWS_LINK_PREFIX += -L"$(PS5_PAYLOAD_SDK_SHELL)/target/user/homebrew/lib"
+WINDOWS_LINK_PREFIX += -L"$(PS5_PAYLOAD_SDK_SHELL)/target/user/homebrew/lib" -L.
 WINDOWS_LINK_PREFIX += -l:crt1.o -l:crti.o -l:crtbegin.o -lc
 WINDOWS_WEB_SUFFIX := -lkernel_web -lSceLibcInternal -lSceNet
 WINDOWS_WEB_SUFFIX += -lc_stub_weak -lkernel_stub_weak

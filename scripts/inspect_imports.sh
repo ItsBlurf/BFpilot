@@ -60,6 +60,28 @@ needed_libraries() {
 }
 
 
+check_ps5_elf_header() {
+  local file="$1"
+  local header
+  if [[ -z "${READELF}" ]]; then
+    echo "inspect-imports: readelf or llvm-readelf is required for ELF validation" >&2
+    return 1
+  fi
+  header="$("${READELF}" -h "${file}" 2>/dev/null)"
+  for expected in \
+    'Class:.*ELF64' \
+    'Data:.*little endian' \
+    'OS/ABI:.*FreeBSD' \
+    'Type:.*DYN' \
+    'Machine:.*(X86-64|x86-64)'; do
+    if ! printf '%s\n' "${header}" | grep -E "${expected}" >/dev/null; then
+      echo "inspect-imports: ${file} has an invalid PS5 ELF header (${expected})" >&2
+      return 1
+    fi
+  done
+}
+
+
 check_no_direct_appinst_import() {
   local file="$1"
   local needed
@@ -81,6 +103,8 @@ for file in "$@"; do
     echo "missing"
     continue
   fi
+
+  check_ps5_elf_header "${file}"
 
   size="$(wc -c < "${file}" | tr -d '[:space:]')"
   echo "file size: ${size} bytes"

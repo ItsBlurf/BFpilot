@@ -102,10 +102,15 @@ bfpilot_path_resolve_ci(const char *in, char *out, size_t out_sz) {
     while((ent = readdir(d))) {
       if(!strcmp(ent->d_name, ".") || !strcmp(ent->d_name, "..")) continue;
       if(strcasecmp(ent->d_name, seg) == 0) {
+        int written;
         if(cur[1] == 0)
-          snprintf(next, sizeof(next), "/%s", ent->d_name);
+          written = snprintf(next, sizeof(next), "/%s", ent->d_name);
         else
-          snprintf(next, sizeof(next), "%s/%s", cur, ent->d_name);
+          written = snprintf(next, sizeof(next), "%s/%s", cur, ent->d_name);
+        if(written < 0 || (size_t)written >= sizeof(next)) {
+          closedir(d);
+          return -ENAMETOOLONG;
+        }
         found = 1;
         break;
       }

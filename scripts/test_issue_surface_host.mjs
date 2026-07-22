@@ -38,7 +38,7 @@ assert(html.includes('select-all-checkbox'), '#11 select all')
 assert(html.includes('selectedEntries'), '#11 selection helper')
 
 // #12 version
-assert(versionH.includes('v0.4.1'), '#12 version.h v0.4.1')
-assert(makefile.includes('v0.4.1'), '#12 Makefile v0.4.1')
+assert(versionH.includes('v0.4.2-test'), 'version.h v0.4.2-test')
+assert(makefile.includes('v0.4.2-test'), 'Makefile v0.4.2-test')
 
 console.log('issue surface checks passed (7-12,10)')

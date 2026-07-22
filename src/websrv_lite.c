@@ -663,6 +663,20 @@ dispatch_request(const http_request_t *req, const char *initial_body,
       return transfer_upload_request(req, initial_body, initial_size,
                                      content_size);
     }
+    if(!strcmp(req->path, "/api/fs/text/save")) {
+      return transfer_text_save_request(req, initial_body, initial_size,
+                                        content_size);
+    }
+    if(!strcmp(req->path, "/api/fs/text/create")) {
+      return transfer_text_create_request(req, initial_body, initial_size,
+                                          content_size);
+    }
+    if(!strcmp(req->path, "/api/fs/copy") ||
+       !strcmp(req->path, "/api/fs/move") ||
+       !strcmp(req->path, "/api/fs/delete")) {
+      return transfer_action_post_request(req, req->path, initial_body,
+                                          initial_size, content_size);
+    }
     if(!strcmp(req->path, "/api/fs/archive/prepare")) {
       return transfer_archive_prepare_request(req, initial_body, initial_size,
                                               content_size);

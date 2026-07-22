@@ -331,6 +331,23 @@
       flex: 0 0 auto;
     }
 
+    .upload-drop {
+      margin: 0 12px 12px;
+      padding: 12px;
+      border: 1px dashed #465b70;
+      border-radius: 8px;
+      color: var(--muted);
+      text-align: center;
+      transition: border-color 0.12s ease, background 0.12s ease,
+                  color 0.12s ease;
+    }
+
+    .upload-drop.active {
+      border-color: var(--accent);
+      background: rgba(76, 201, 240, 0.08);
+      color: var(--text);
+    }
+
     .count {
       margin-left: auto;
       min-height: 32px;
@@ -808,6 +825,7 @@
 
       <div class="actions">
         <button id="new-folder">New Folder</button>
+        <button id="new-text">New Text File</button>
         <button id="rename">Rename</button>
         <button id="download">Download</button>
         <button id="load-payload" class="primary" title="Send selected .elf/.bin to elfldr on port 9021">Load payload</button>
@@ -819,6 +837,10 @@
         <button id="upload-folder" class="warn">Upload Folder</button>
         <button id="delete" class="danger">Delete</button>
         <span id="selection" class="count">0 selected</span>
+      </div>
+
+      <div id="upload-drop" class="upload-drop">
+        Drop files or folders here to upload into the current folder
       </div>
 
       <div class="list" id="list">
@@ -970,6 +992,25 @@
 
     function fileUrl(path) {
       return '/fs' + cleanPath(path).split('/').map(encodeURIComponent).join('/');
+    }
+
+    function shadowMountSensitivePath(path) {
+      const value = cleanPath(path || '/').toLowerCase();
+      return value === '/mnt/shadowmnt' || value.startsWith('/mnt/shadowmnt/') ||
+        value === '/data/homebrew' || value.startsWith('/data/homebrew/') ||
+        value === '/data/etahen/games' || value.startsWith('/data/etahen/games/') ||
+        /^\/mnt\/(usb[0-7]|ext[01])(\/|$)/.test(value);
+    }
+
+    function confirmShadowMountWrite(path, action) {
+      if (!shadowMountSensitivePath(path)) return true;
+      return confirm(
+        'ShadowMountPlus scans this destination. Writing directly into a scanned ' +
+        'location while ShadowMountPlus is running can cause a kernel panic.\n\n' +
+        'BFpilot stages replacements before finalizing, but the safest option is ' +
+        'to stop ShadowMountPlus or use an unscanned staging folder on the same disk.\n\n' +
+        'Continue with ' + action + '?'
+      );
     }
 
     function api(url) {
@@ -1958,13 +1999,16 @@
         toast('No selection', 'err');
         return;
       }
+      if (!confirmShadowMountWrite(target, verb)) return;
 
       for (const entry of entries) {
         const source = entryPath(entry);
         try {
-          await api('/api/fs/' + verb +
-            '?src=' + encodeURIComponent(source) +
-            '&dst=' + encodeURIComponent(target));
+          await postForm('/api/fs/' + verb, {
+            src: source,
+            dst: target,
+            overwrite: '0'
+          });
           pollJob();
           const done = await waitJobIdle();
           if (done.error) throw new Error(done.error);
@@ -1976,10 +2020,11 @@
             const actionStr = isDir ? 'Merge' : 'Overwrite';
             if (confirm(`${typeStr} conflict: "${filename}" already exists in the target directory. ${actionStr}?`)) {
               try {
-                await api('/api/fs/' + verb +
-                  '?src=' + encodeURIComponent(source) +
-                  '&dst=' + encodeURIComponent(target) +
-                  '&overwrite=1');
+                await postForm('/api/fs/' + verb, {
+                  src: source,
+                  dst: target,
+                  overwrite: '1'
+                });
                 pollJob();
                 const done = await waitJobIdle();
                 if (done.error) throw new Error(done.error);
@@ -2030,6 +2075,23 @@
       }
     }
 
+    async function makeTextFile() {
+      const name = prompt('Text file name', 'new-file.txt');
+      if (!name) return;
+      if (!confirmShadowMountWrite(state.path, 'create text file')) return;
+      try {
+        const data = await postForm('/api/fs/text/create', {
+          path: state.path,
+          name
+        });
+        await refreshCurrentView();
+        toast('Text file created', 'ok');
+        openEditor(data.path || joinPath(state.path, name));
+      } catch (err) {
+        toast('create text: ' + err.message, 'err');
+      }
+    }
+
     async function renameOne() {
       const entries = selectedEntries();
       if (entries.length !== 1) {
@@ -2076,6 +2138,7 @@
       const suggested = joinPath(target, archiveStem(entries[0].name));
       const destination = cleanPath(prompt('Extract to folder', suggested) || '');
       if (!destination || destination === '/') return;
+      if (!confirmShadowMountWrite(destination, 'extract')) return;
       const password = prompt('Archive password (leave blank if none)', '');
       if (password === null) return;
 
@@ -2103,7 +2166,7 @@
 
       for (const path of paths) {
         try {
-          await api('/api/fs/delete?recursive=1&path=' + encodeURIComponent(path));
+          await postForm('/api/fs/delete', { path, recursive: '1' });
           pollJob();
           const done = await waitJobIdle();
           if (done.error) throw new Error(done.error);
@@ -2160,47 +2223,55 @@
 
     async function uploadFiles(files) {
       if (!files || !files.length || state.uploadBusy) return;
+      if (!confirmShadowMountWrite(state.path, 'upload')) return;
+      const uploads = Array.from(files).map((item) => {
+        if (item && item.file) return item;
+        const relative = item && item.webkitRelativePath ?
+          item.webkitRelativePath.split('/').slice(0, -1).join('/') : '';
+        return { file: item, relPath: relative };
+      }).filter((item) => item.file);
+      if (!uploads.length) return;
       state.uploadBusy = true;
       state.uploadAbort = false;
       state.uploadXhr = null;
       let ok = 0;
       let failed = 0;
       let uploadedBytes = 0;
-      const totalBytes = files.reduce((sum, file) => sum + (file.size || 0), 0);
+      const totalBytes = uploads.reduce((sum, item) =>
+        sum + (item.file.size || 0), 0);
       const startedAt = Date.now();
       /* Sequential single-stream: max LAN/PFS for one body; keep-alive cuts multi-file TCP setup cost.
        * Avoid parallel writers to /data — PFS crypto often serializes and can slow bulk. */
 
-      updateUploadJob(0, totalBytes, startedAt, 0, files.length, 'Preparing', failed, false);
+      updateUploadJob(0, totalBytes, startedAt, 0, uploads.length, 'Preparing', failed, false);
 
-      for (let index = 0; index < files.length; index++) {
-        const file = files[index];
+      for (let index = 0; index < uploads.length; index++) {
+        const file = uploads[index].file;
         if (state.uploadAbort) break;
-        const relPath = file.webkitRelativePath ?
-          file.webkitRelativePath.split('/').slice(0, -1).join('/') : '';
+        const relPath = uploads[index].relPath || '';
         try {
           await uploadOne(file, relPath, (loaded) => {
             updateUploadJob(uploadedBytes + loaded, totalBytes, startedAt,
-              index, files.length, file.name, failed, state.uploadAbort);
+              index, uploads.length, file.name, failed, state.uploadAbort);
           });
           ok++;
           uploadedBytes += file.size || 0;
           updateUploadJob(uploadedBytes, totalBytes, startedAt,
-            index, files.length, file.name, failed, false);
+            index, uploads.length, file.name, failed, false);
           /* Toast only every 8 files or on last — PS5 browser UI thrash hurts multi-file speed */
-          if (ok === files.length || (ok % 8) === 0) {
-            toast('Uploaded ' + ok + ' / ' + files.length, 'ok');
+          if (ok === uploads.length || (ok % 8) === 0) {
+            toast('Uploaded ' + ok + ' / ' + uploads.length, 'ok');
           }
         } catch (err) {
           if (state.uploadAbort || err.message === 'upload cancelled') {
             state.uploadAbort = true;
             updateUploadJob(uploadedBytes, totalBytes, startedAt,
-              index, files.length, file.name, failed, true);
+              index, uploads.length, file.name, failed, true);
             break;
           }
           failed++;
           updateUploadJob(uploadedBytes, totalBytes, startedAt,
-            index, files.length, file.name, failed, false);
+            index, uploads.length, file.name, failed, false);
           toast('upload: ' + err.message, 'err');
         }
       }
@@ -2218,6 +2289,53 @@
           el('job').classList.remove('show');
         }
       }, 1600);
+    }
+
+    function collectDroppedEntry(entry, parentPath, output) {
+      return new Promise((resolve) => {
+        if (entry && entry.isFile) {
+          entry.file((file) => {
+            output.push({ file, relPath: parentPath });
+            resolve();
+          }, resolve);
+          return;
+        }
+        if (!entry || !entry.isDirectory) {
+          resolve();
+          return;
+        }
+
+        const childPath = parentPath ?
+          parentPath + '/' + entry.name : entry.name;
+        const reader = entry.createReader();
+        const readNext = () => {
+          reader.readEntries((children) => {
+            if (!children.length) {
+              resolve();
+              return;
+            }
+            Promise.all(children.map((child) =>
+              collectDroppedEntry(child, childPath, output))).then(readNext, resolve);
+          }, resolve);
+        };
+        readNext();
+      });
+    }
+
+    async function droppedUploads(dataTransfer) {
+      const output = [];
+      const items = Array.from((dataTransfer && dataTransfer.items) || []);
+      const entries = items.map((item) =>
+        item.webkitGetAsEntry ? item.webkitGetAsEntry() : null).filter(Boolean);
+      if (entries.length) {
+        await Promise.all(entries.map((entry) =>
+          collectDroppedEntry(entry, '', output)));
+      } else {
+        for (const file of Array.from((dataTransfer && dataTransfer.files) || [])) {
+          output.push({ file, relPath: '' });
+        }
+      }
+      return output;
     }
 
     function pollJob() {
@@ -2277,6 +2395,7 @@
 
     let editorOriginalContent = '';
     let editorCurrentPath = '';
+    let editorVersion = '';
 
     function isTextName(name) {
       const lower = String(name || '').toLowerCase();
@@ -2292,9 +2411,14 @@
              lower.endsWith('.c') ||
              lower.endsWith('.cpp') ||
              lower.endsWith('.h') ||
+             lower.endsWith('.hpp') ||
              lower.endsWith('.html') ||
+             lower.endsWith('.htm') ||
              lower.endsWith('.css') ||
              lower.endsWith('.js') ||
+             lower.endsWith('.lua') ||
+             lower.endsWith('.md') ||
+             lower.endsWith('.csv') ||
              lower.endsWith('.yaml') ||
              lower.endsWith('.yml') ||
              lower.endsWith('.conf') ||
@@ -2424,18 +2548,17 @@
 
     function openEditor(path) {
       editorCurrentPath = path;
+      editorVersion = '';
       el('editor-textarea').value = 'Loading...';
       el('editor-textarea').disabled = true;
       el('editor-save').disabled = true;
       el('editor-title').textContent = 'Loading: ' + baseName(path);
       el('editor-overlay').style.display = 'flex';
 
-      fetch(fileUrl(path))
-        .then(r => {
-          if (!r.ok) throw new Error('HTTP ' + r.status);
-          return r.text();
-        })
-        .then(text => {
+      api('/api/fs/text?path=' + encodeURIComponent(path))
+        .then(data => {
+          const text = data.text || '';
+          editorVersion = data.version || '';
           editorOriginalContent = text;
           el('editor-textarea').value = text;
           el('editor-textarea').disabled = false;
@@ -2465,9 +2588,9 @@
     async function saveEditor() {
       const content = el('editor-textarea').value;
       const path = editorCurrentPath;
-      const parent = parentPath(path);
-      const name = baseName(path);
-      const url = '/api/fs/upload?path=' + encodeURIComponent(parent) + '&filename=' + encodeURIComponent(name);
+      if (!confirmShadowMountWrite(parentPath(path), 'save')) return;
+      const url = '/api/fs/text/save?path=' + encodeURIComponent(path) +
+        '&version=' + encodeURIComponent(editorVersion);
 
       el('editor-save').disabled = true;
       el('editor-save').textContent = 'Saving...';
@@ -2475,12 +2598,15 @@
       try {
         const response = await fetch(url, {
           method: 'POST',
+          cache: 'no-store',
+          headers: { 'Content-Type': 'text/plain; charset=UTF-8' },
           body: content
         });
         const data = await response.json();
         if (!response.ok || !data.ok) {
           throw new Error(data.error || ('HTTP ' + response.status));
         }
+        editorVersion = data.version || editorVersion;
         editorOriginalContent = content;
         toast('Saved successfully', 'ok');
         el('editor-overlay').style.display = 'none';
@@ -2690,6 +2816,7 @@
       });
 
       el('new-folder').addEventListener('click', makeFolder);
+      el('new-text').addEventListener('click', makeTextFile);
       el('rename').addEventListener('click', renameOne);
       el('download').addEventListener('click', downloadSelected);
       el('load-payload').addEventListener('click', loadPayloadSelected);
@@ -2736,7 +2863,33 @@
         uploadFiles(Array.from(event.target.files || []));
       });
       el('folder-picker').addEventListener('change', (event) => {
-        uploadFiles(Array.from(event.target.files || []));
+        const files = Array.from(event.target.files || []);
+        if (!files.length) {
+          toast('Folder picker returned no files; try the drop area', 'err');
+          return;
+        }
+        uploadFiles(files);
+      });
+      try {
+        el('folder-picker').webkitdirectory = true;
+        el('folder-picker').directory = true;
+      } catch (err) {}
+
+      const drop = el('upload-drop');
+      drop.addEventListener('dragover', (event) => {
+        event.preventDefault();
+        drop.classList.add('active');
+      });
+      drop.addEventListener('dragleave', () => drop.classList.remove('active'));
+      drop.addEventListener('drop', async (event) => {
+        event.preventDefault();
+        drop.classList.remove('active');
+        const files = await droppedUploads(event.dataTransfer);
+        if (!files.length) {
+          toast('Dropped item contained no readable files', 'err');
+          return;
+        }
+        uploadFiles(files);
       });
 
       await refresh();

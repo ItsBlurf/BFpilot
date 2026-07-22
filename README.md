@@ -8,7 +8,8 @@ http://<PS5_IP>:5905/
 
 Works from the PS5 browser or any PC/phone on the same network.
 
-Version **v0.4.1**. Tested on FW **11.60**.
+Version **v0.4.2-test**. This is a test build; the v0.4.1 baseline was tested
+on FW **11.60**.
 
 ## Payloads
 
@@ -27,11 +28,14 @@ Version **v0.4.1**. Tested on FW **11.60**.
 **Browse & transfer**
 - Dual panels: left = browse, right = Target for copy/move/extract
 - Places: `/`, `/data`, `/data/homebrew`, `/user`, `/mnt`, USB/ext when plugged in, custom shortcuts
-- Upload files or a whole folder (folder picker needs browser support)
+- Upload files or a whole folder using the picker or drag-and-drop (recursive
+  dropped folders need the browser's WebKit entry API)
 - Download, copy, move, rename, mkdir, recursive delete
 - **Load payload**: double-click `.elf`/`.bin`/`.js` (or toolbar) to send it to elfldr on port **9021**
 - Progress + cancel on big jobs; overwrite/merge/skip when the destination already exists
 - Free space check before copy/move when size is known
+- Same-device, no-symlink recursive traversal with a 64-level depth cap and immediate abort on fatal storage/vnode errors
+- ShadowMountPlus warning before writes to its common scan roots
 - Folder size on click
 
 **Selection**
@@ -53,7 +57,7 @@ Version **v0.4.1**. Tested on FW **11.60**.
 
 **Viewers**
 - Images: png/jpg/gif/bmp/webp/ico/svg — pan, zoom, rotate
-- Text editor for common source/config types, max 5 MB
+- Create/edit common source, config, markup, script, and CSV text files, max 5 MB; UTF-8 validation, change-conflict detection, atomic save, and preservation of an existing UTF-8 BOM/newline style
 - Logs button: BFpilot logs, archive/search/boot logs, VSH log, error history
 
 **Other**
@@ -134,13 +138,17 @@ See [docs/COMPATIBILITY_STRATEGY.md](docs/COMPATIBILITY_STRATEGY.md). Archives: 
 
 ## Credits
 
-- [owendswang/ps5-web-file-manager](https://github.com/owendswang/ps5-web-file-manager) — image viewer / checkbox multi-select ideas
+- [owendswang/ps5-web-file-manager](https://github.com/owendswang/ps5-web-file-manager) — file-manager UX and safety research
+- [Elf Arsenal](https://git.etawen.dev/soniciso/elf-arsenal) — recursive drag-and-drop upload concept
+- [ps5upload](https://github.com/phantomptr/ps5upload) — PS5 transfer/traversal reference
 - [ps5-payload-dev](https://github.com/ps5-payload-dev) — SDK / websrv
 - [UnRAR](https://www.rarlab.com/rar_add.htm) (Alexander Roshal)
 - [miniz](https://github.com/richgel999/miniz)
 - [LZMA SDK](https://www.7-zip.org/sdk.html) (Igor Pavlov)
 
 Third-party code under `third_party/` keeps its own licenses.
+The upstream audit and adopt/reject rationale are documented in
+[docs/UPSTREAM_FILE_MANAGER_COMPARISON.md](docs/UPSTREAM_FILE_MANAGER_COMPARISON.md).
 
 ## License
 

@@ -1,0 +1,71 @@
+/** Structural regression checks for file-manager data and PS5 I/O safety. */
+import assert from 'assert'
+import fs from 'fs'
+import path from 'path'
+import { fileURLToPath } from 'url'
+
+const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..')
+const read = (name) => fs.readFileSync(path.join(root, name), 'utf8')
+const transfer = read('src/transfer.c')
+const websrv = read('src/websrv_lite.c')
+const header = read('src/transfer.h')
+const textFormat = read('src/text_format.c')
+const html = read('assets/files.html')
+
+assert(transfer.includes('text_version_hash'), 'editor version hash')
+assert(transfer.includes('valid_utf8_text'), 'server UTF-8 validation')
+assert(transfer.includes('write_edit_text_atomic'), 'atomic editor save')
+assert(transfer.includes('fsync(fd)'), 'editor data sync')
+assert(transfer.includes('file changed since it was opened'), 'stale editor rejection')
+assert(transfer.includes('/api/fs/text'), 'text read API')
+assert(websrv.includes('/api/fs/text/save'), 'text save POST route')
+assert(header.includes('transfer_text_save_request'), 'text save declaration')
+assert(websrv.includes('/api/fs/text/create'), 'text create POST route')
+assert(header.includes('transfer_text_create_request'), 'text create declaration')
+assert(transfer.includes('openat(dir_fd, name, O_WRONLY | O_CREAT | O_EXCL'),
+  'text create is exclusive and parent-dir anchored')
+assert(textFormat.includes('detect_newline_style'), 'text save preserves newline style')
+assert(textFormat.includes('has_utf8_bom'), 'text save preserves UTF-8 BOM')
+assert(html.includes("'/api/fs/text?path='"), 'editor uses safe read API')
+assert(html.includes("'/api/fs/text/save?path='"), 'editor uses safe save API')
+assert(html.includes("postForm('/api/fs/text/create'"), 'text create UI uses POST')
+assert(html.includes('editorVersion'), 'editor carries optimistic version')
+assert(transfer.includes('transfer_action_post_request'), 'action POST handler')
+assert(websrv.includes('transfer_action_post_request'), 'action POST routes')
+assert(html.includes("postForm('/api/fs/' + verb"), 'copy/move use POST form')
+assert(html.includes("postForm('/api/fs/delete'"), 'delete uses POST form')
+
+assert(transfer.includes('join_path_checked'), 'checked recursive joins')
+assert(transfer.includes('st.st_dev != root_dev'), 'recursive device boundary')
+assert(transfer.includes('validate_staged_merge'), 'merge pre-validation')
+assert(transfer.includes('merge_staged_tree'), 'staged directory merge')
+assert(transfer.includes('unsupported source type'), 'no silent special-file copy')
+assert(transfer.includes('flags |= O_NOFOLLOW'), 'no-follow regular-file reopen')
+assert(transfer.includes('opened.st_ino != expected->st_ino'), 'copy inode race check')
+assert(transfer.includes('errno = ENOSPC'), 'zero regular write maps to ENOSPC')
+assert(transfer.includes('job_begin("edit")'), 'editor save joins single-writer gate')
+assert(transfer.includes('job_begin("upload")'), 'upload joins single-writer gate')
+assert(transfer.includes('Close the race with job_begin'), 'archive/transfer exclusion')
+assert(transfer.includes('#define BFPILOT_FS_MAX_DEPTH 64U'), 'recursive depth cap')
+assert(transfer.includes('depth > BFPILOT_FS_MAX_DEPTH'), 'depth guard is enforced')
+assert(transfer.includes('delete_recursive_force_inner(child, root_dev'),
+  'staging cleanup stays on its root device')
+
+const workerStart = transfer.indexOf('copy_worker(void *arg)')
+const workerEnd = transfer.indexOf('struct delete_arg', workerStart)
+assert(workerStart >= 0 && workerEnd > workerStart, 'copy worker region')
+const worker = transfer.slice(workerStart, workerEnd)
+assert(!worker.includes('unlink(final_dst)'), 'overwrite keeps old destination')
+assert(worker.includes('rename(staging_dst, final_dst)'), 'atomic file finalization')
+
+assert(html.includes('shadowMountSensitivePath'), 'ShadowMount path detection')
+assert(html.includes('can cause a kernel panic'), 'ShadowMount user warning')
+assert(html.includes('collectDroppedEntry'), 'recursive drag/drop upload')
+assert(html.includes("lower.endsWith('.md')"), 'Markdown is editable')
+assert(html.includes("lower.endsWith('.lua')"), 'Lua is editable')
+assert(html.includes("lower.endsWith('.htm')"), 'HTM is editable')
+assert(html.includes("lower.endsWith('.hpp')"), 'HPP is editable')
+assert(html.includes("lower.endsWith('.csv')"), 'CSV is editable')
+assert(!html.includes('lang-zh') && !html.includes('lang_zh'), 'English-only UI')
+
+console.log('file-manager safety host checks passed')
