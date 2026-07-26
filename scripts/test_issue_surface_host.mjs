@@ -13,8 +13,9 @@ const pathOps = fs.readFileSync(path.join(root, 'src', 'path_ops.c'), 'utf8')
 const versionH = fs.readFileSync(path.join(root, 'src', 'version.h'), 'utf8')
 const makefile = fs.readFileSync(path.join(root, 'Makefile'), 'utf8')
 
-// #7 folder open via click on dir name
-assert(html.includes('entry.dir') && html.includes('openPath(entryPath(entry))'), '#7 openPath on dir click')
+// #7 folder open via double-click or the explicit Open button
+assert(html.includes("row.addEventListener('dblclick'") &&
+       html.includes('openPath(next)'), '#7 double-click folder open')
 assert(html.includes('open-folder') || html.includes('openSelectedFolder'), '#7 open folder control')
 
 // #8 case-insensitive resolve
@@ -38,7 +39,7 @@ assert(html.includes('select-all-checkbox'), '#11 select all')
 assert(html.includes('selectedEntries'), '#11 selection helper')
 
 // #12 version
-assert(versionH.includes('v0.4.2-test'), 'version.h v0.4.2-test')
-assert(makefile.includes('v0.4.2-test'), 'Makefile v0.4.2-test')
+assert(versionH.includes('v0.4.3-alpha.1'), 'version.h v0.4.3-alpha.1')
+assert(makefile.includes('v0.4.3-alpha.1'), 'Makefile v0.4.3-alpha.1')
 
 console.log('issue surface checks passed (7-12,10)')

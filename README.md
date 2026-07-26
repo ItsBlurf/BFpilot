@@ -8,7 +8,7 @@ http://<PS5_IP>:5905/
 
 Works from the PS5 browser or any PC/phone on the same network.
 
-Version **v0.4.2-test**. This is a test build; the v0.4.1 baseline was tested
+Version **v0.4.3-alpha.1**. This is an alpha build; the v0.4.1 baseline was tested
 on FW **11.60**.
 
 ## Payloads
@@ -26,7 +26,7 @@ on FW **11.60**.
 ## Features
 
 **Browse & transfer**
-- Dual panels: left = browse, right = Target for copy/move/extract
+- File clipboard: select items, choose Copy or Move, open the destination, then choose Paste Here
 - Places: `/`, `/data`, `/data/homebrew`, `/user`, `/mnt`, USB/ext when plugged in, custom shortcuts
 - Upload files or a whole folder using the picker or drag-and-drop (recursive
   dropped folders need the browser's WebKit entry API)
@@ -36,7 +36,8 @@ on FW **11.60**.
 - Free space check before copy/move when size is known
 - Same-device, no-symlink recursive traversal with a 64-level depth cap and immediate abort on fatal storage/vnode errors
 - ShadowMountPlus warning before writes to its common scan roots
-- Folder size on click
+- Single-click selects; double-click opens folders; the Open button works with controllers
+- Folder size is calculated when a folder is selected
 
 **Selection**
 - Checkboxes + select all (works fine with a controller)

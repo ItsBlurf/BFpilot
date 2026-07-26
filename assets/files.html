@@ -268,7 +268,7 @@
     .browser {
       min-height: 650px;
       display: grid;
-      grid-template-rows: auto auto auto minmax(0, 1fr);
+      grid-template-rows: auto auto auto auto minmax(0, 1fr);
       overflow: hidden;
     }
 
@@ -331,9 +331,25 @@
       flex: 0 0 auto;
     }
 
+    .action-group {
+      display: inline-flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 6px;
+      padding-right: 8px;
+      margin-right: 2px;
+      border-right: 1px solid var(--line);
+    }
+
+    .action-group:last-of-type {
+      border-right: 0;
+      padding-right: 0;
+    }
+
     .upload-drop {
       margin: 0 12px 12px;
       padding: 12px;
+      min-height: 44px;
       border: 1px dashed #465b70;
       border-radius: 8px;
       color: var(--muted);
@@ -343,9 +359,16 @@
     }
 
     .upload-drop.active {
-      border-color: var(--accent);
-      background: rgba(76, 201, 240, 0.08);
-      color: var(--text);
+      border-color: var(--deep-2);
+      background: rgba(52, 211, 153, 0.12);
+      color: var(--ink);
+    }
+
+    .browser.drag-active .upload-drop {
+      border-color: var(--deep-2);
+      background: rgba(52, 211, 153, 0.12);
+      color: var(--ink);
+      box-shadow: inset 0 0 0 1px rgba(94, 224, 170, 0.2);
     }
 
     .count {
@@ -471,6 +494,30 @@
     .target h2 {
       margin: 0;
       font-size: 15px;
+    }
+
+    .target-hint {
+      margin: -2px 0 0;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.4;
+    }
+
+    .clipboard-status {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #0c1219;
+      padding: 10px;
+      color: var(--muted);
+      font-size: 12px;
+      overflow-wrap: anywhere;
+    }
+
+    .clipboard-status strong {
+      display: block;
+      margin-bottom: 3px;
+      color: var(--ink);
+      font-size: 13px;
     }
 
     .target-path {
@@ -653,7 +700,7 @@
       display: none;
     }
 
-    @media (max-width: 1080px) {
+    @media (max-width: 1300px) {
       .shell {
         grid-template-columns: 132px minmax(0, 1fr);
       }
@@ -734,6 +781,14 @@
         min-height: 30px;
         padding: 0 8px;
         font-size: 12px;
+      }
+
+      .action-group {
+        width: 100%;
+        padding: 0 0 6px;
+        margin: 0;
+        border-right: 0;
+        border-bottom: 1px solid var(--line);
       }
 
       .file-head,
@@ -824,18 +879,22 @@
       </div>
 
       <div class="actions">
-        <button id="new-folder">New Folder</button>
-        <button id="new-text">New Text File</button>
-        <button id="rename">Rename</button>
-        <button id="download">Download</button>
-        <button id="load-payload" class="primary" title="Send selected .elf/.bin to elfldr on port 9021">Load payload</button>
-        <button id="open-folder" title="Open selected folder">Open</button>
-        <button id="chmod" title="Set permissions on selected paths">chmod</button>
-        <button id="edit-file" class="primary">Edit</button>
-        <button id="extract" class="primary">Extract</button>
-        <button id="upload-files" class="warn">Upload Files</button>
-        <button id="upload-folder" class="warn">Upload Folder</button>
-        <button id="delete" class="danger">Delete</button>
+        <span class="action-group">
+          <button id="new-folder">New Folder</button>
+          <button id="new-text">New Text File</button>
+          <button id="upload-files" class="warn">Upload Files</button>
+          <button id="upload-folder" class="warn">Upload Folder</button>
+        </span>
+        <span class="action-group">
+          <button id="open-folder" title="Open the selected folder">Open</button>
+          <button id="rename">Rename</button>
+          <button id="download">Download</button>
+          <button id="edit-file" class="primary">Edit</button>
+          <button id="load-payload" class="primary" title="Send selected .elf/.bin/.js to elfldr on port 9021">Load payload</button>
+          <button id="extract" class="primary">Extract</button>
+          <button id="chmod" title="Set permissions on selected paths">chmod</button>
+          <button id="delete" class="danger">Delete</button>
+        </span>
         <span id="selection" class="count">0 selected</span>
       </div>
 
@@ -854,18 +913,24 @@
       </div>
     </section>
 
-    <aside class="target" aria-label="Transfer target">
-      <h2>Target</h2>
-      <input id="target-path" class="target-path" spellcheck="false" value="/data">
+    <aside class="target" aria-label="File clipboard">
+      <h2>Clipboard</h2>
+      <p class="target-hint">Select files or folders, choose Copy or Move, open the destination, then choose Paste Here.</p>
+      <input id="target-path" class="target-path" spellcheck="false" value="/data" readonly aria-label="Current paste destination">
       <div class="target-buttons">
-        <button id="copy" class="primary">Copy Here</button>
-        <button id="move">Move Here</button>
+        <button id="copy" class="primary">Copy</button>
+        <button id="move">Move</button>
       </div>
+      <div id="clipboard-status" class="clipboard-status">
+        <strong>Clipboard empty</strong>
+        Select items in the file list.
+      </div>
+      <div class="target-buttons">
+        <button id="paste" class="primary" disabled>Paste Here</button>
+        <button id="clear-clipboard" disabled>Clear</button>
+      </div>
+      <div class="rail-title">Jump to destination</div>
       <div class="target-grid" id="target-grid"></div>
-      <div class="target-actions">
-        <button id="target-current">Current</button>
-        <button id="open-target">Open</button>
-      </div>
       <div class="detail" id="detail">
         <strong>No selection</strong>
         <span>Ready</span>
@@ -954,7 +1019,8 @@
         active: false,
         root: 'all',
         query: ''
-      }
+      },
+      clipboard: null
     };
 
     const el = id => document.getElementById(id);
@@ -1163,8 +1229,7 @@
       }
       button.title = (place.label ? place.label + ' | ' : '') + path;
       button.addEventListener('click', () => {
-        el('target-path').value = path;
-        updatePlaces();
+        openPath(path);
       });
       return button;
     }
@@ -1180,7 +1245,8 @@
         seen.add(path);
       }
       for (const place of state.places) {
-        if (!place.custom) continue;
+        const isStorage = /^\/mnt\/(usb[0-7]|ext[01])(?:\/|$)/.test(cleanPath(place.path));
+        if (!place.custom && !isStorage) continue;
         const path = cleanPath(place.path);
         if (seen.has(path)) continue;
         seen.add(path);
@@ -1225,12 +1291,8 @@
 
     function activeShortcut() {
       const current = cleanPath(state.path);
-      let match = state.places.find((place) => place.custom && cleanPath(place.path) === current);
-      if (!match) {
-        const target = cleanPath(el('target-path').value || '');
-        match = state.places.find((place) => place.custom && cleanPath(place.path) === target);
-      }
-      return match || null;
+      return state.places.find((place) =>
+        place.custom && cleanPath(place.path) === current) || null;
     }
 
     async function addShortcut() {
@@ -1251,7 +1313,7 @@
     async function removeShortcut() {
       const match = activeShortcut();
       if (!match) {
-        toast('Open a custom shortcut first, or put one in Target', 'err');
+        toast('Open a custom shortcut first', 'err');
         return;
       }
       if (!confirm('Remove shortcut "' + (match.label || match.path) + '"?')) return;
@@ -1267,7 +1329,7 @@
     async function customizeShortcut() {
       const match = activeShortcut();
       if (!match) {
-        toast('Open a custom shortcut first, or put one in Target', 'err');
+        toast('Open a custom shortcut first', 'err');
         return;
       }
       const label = prompt('Shortcut name', match.label || match.path);
@@ -1597,16 +1659,78 @@
       const currentCustom = state.places.some((place) => {
         return place.custom && cleanPath(place.path) === state.path;
       });
-      const targetCustom = state.places.some((place) => place.custom &&
-        cleanPath(place.path) === cleanPath(el('target-path').value || ''));
-      el('remove-shortcut').disabled = !currentCustom && !targetCustom;
-      el('customize-shortcut').disabled = !currentCustom && !targetCustom;
+      el('remove-shortcut').disabled = !currentCustom;
+      el('customize-shortcut').disabled = !currentCustom;
+    }
+
+    function updateClipboard() {
+      const status = el('clipboard-status');
+      const clipboard = state.clipboard;
+      el('target-path').value = state.path;
+      status.textContent = '';
+
+      const title = document.createElement('strong');
+      if (!clipboard || !clipboard.entries.length) {
+        title.textContent = 'Clipboard empty';
+        status.appendChild(title);
+        status.appendChild(document.createTextNode('Select items in the file list.'));
+        el('paste').disabled = true;
+        el('clear-clipboard').disabled = true;
+        return;
+      }
+
+      const count = clipboard.entries.length;
+      title.textContent = (clipboard.verb === 'move' ? 'Move ' : 'Copy ') +
+        count + (count === 1 ? ' item' : ' items');
+      status.appendChild(title);
+      const names = clipboard.entries.slice(0, 3).map((entry) => entry.name).join(', ');
+      status.appendChild(document.createTextNode(
+        names + (count > 3 ? ' +' + (count - 3) + ' more' : '')
+      ));
+      el('paste').disabled = false;
+      el('clear-clipboard').disabled = false;
+    }
+
+    function stageClipboard(verb) {
+      const entries = selectedEntries();
+      if (!entries.length) {
+        toast('Select files or folders first', 'err');
+        return;
+      }
+      state.clipboard = {
+        verb,
+        entries: entries.map((entry) => ({
+          name: entry.name,
+          dir: !!entry.dir,
+          path: entryPath(entry)
+        }))
+      };
+      state.selected.clear();
+      drawList();
+      updateClipboard();
+      toast((verb === 'move' ? 'Move' : 'Copy') +
+        ' ready. Open a destination and choose Paste Here.', 'ok');
+    }
+
+    function clearClipboard() {
+      state.clipboard = null;
+      updateClipboard();
     }
 
     function updateSelection() {
       const token = ++state.detailToken;
       const entries = selectedEntries();
+      const one = entries.length === 1 ? entries[0] : null;
       el('selection').textContent = entries.length + ' selected';
+      el('open-folder').disabled = !(one && one.dir);
+      el('rename').disabled = !one;
+      el('download').disabled = !(one && !one.dir);
+      el('load-payload').disabled = !(one && canLaunchPayload(one));
+      el('chmod').disabled = entries.length === 0;
+      el('extract').disabled = !(one && !one.dir && isArchiveName(one.name));
+      el('delete').disabled = entries.length === 0;
+      el('copy').disabled = entries.length === 0;
+      el('move').disabled = entries.length === 0;
       if (el('edit-file')) {
         const hasSelection = entries.length === 1;
         const isEditable = hasSelection && canEdit(entries[0]);
@@ -1614,6 +1738,7 @@
         el('edit-file').disabled = !(isEditable || isViewable);
         el('edit-file').textContent = isViewable ? 'View' : 'Edit';
       }
+      updateClipboard();
 
       const detail = el('detail');
       if (!entries.length) {
@@ -1715,11 +1840,6 @@
           drawList();
           return;
         }
-        /* Click folder name (or whole row without ctrl) opens directory (#7) */
-        if (entry.dir && !event.ctrlKey && !event.metaKey) {
-          openPath(entryPath(entry));
-          return;
-        }
         if (event.ctrlKey || event.metaKey) {
           if (state.selected.has(key)) state.selected.delete(key);
           else state.selected.add(key);
@@ -1791,7 +1911,7 @@
       scroller.style.position = 'relative';
       list.appendChild(scroller);
 
-      const parent = list.parentElement; // .main-body
+      const parent = list;
 
       function renderViewport() {
         const viewportHeight = parent.clientHeight || 600;
@@ -1992,15 +2112,8 @@
       await refresh();
     }
 
-    async function transfer(verb) {
-      const entries = selectedEntries();
-      const target = cleanPath(el('target-path').value);
-      if (!entries.length) {
-        toast('No selection', 'err');
-        return;
-      }
-      if (!confirmShadowMountWrite(target, verb)) return;
-
+    async function executeTransfer(verb, entries, target) {
+      let completed = true;
       for (const entry of entries) {
         const source = entryPath(entry);
         try {
@@ -2031,21 +2144,52 @@
               } catch (retryErr) {
                 if ((retryErr.message || '').toLowerCase().includes('job')) pollJob();
                 toast(verb + ': ' + retryErr.message, 'err');
+                completed = false;
                 break;
               }
             } else {
-              // skip (continue to next entry)
+              completed = false;
               continue;
             }
           } else {
             if ((err.message || '').toLowerCase().includes('job')) pollJob();
             toast(verb + ': ' + err.message, 'err');
+            completed = false;
             break;
           }
         }
       }
 
       await refreshCurrentView();
+      return completed;
+    }
+
+    async function pasteClipboard() {
+      const clipboard = state.clipboard;
+      if (!clipboard || !clipboard.entries.length) {
+        toast('Clipboard is empty', 'err');
+        return;
+      }
+
+      const target = state.path;
+      for (const entry of clipboard.entries) {
+        const source = cleanPath(entry.path);
+        if (entry.dir && (target === source || target.startsWith(source + '/'))) {
+          toast('Cannot paste a folder into itself', 'err');
+          return;
+        }
+      }
+      if (!confirmShadowMountWrite(target, clipboard.verb)) return;
+
+      const completed = await executeTransfer(
+        clipboard.verb, clipboard.entries, target);
+      if (completed) {
+        toast((clipboard.verb === 'move' ? 'Moved' : 'Copied') +
+          ' to ' + target, 'ok');
+        if (clipboard.verb === 'move') clearClipboard();
+      } else {
+        toast('Some clipboard items were not pasted', 'err');
+      }
     }
 
     async function waitJobIdle() {
@@ -2320,6 +2464,9 @@
         };
         readNext();
       });
+      if (!parent && entry.dir) {
+        row.title = 'Double-click to open folder';
+      }
     }
 
     async function droppedUploads(dataTransfer) {
@@ -2824,15 +2971,10 @@
       el('chmod').addEventListener('click', chmodSelected);
       el('extract').addEventListener('click', extractSelected);
       el('delete').addEventListener('click', deleteSelected);
-      el('copy').addEventListener('click', () => transfer('copy'));
-      el('move').addEventListener('click', () => transfer('move'));
-      el('target-current').addEventListener('click', () => {
-        el('target-path').value = state.path;
-      });
-      el('open-target').addEventListener('click', () => {
-        openPath(el('target-path').value);
-      });
-      el('target-path').addEventListener('input', updatePlaces);
+      el('copy').addEventListener('click', () => stageClipboard('copy'));
+      el('move').addEventListener('click', () => stageClipboard('move'));
+      el('paste').addEventListener('click', pasteClipboard);
+      el('clear-clipboard').addEventListener('click', clearClipboard);
       el('job-cancel').addEventListener('click', () => {
         if (state.archiveTimer) {
           toast('Archive extraction cannot be cancelled yet', 'err');
@@ -2876,13 +3018,36 @@
       } catch (err) {}
 
       const drop = el('upload-drop');
-      drop.addEventListener('dragover', (event) => {
+      const browser = document.querySelector('.browser');
+      let dragDepth = 0;
+      const hasDroppedFiles = (event) => {
+        const types = event.dataTransfer && event.dataTransfer.types;
+        return types && Array.prototype.indexOf.call(types, 'Files') >= 0;
+      };
+      browser.addEventListener('dragenter', (event) => {
+        if (!hasDroppedFiles(event)) return;
         event.preventDefault();
+        dragDepth++;
+        browser.classList.add('drag-active');
         drop.classList.add('active');
       });
-      drop.addEventListener('dragleave', () => drop.classList.remove('active'));
-      drop.addEventListener('drop', async (event) => {
+      browser.addEventListener('dragover', (event) => {
+        if (!hasDroppedFiles(event)) return;
         event.preventDefault();
+        if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy';
+      });
+      browser.addEventListener('dragleave', () => {
+        dragDepth = Math.max(0, dragDepth - 1);
+        if (dragDepth === 0) {
+          browser.classList.remove('drag-active');
+          drop.classList.remove('active');
+        }
+      });
+      browser.addEventListener('drop', async (event) => {
+        if (!hasDroppedFiles(event)) return;
+        event.preventDefault();
+        dragDepth = 0;
+        browser.classList.remove('drag-active');
         drop.classList.remove('active');
         const files = await droppedUploads(event.dataTransfer);
         if (!files.length) {

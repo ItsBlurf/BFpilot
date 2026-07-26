@@ -1,6 +1,22 @@
 # Changelog
 
-## Unreleased performance pass
+## v0.4.3 Alpha 1 (2026-07-26)
+
+* Copy and Move now work like a file-manager clipboard: select items, stage the
+  action, navigate to a destination, then choose **Paste Here**
+* Restored double-click folder opening while keeping single-click selection and
+  the explicit **Open** button
+* Fixed the upload drop area consuming the file-list height in short or empty
+  folders
+* Dragging files anywhere over the browser now reveals the upload state and
+  accepts the drop
+* Fixed virtual scrolling to listen to the actual file-list scroller
+* Reorganized file actions and disabled controls that do not apply to the
+  current selection
+* The clipboard panel now explains the workflow, shows staged items and the
+  current destination, and includes quick destination shortcuts
+* The three-column layout collapses earlier so the clipboard no longer gets
+  clipped on common laptop-sized browser windows
 
 * Large regular-file copies overlap sequential reads with one writer through
   two fixed 8 MiB, PS5-page-aligned slots; small files and initialization
