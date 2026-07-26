@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.4.3 Alpha 2 (2026-07-27)
+
+* The drag-to-upload strip stays hidden until files enter the browser
+* Restored direct Copy/Move to an editable target alongside the clipboard
+  navigate-and-paste workflow
+* Target shortcuts now fill the direct target instead of changing the current
+  folder
+
 ## v0.4.3 Alpha 1 (2026-07-26)
 
 * Copy and Move now work like a file-manager clipboard: select items, stage the

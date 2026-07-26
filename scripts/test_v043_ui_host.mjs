@@ -14,6 +14,15 @@ assert(
 )
 assert(!html.includes('var(--accent)') && !html.includes('var(--text)'),
   'drag state uses defined theme colors')
+assert(
+  /button\.primary:disabled,[\s\S]*?\{[^}]*background:\s*#151d27[^}]*color:\s*#607080/s.test(html),
+  'disabled operations use an explicit neutral gray treatment'
+)
+assert(
+  /\.upload-drop\s*\{[^}]*display:\s*none/s.test(html) &&
+  /\.browser\.drag-active \.upload-drop\s*\{[^}]*display:\s*block/s.test(html),
+  'drag upload prompt is hidden until a file drag enters the browser'
+)
 assert(html.includes("const parent = list;"), 'virtual list listens to its own scroller')
 assert(html.includes("row.addEventListener('dblclick'"), 'double-click handler exists')
 
@@ -26,21 +35,43 @@ assert(!clickBlock.includes('if (entry.dir'), 'single click selects instead of o
 for (const marker of [
   'id="clipboard-status"',
   'id="paste"',
+  'id="copy-target"',
+  'id="move-target"',
+  'id="target-current"',
+  'id="open-target"',
   'stageClipboard',
   'pasteClipboard',
+  'transferToTarget',
   'clearClipboard',
   'Paste Here'
 ]) {
   assert(html.includes(marker), `clipboard flow includes ${marker}`)
 }
 
+const targetButtonBlock = html.slice(
+  html.indexOf('function targetButton'),
+  html.indexOf('function renderTargetButtons')
+)
+assert(targetButtonBlock.includes("el('target-path').value = path"),
+  'target shortcut fills the direct-transfer target')
+assert(!targetButtonBlock.includes('openPath(path)'),
+  'target shortcut does not change the current folder')
+assert(
+  /function directTargetPath\(\)[\s\S]*?raw\[0\] !== '\/'[\s\S]*?Target must be an absolute path/.test(html),
+  'direct transfer rejects non-absolute targets'
+)
+assert(
+  /async function transferToTarget\(verb\)[\s\S]*?transferWouldRecurse[\s\S]*?executeTransfer\(verb, entries, target\)/.test(html),
+  'direct transfer shares recursion checks and the existing transfer engine'
+)
+
 assert(html.includes("el('open-folder').disabled"), 'Open disabled-state is selection-aware')
 assert(html.includes("el('extract').disabled"), 'Extract disabled-state is selection-aware')
 assert(html.includes("browser.addEventListener('dragenter'"), 'whole browser reveals drag state')
 assert(html.includes("browser.addEventListener('drop'"), 'whole browser accepts dropped files')
-assert(!html.includes('id="target-current"') && !html.includes('id="open-target"'),
-  'old direct-target controls removed')
-assert(version.includes('v0.4.3-alpha.1') && makefile.includes('v0.4.3-alpha.1'),
+assert(html.includes('Add a shortcut to make that folder available here as a transfer target.'),
+  'target panel explains how shortcuts become transfer targets')
+assert(version.includes('v0.4.3-alpha.2') && makefile.includes('v0.4.3-alpha.2'),
   'alpha version is consistent')
 
 const scriptMatch = html.match(/<script>([\s\S]*)<\/script>/)

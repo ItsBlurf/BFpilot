@@ -8,7 +8,7 @@ http://<PS5_IP>:5905/
 
 Works from the PS5 browser or any PC/phone on the same network.
 
-Version **v0.4.3-alpha.1**. This is an alpha build; the v0.4.1 baseline was tested
+Version **v0.4.3-alpha.2**. This is an alpha build; the v0.4.1 baseline was tested
 on FW **11.60**.
 
 ## Payloads
@@ -26,7 +26,7 @@ on FW **11.60**.
 ## Features
 
 **Browse & transfer**
-- File clipboard: select items, choose Copy or Move, open the destination, then choose Paste Here
+- Two transfer flows: copy or move straight to a target, or stage items, navigate, and choose Paste Here
 - Places: `/`, `/data`, `/data/homebrew`, `/user`, `/mnt`, USB/ext when plugged in, custom shortcuts
 - Upload files or a whole folder using the picker or drag-and-drop (recursive
   dropped folders need the browser's WebKit entry API)

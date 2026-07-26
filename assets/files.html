@@ -68,9 +68,16 @@
       outline: none;
     }
 
-    button:disabled {
+    button:disabled,
+    button.primary:disabled,
+    button.warn:disabled,
+    button.danger:disabled {
       cursor: not-allowed;
-      opacity: 0.45;
+      opacity: 1;
+      background: #151d27;
+      border-color: #263442;
+      color: #607080;
+      box-shadow: none;
     }
 
     button.primary {
@@ -347,6 +354,7 @@
     }
 
     .upload-drop {
+      display: none;
       margin: 0 12px 12px;
       padding: 12px;
       min-height: 44px;
@@ -365,6 +373,7 @@
     }
 
     .browser.drag-active .upload-drop {
+      display: block;
       border-color: var(--deep-2);
       background: rgba(52, 211, 153, 0.12);
       color: var(--ink);
@@ -913,10 +922,22 @@
       </div>
     </section>
 
-    <aside class="target" aria-label="File clipboard">
-      <h2>Clipboard</h2>
-      <p class="target-hint">Select files or folders, choose Copy or Move, open the destination, then choose Paste Here.</p>
-      <input id="target-path" class="target-path" spellcheck="false" value="/data" readonly aria-label="Current paste destination">
+    <aside class="target" aria-label="Transfer target and file clipboard">
+      <h2>Transfer</h2>
+      <p class="target-hint">Send selected items straight to a target, or stage them and paste after navigating.</p>
+      <div class="rail-title">Direct target</div>
+      <input id="target-path" class="target-path" spellcheck="false" value="/data" aria-label="Direct transfer target">
+      <div class="target-buttons">
+        <button id="copy-target" class="primary">Copy to Target</button>
+        <button id="move-target">Move to Target</button>
+      </div>
+      <div class="target-actions">
+        <button id="target-current">Use Current</button>
+        <button id="open-target">Open Target</button>
+      </div>
+      <div class="target-grid" id="target-grid"></div>
+      <p class="target-hint">Add a shortcut to make that folder available here as a transfer target.</p>
+      <div class="rail-title">Clipboard</div>
       <div class="target-buttons">
         <button id="copy" class="primary">Copy</button>
         <button id="move">Move</button>
@@ -929,8 +950,6 @@
         <button id="paste" class="primary" disabled>Paste Here</button>
         <button id="clear-clipboard" disabled>Clear</button>
       </div>
-      <div class="rail-title">Jump to destination</div>
-      <div class="target-grid" id="target-grid"></div>
       <div class="detail" id="detail">
         <strong>No selection</strong>
         <span>Ready</span>
@@ -1229,7 +1248,7 @@
       }
       button.title = (place.label ? place.label + ' | ' : '') + path;
       button.addEventListener('click', () => {
-        openPath(path);
+        el('target-path').value = path;
       });
       return button;
     }
@@ -1666,7 +1685,6 @@
     function updateClipboard() {
       const status = el('clipboard-status');
       const clipboard = state.clipboard;
-      el('target-path').value = state.path;
       status.textContent = '';
 
       const title = document.createElement('strong');
@@ -1731,6 +1749,8 @@
       el('delete').disabled = entries.length === 0;
       el('copy').disabled = entries.length === 0;
       el('move').disabled = entries.length === 0;
+      el('copy-target').disabled = entries.length === 0;
+      el('move-target').disabled = entries.length === 0;
       if (el('edit-file')) {
         const hasSelection = entries.length === 1;
         const isEditable = hasSelection && canEdit(entries[0]);
@@ -2164,6 +2184,47 @@
       return completed;
     }
 
+    function directTargetPath() {
+      const raw = (el('target-path').value || '').trim();
+      if (!raw || raw[0] !== '/') {
+        toast('Target must be an absolute path', 'err');
+        return null;
+      }
+      const target = cleanPath(raw);
+      el('target-path').value = target;
+      return target;
+    }
+
+    function transferWouldRecurse(entries, target) {
+      return entries.some((entry) => {
+        if (!entry.dir) return false;
+        const source = cleanPath(entryPath(entry));
+        return target === source || target.startsWith(source + '/');
+      });
+    }
+
+    async function transferToTarget(verb) {
+      const entries = selectedEntries();
+      if (!entries.length) {
+        toast('Select files or folders first', 'err');
+        return;
+      }
+      const target = directTargetPath();
+      if (!target) return;
+      if (transferWouldRecurse(entries, target)) {
+        toast('Cannot transfer a folder into itself', 'err');
+        return;
+      }
+      if (!confirmShadowMountWrite(target, verb)) return;
+
+      const completed = await executeTransfer(verb, entries, target);
+      if (completed) {
+        toast((verb === 'move' ? 'Moved' : 'Copied') + ' to ' + target, 'ok');
+      } else {
+        toast('Some selected items were not transferred', 'err');
+      }
+    }
+
     async function pasteClipboard() {
       const clipboard = state.clipboard;
       if (!clipboard || !clipboard.entries.length) {
@@ -2172,12 +2233,9 @@
       }
 
       const target = state.path;
-      for (const entry of clipboard.entries) {
-        const source = cleanPath(entry.path);
-        if (entry.dir && (target === source || target.startsWith(source + '/'))) {
-          toast('Cannot paste a folder into itself', 'err');
-          return;
-        }
+      if (transferWouldRecurse(clipboard.entries, target)) {
+        toast('Cannot paste a folder into itself', 'err');
+        return;
       }
       if (!confirmShadowMountWrite(target, clipboard.verb)) return;
 
@@ -2971,10 +3029,25 @@
       el('chmod').addEventListener('click', chmodSelected);
       el('extract').addEventListener('click', extractSelected);
       el('delete').addEventListener('click', deleteSelected);
+      el('copy-target').addEventListener('click', () => transferToTarget('copy'));
+      el('move-target').addEventListener('click', () => transferToTarget('move'));
       el('copy').addEventListener('click', () => stageClipboard('copy'));
       el('move').addEventListener('click', () => stageClipboard('move'));
       el('paste').addEventListener('click', pasteClipboard);
       el('clear-clipboard').addEventListener('click', clearClipboard);
+      el('target-current').addEventListener('click', () => {
+        el('target-path').value = state.path;
+      });
+      el('open-target').addEventListener('click', () => {
+        const target = directTargetPath();
+        if (target) openPath(target);
+      });
+      el('target-path').addEventListener('keydown', (event) => {
+        if (event.key === 'Enter') {
+          const target = directTargetPath();
+          if (target) openPath(target);
+        }
+      });
       el('job-cancel').addEventListener('click', () => {
         if (state.archiveTimer) {
           toast('Archive extraction cannot be cancelled yet', 'err');
