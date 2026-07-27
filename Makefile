@@ -24,8 +24,8 @@ PYTHON ?= python3
 # Ship / daily use must stay 5905.
 WEB_PORT ?= 5905
 
-VERSION_TAG := bfpilot-v0.4.3-alpha.2
-BUILD_VERSION ?= v0.4.3-alpha.2
+VERSION_TAG := bfpilot-v0.4.3-alpha.3
+BUILD_VERSION ?= v0.4.3-alpha.3
 
 LLVM_CONFIG ?= $(if $(wildcard $(PS5_PAYLOAD_SDK)/bin/prospero-llvm-config),$(PS5_PAYLOAD_SDK)/bin/prospero-llvm-config,$(CURDIR)/build-tools/llvm-config)
 LLVM_BINDIR ?= $(shell "$(LLVM_CONFIG)" --bindir 2>/dev/null || dirname "$$(command -v clang 2>/dev/null || command -v clang.exe 2>/dev/null || command -v llvm-strip 2>/dev/null || command -v llvm-strip.exe 2>/dev/null || echo clang)" 2>/dev/null || echo .)

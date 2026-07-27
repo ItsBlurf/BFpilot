@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.4.3 Alpha 3 (2026-07-27)
+
+* Reworked the file toolbar into one compact desktop row with secondary actions
+  in a More menu and responsive wrapping on narrower displays
+* Darkened the interface and reduced decorative color for a more restrained
+  file-manager appearance
+* Made the direct target and clipboard transfer workflows visually distinct
+  while keeping both available together
+
 ## v0.4.3 Alpha 2 (2026-07-27)
 
 * The drag-to-upload strip stays hidden until files enter the browser

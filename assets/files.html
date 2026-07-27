@@ -7,19 +7,19 @@
   <title>BFpilot</title>
   <style>
     :root {
-      --paper: #090d12;
-      --panel: #111821;
-      --panel-2: #151f2a;
-      --ink: #edf4f2;
-      --soft: #182330;
-      --line: #293645;
-      --muted: #9aa8b6;
-      --deep: #34d399;
-      --deep-2: #5ee0aa;
-      --mint: #123326;
-      --sky: #17314a;
-      --gold: #3d3218;
-      --rose: #3b1d23;
+      --paper: #05070a;
+      --panel: #0b1016;
+      --panel-2: #101720;
+      --ink: #e3e8ed;
+      --soft: #121a23;
+      --line: #232e39;
+      --muted: #8593a1;
+      --deep: #497f63;
+      --deep-2: #73ad8f;
+      --mint: #10251c;
+      --sky: #142334;
+      --gold: #2b281c;
+      --rose: #2c171c;
       --red: #ff8585;
       --shadow: rgba(0, 0, 0, 0.45);
       --focus: rgba(94, 224, 170, 0.24);
@@ -81,10 +81,10 @@
     }
 
     button.primary {
-      border-color: var(--deep-2);
-      background: var(--deep);
-      color: #06130e;
-      font-weight: 700;
+      border-color: #426f59;
+      background: #183126;
+      color: #c6e8d6;
+      font-weight: 600;
     }
 
     button.danger {
@@ -94,8 +94,9 @@
     }
 
     button.warn {
-      border-color: #8a6f2d;
-      background: var(--gold);
+      border-color: #4b4836;
+      background: #1c1c18;
+      color: #d5d2bd;
     }
 
     .top {
@@ -104,7 +105,7 @@
     }
 
     .top-inner {
-      width: min(1500px, 100%);
+      width: min(1600px, 100%);
       margin: 0 auto;
       padding: 10px 14px;
       display: grid;
@@ -194,11 +195,11 @@
     }
 
     .shell {
-      width: min(1500px, 100%);
+      width: min(1600px, 100%);
       margin: 0 auto;
       padding: 14px;
       display: grid;
-      grid-template-columns: 190px minmax(0, 1fr) 300px;
+      grid-template-columns: 174px minmax(0, 1fr) 316px;
       gap: 12px;
       min-height: 0;
     }
@@ -322,13 +323,14 @@
 
     .actions {
       display: flex;
-      flex-wrap: wrap;
+      position: relative;
+      flex-wrap: nowrap;
       align-items: center;
       gap: 6px;
-      overflow-x: hidden;
-      overflow-y: visible;
+      overflow: visible;
       padding: 8px 10px;
       border-bottom: 1px solid var(--line);
+      background: #0a0f15;
     }
 
     .actions button {
@@ -340,7 +342,7 @@
 
     .action-group {
       display: inline-flex;
-      flex-wrap: wrap;
+      flex-wrap: nowrap;
       align-items: center;
       gap: 6px;
       padding-right: 8px;
@@ -351,6 +353,54 @@
     .action-group:last-of-type {
       border-right: 0;
       padding-right: 0;
+    }
+
+    .action-menu {
+      position: relative;
+      flex: 0 0 auto;
+    }
+
+    .action-menu summary {
+      min-height: 32px;
+      display: inline-flex;
+      align-items: center;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--panel-2);
+      color: var(--ink);
+      padding: 0 10px;
+      cursor: pointer;
+      list-style: none;
+      font-size: 13px;
+    }
+
+    .action-menu summary::-webkit-details-marker {
+      display: none;
+    }
+
+    .action-menu[open] summary {
+      border-color: var(--deep-2);
+    }
+
+    .action-menu-panel {
+      position: absolute;
+      top: 38px;
+      right: 0;
+      z-index: 8;
+      width: 188px;
+      display: grid;
+      gap: 5px;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      background: #0b1118;
+      box-shadow: 0 14px 34px rgba(0, 0, 0, 0.6);
+      padding: 7px;
+    }
+
+    .action-menu-panel button {
+      width: 100%;
+      justify-content: flex-start;
+      text-align: left;
     }
 
     .upload-drop {
@@ -497,7 +547,7 @@
       align-self: start;
       padding: 12px;
       display: grid;
-      gap: 10px;
+      gap: 9px;
     }
 
     .target h2 {
@@ -510,6 +560,18 @@
       color: var(--muted);
       font-size: 12px;
       line-height: 1.4;
+    }
+
+    .transfer-section {
+      display: grid;
+      gap: 8px;
+      border-top: 1px solid var(--line);
+      padding-top: 10px;
+    }
+
+    .transfer-section:first-of-type {
+      border-top: 0;
+      padding-top: 0;
     }
 
     .clipboard-status {
@@ -709,7 +771,7 @@
       display: none;
     }
 
-    @media (max-width: 1300px) {
+    @media (max-width: 1240px) {
       .shell {
         grid-template-columns: 132px minmax(0, 1fr);
       }
@@ -794,6 +856,7 @@
 
       .action-group {
         width: 100%;
+        flex-wrap: wrap;
         padding: 0 0 6px;
         margin: 0;
         border-right: 0;
@@ -890,20 +953,23 @@
       <div class="actions">
         <span class="action-group">
           <button id="new-folder">New Folder</button>
-          <button id="new-text">New Text File</button>
           <button id="upload-files" class="warn">Upload Files</button>
-          <button id="upload-folder" class="warn">Upload Folder</button>
-        </span>
-        <span class="action-group">
           <button id="open-folder" title="Open the selected folder">Open</button>
           <button id="rename">Rename</button>
           <button id="download">Download</button>
           <button id="edit-file" class="primary">Edit</button>
           <button id="load-payload" class="primary" title="Send selected .elf/.bin/.js to elfldr on port 9021">Load payload</button>
           <button id="extract" class="primary">Extract</button>
-          <button id="chmod" title="Set permissions on selected paths">chmod</button>
-          <button id="delete" class="danger">Delete</button>
         </span>
+        <details class="action-menu">
+          <summary>More</summary>
+          <div class="action-menu-panel">
+            <button id="new-text">New Text File</button>
+            <button id="upload-folder" class="warn">Upload Folder</button>
+            <button id="chmod" title="Set permissions on selected paths">Change Permissions</button>
+            <button id="delete" class="danger">Delete</button>
+          </div>
+        </details>
         <span id="selection" class="count">0 selected</span>
       </div>
 
@@ -924,32 +990,35 @@
 
     <aside class="target" aria-label="Transfer target and file clipboard">
       <h2>Transfer</h2>
-      <p class="target-hint">Send selected items straight to a target, or stage them and paste after navigating.</p>
-      <div class="rail-title">Direct target</div>
-      <input id="target-path" class="target-path" spellcheck="false" value="/data" aria-label="Direct transfer target">
-      <div class="target-buttons">
-        <button id="copy-target" class="primary">Copy to Target</button>
-        <button id="move-target">Move to Target</button>
-      </div>
-      <div class="target-actions">
-        <button id="target-current">Use Current</button>
-        <button id="open-target">Open Target</button>
-      </div>
-      <div class="target-grid" id="target-grid"></div>
-      <p class="target-hint">Add a shortcut to make that folder available here as a transfer target.</p>
-      <div class="rail-title">Clipboard</div>
-      <div class="target-buttons">
-        <button id="copy" class="primary">Copy</button>
-        <button id="move">Move</button>
-      </div>
-      <div id="clipboard-status" class="clipboard-status">
-        <strong>Clipboard empty</strong>
-        Select items in the file list.
-      </div>
-      <div class="target-buttons">
-        <button id="paste" class="primary" disabled>Paste Here</button>
-        <button id="clear-clipboard" disabled>Clear</button>
-      </div>
+      <section class="transfer-section">
+        <div class="rail-title">Direct destination</div>
+        <input id="target-path" class="target-path" spellcheck="false" value="/data" aria-label="Direct transfer target">
+        <div class="target-buttons">
+          <button id="copy-target" class="primary">Copy to Target</button>
+          <button id="move-target">Move to Target</button>
+        </div>
+        <div class="target-actions">
+          <button id="target-current">Use Current</button>
+          <button id="open-target">Open Target</button>
+        </div>
+        <div class="target-grid" id="target-grid"></div>
+        <p class="target-hint">Select items, choose a destination, then copy or move directly.</p>
+      </section>
+      <section class="transfer-section">
+        <div class="rail-title">Clipboard workflow</div>
+        <div class="target-buttons">
+          <button id="copy" class="primary">Copy</button>
+          <button id="move">Move</button>
+        </div>
+        <div id="clipboard-status" class="clipboard-status">
+          <strong>Clipboard empty</strong>
+          Select items in the file list.
+        </div>
+        <div class="target-buttons">
+          <button id="paste" class="primary" disabled>Paste Here</button>
+          <button id="clear-clipboard" disabled>Clear</button>
+        </div>
+      </section>
       <div class="detail" id="detail">
         <strong>No selection</strong>
         <span>Ready</span>

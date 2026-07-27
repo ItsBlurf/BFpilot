@@ -9,6 +9,7 @@ __pycache__/
 *.pyc
 diagnostics/
 output/
+.playwright-cli/
 screenshot.png
 logs/
 

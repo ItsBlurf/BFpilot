@@ -20,13 +20,12 @@ const transfer = read('src/transfer.c')
 const pathOps = read('src/path_ops.c')
 const versionH = read('src/version.h')
 
-// --- Action bar: wrap, not horizontal-scroll-only ---
-assert(/\.actions\s*\{[^}]*flex-wrap:\s*wrap/s.test(html), 'actions flex-wrap wrap')
+// --- Action bar: compact at desktop, wraps at the responsive breakpoint ---
+assert(/\.actions\s*\{[^}]*flex-wrap:\s*nowrap/s.test(html), 'desktop actions stay on one row')
 assert(!/\.actions\s*\{[^}]*overflow-x:\s*auto/s.test(html), 'no overflow-x auto on .actions')
-assert(/overflow-x:\s*hidden/.test(html), 'overflow-x hidden present')
 const mediaActions = html.match(/@media[^{]+\{[\s\S]*?\.actions\s*\{([^}]*)\}/)
 if (mediaActions) {
-  assert(!/flex-wrap:\s*nowrap/.test(mediaActions[1]), 'media .actions must not force nowrap')
+  assert(/flex-wrap:\s*wrap/.test(mediaActions[1]), 'responsive actions wrap')
 }
 
 // --- Single data root ---
@@ -79,7 +78,7 @@ assert(html.includes("endsWith('.7z')"), '#9')
 assert(transfer.includes('chmod_request') || transfer.includes('/api/fs/chmod'), '#10')
 assert(html.includes('chmodSelected') || html.includes('id="chmod"'), '#10 ui')
 assert(html.includes('row-checkbox') && html.includes('select-all-checkbox'), '#11')
-assert(versionH.includes('v0.4.3-alpha.2') && makefile.includes('v0.4.3-alpha.2'),
+assert(versionH.includes('v0.4.3-alpha.3') && makefile.includes('v0.4.3-alpha.3'),
        'current alpha version')
 
-console.log('v0.4.3-alpha.2 separate-launcher + UX host checks passed')
+console.log('v0.4.3-alpha.3 separate-launcher + UX host checks passed')
