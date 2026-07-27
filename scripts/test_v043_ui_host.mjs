@@ -71,7 +71,7 @@ assert(html.includes("browser.addEventListener('dragenter'"), 'whole browser rev
 assert(html.includes("browser.addEventListener('drop'"), 'whole browser accepts dropped files')
 assert(html.includes('Select items, choose a destination, then copy or move directly.'),
   'direct target workflow is explained')
-assert(version.includes('v0.4.3-alpha.3') && makefile.includes('v0.4.3-alpha.3'),
+assert(version.includes('v0.4.3-alpha.4') && makefile.includes('v0.4.3-alpha.4'),
   'alpha version is consistent')
 
 const scriptMatch = html.match(/<script>([\s\S]*)<\/script>/)

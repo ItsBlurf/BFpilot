@@ -194,7 +194,7 @@ def large_upload_bench(base: str, root: str, size_mb: int = 8) -> tuple[bool, di
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--host", default=os.environ.get("PS5_IP", "192.168.1.204"))
+    ap.add_argument("--host", default=os.environ.get("PS5_IP", "ps5"))
     ap.add_argument("--port", default=os.environ.get("BF_WEB_PORT", "5905"))
     ap.add_argument(
         "--root-parent",
