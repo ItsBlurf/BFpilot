@@ -71,11 +71,25 @@ assert(html.includes("browser.addEventListener('dragenter'"), 'whole browser rev
 assert(html.includes("browser.addEventListener('drop'"), 'whole browser accepts dropped files')
 assert(html.includes('Select items, choose a destination, then copy or move directly.'),
   'direct target workflow is explained')
-assert(version.includes('v0.4.3-alpha.4') && makefile.includes('v0.4.3-alpha.4'),
-  'alpha version is consistent')
+const actionsBlock = html.slice(
+  html.indexOf('<div class="actions">'),
+  html.indexOf('<div id="upload-drop"')
+)
+const morePanel = actionsBlock.slice(
+  actionsBlock.indexOf('<div class="action-menu-panel">'),
+  actionsBlock.indexOf('</details>')
+)
+assert(actionsBlock.indexOf('id="new-text"') < actionsBlock.indexOf('<details class="action-menu">'),
+  'New Text File is a direct toolbar action')
+assert(actionsBlock.indexOf('id="delete"') < actionsBlock.indexOf('<details class="action-menu">'),
+  'Delete is a direct toolbar action')
+assert(!morePanel.includes('id="new-text"') && !morePanel.includes('id="delete"'),
+  'New Text File and Delete are not hidden in More')
+assert(version.includes('v0.4.3') && makefile.includes('v0.4.3'),
+  'release version is consistent')
 
 const scriptMatch = html.match(/<script>([\s\S]*)<\/script>/)
 assert(scriptMatch, 'inline application script found')
 new Function(scriptMatch[1])
 
-console.log('v0.4.3 alpha UI checks passed')
+console.log('v0.4.3 UI checks passed')

@@ -8,8 +8,7 @@ http://<PS5_IP>:5905/
 
 Works from the PS5 browser or any PC/phone on the same network.
 
-Version **v0.4.3-alpha.4**. This is an alpha build; the v0.4.1 baseline was tested
-on FW **11.60**.
+Version **v0.4.3**. The v0.4.1 baseline was tested on FW **11.60**.
 
 ## Payloads
 

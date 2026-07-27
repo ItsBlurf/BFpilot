@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.4.3 (2026-07-27)
+
+* Added create/edit text files and recursive folder uploads
+* Added safer staged copy, move, delete, upload, and archive operations
+* Kept direct-target and navigate-then-paste transfer workflows together
+* Improved large-file transfer speed, search response time, and diagnostics
+* Refined the dark file-manager layout; New Text File and Delete stay visible
+
 ## v0.4.3 Alpha 3 (2026-07-27)
 
 * Reworked the file toolbar into one compact desktop row with secondary actions
