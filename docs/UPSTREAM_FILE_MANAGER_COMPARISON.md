@@ -1,15 +1,16 @@
 # Upstream File-Manager Comparison
 
-Research date: 2026-07-22
+Research updated: 2026-08-11
 
 ## Exact sources checked
 
 | Source | Revision checked | Notes |
 | --- | --- | --- |
-| BFpilot | `00028d2dcf5afd566d321bf32c0b1fd2d9698c7f` / v0.4.1 baseline | MIT; implementation target |
-| `owendswang/ps5-web-file-manager` | every tag from v0.1 (`1ed55b4`) through v0.9 (`1a24160`) plus the untagged v0.5 release commit `ba0704d` | GPL-3.0 |
+| BFpilot | v0.4.4-alpha.1 working tree based on `0f17898d48113c016608853e16a395db8057d45e` | MIT; implementation target |
+| `owendswang/ps5-web-file-manager` | every tag from v0.1 through `48d669b848c3eaeb72ee743bd54b193d1d29eccb` (v1.4) | GPL-3.0 |
 | local `projects/elf-arsenal` | complete local snapshot, including `assets/files.html`, `src/transfer.c`, and bundled ShadowMountPlus | no top-level license file in this snapshot; embedded components have their own licenses |
-| `phantomptr/ps5upload` | local `364d165f5a6e1bd370ef3949487d2d1f305f6261`, especially `payload/src/runtime.c` | reference only |
+| `phantomptr/ps5upload` | local `9a8ace8de36fd13fb076f46e8a41643493b7d6d1`, especially its AppInst and transfer paths | reference only |
+| `ps5-payload-dev/sdk` | official v0.42 / `4eb701204fc3f8d31e84cf8ca272974e2be9c867` | build and ABI reference |
 | PS5 workspace research | filesystem traversal, I/O limits, debugging notes, SDK samples | reference only |
 
 No GPL or uncertain-license source/assets were copied into MIT-licensed BFpilot.
@@ -21,20 +22,31 @@ architecture.
 | Release | Upstream change examined | BFpilot decision |
 | --- | --- | --- |
 | v0.1 | Initial browse, upload, download, create folder, rename, copy, move, delete | Already present, with staging, progress, conflict handling, and safer traversal |
-| v0.2 | Lower-firmware frontend adjustments and Media launcher tile | Already covered by BFpilot's controller/mobile layout and separate Media-tile installer; no upstream asset imported |
+| v0.2 | Lower-firmware frontend adjustments and Media launcher tile | Controller/mobile behavior already covered; BFpilot now uses one direct AppInst payload, without copying upstream assets |
 | v0.3 | Create/edit text files and a broader text-extension list | Adopted: create plus edit API/UI; added `.md`, `.lua`, `.htm`, `.hpp`, and `.csv`; BFpilot also validates UTF-8, limits files to 5 MiB, detects edit conflicts, and preserves an existing BOM/newline style |
 | v0.4 | Image preview, overwrite-space reclaim calculation, permissions, completion details, large-directory UI | Image viewer, chmod, persistent completion details, ETA, and virtualized rows were already present. Deleting the known-good destination to reclaim space was rejected; BFpilot stages the full replacement first |
 | v0.5 | Same-filesystem move without copy preparation; experimental copy workers/pipeline | Direct same-device `rename` was already present. Extra copy workers/pipeline rejected pending PS5 hardware evidence |
 | v0.6 | Return to safer single-thread recursive copy; timing and ETA | Already present; hardened with physical same-device walks, checked joins, fatal-error abort, inode revalidation, and a 64-level recursion cap |
-| v0.7 | Older-browser CSS changes, installer icon/param handling, ShadowMount warning | Warning adopted for every BFpilot write path to common scan roots. Installer behavior is architecture-specific, while BFpilot keeps its separate known-working tile installer |
+| v0.7 | Older-browser CSS changes, installer icon/param handling, ShadowMount warning | Warning adopted for every BFpilot write path to common scan roots. Tile assets are compared and refreshed atomically |
 | v0.8 | Mobile layout and multilingual filename fixes | Narrow/mobile UI and UTF-8 filenames were already supported. Translation bundles deliberately omitted: BFpilot remains English-only |
 | v0.8b | Correct internal M.2 available-space display | Already present through `statvfs`, including explicit USB/ext places |
 | v0.9 | Multi-path POST operations and one-time destination-writable validation | POST bodies adopted for copy/move/delete so Unicode/long paths do not overflow the request target. BFpilot deliberately keeps one conservative job per source for conflict prompts, cancellation, and single-writer recovery |
+| v1.0 | Persistent sorting/path, upload/download, streamed TAR downloads, active-task recovery, and backend modularization | Covered: sort and last successful path persist; single-file and streamed TAR downloads, atomic uploads, and active job/archive/PKG/search recovery are present. BFpilot keeps its smaller custom HTTP stack instead of adding libmicrohttpd |
+| v1.1 | Safer temporary copies, conservative free-space checks, editor-close fix, and leaner deletion progress | Covered with unique same-filesystem staging, no overwrite-space credit before commit, explicit unsaved-editor confirmation, and bounded delete progress |
+| v1.2 | Local PKG installation | Covered with stricter header/content-ID validation, NPXS rejection, serialized status, and confirmation-only POST submission |
+| v1.3 | Internal-storage PKG path fix, parent navigation/mobile layout, special-storage handling, and filename-byte preservation | Covered: `/data` maps to AppInst's `/user/data` view; parent row and responsive layout are present; USB/ext are explicit roots; invalid filesystem bytes round-trip through private-use tokens |
+| v1.4 | Circle/browser-back directory history, block back during active work, reveal the folder left behind, and right-biased long paths | Adopted independently: guarded history is seeded per path, parent return scrolls/focuses the previous folder in the virtual list, and the editable address field scrolls to its useful right edge |
 
-The current upstream large-file copy pipeline (enabled at 256 MiB) was inspected
-but not adopted. Its small-file workers are disabled, earlier releases changed
-the threading model, and there is no BFpilot hardware benchmark showing that
-added buffers and synchronization improve PS5 stability or throughput.
+BFpilot uses its own bounded two-slot 8 MiB large-file pipeline and retains a
+serial small-file path. Upstream-style worker fan-out was not adopted: it adds
+memory and vnode pressure without improving BFpilot's single-writer safety
+model. The bounded BFpilot path has dedicated host contracts and PS5 tests.
+
+The only intentionally omitted user-facing upstream feature is translation:
+BFpilot is English-only by project policy. Upstream's fallback HTTP port is also
+not used because BFpilot's Media tile has a stable `127.0.0.1:5905` deeplink;
+safe reinjection hands off the existing BFpilot listener and refuses to kill an
+unrelated service occupying that port.
 
 ## Elf Arsenal audit
 
@@ -90,8 +102,8 @@ it contains no second implementation to merge.
   same-filesystem `rename`; it also preserves the previous destination on failure.
 - `statvfs(...).f_bavail` plus a 256 MiB margin intentionally requires room for a
   complete staged overwrite. This costs temporary space in exchange for recovery.
-- BFpilot keeps one recursive writer and one sequential upload/file buffer instead
-  of creating parallel I/O pressure on PFS/exFAT/USB paths.
+- BFpilot keeps one recursive mutation job, one upload stream, and one bounded
+  large-file writer pipeline instead of fan-out across PFS/exFAT/USB paths.
 - Static checks and cross-compilation can catch ABI, import, traversal, and error-
   handling defects, but they cannot prove that a payload will never crash or kernel
   panic on every firmware, jail/mount state, HEN, or storage device. Final confidence

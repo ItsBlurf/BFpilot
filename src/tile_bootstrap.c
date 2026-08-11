@@ -1,71 +1,93 @@
-/*
- * After the web UI is up, optionally inject the separate Media-tile installer
- * if present under the single data dir (or common USB/homebrew paths).
- * Main bfpilot.elf never links AppInst — that stays in the installer payload.
- */
+/* Asynchronous Media-tile install through BFpilot's direct AppInst runtime. */
 
 #include <errno.h>
+#include <pthread.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <string.h>
-#include <sys/stat.h>
-#include <unistd.h>
 
+#include "appinst_direct.h"
 #include "diag.h"
 #include "notify.h"
-#include "paths.h"
-#include "payload_launch.h"
 #include "tile_bootstrap.h"
+#include "websrv.h"
 
-static const char *const k_installer_candidates[] = {
-    BFPILOT_INSTALLER_ELF_PATH,
-    "/data/homebrew/BFpilot/bfpilot-launcher-installer.elf",
-    "/mnt/usb0/BFpilot/bfpilot-launcher-installer.elf",
-    "/mnt/usb0/bfpilot-launcher-installer.elf",
-    "/mnt/usb1/bfpilot-launcher-installer.elf",
-    NULL,
-};
+static atomic_int g_tile_started;
+static atomic_int g_tile_busy;
 
-static int
-file_is_elf(const char *path) {
-  struct stat st;
-  if(stat(path, &st) != 0 || !S_ISREG(st.st_mode) || st.st_size < 64) {
-    return 0;
+static void *
+tile_thread(void *unused) {
+  (void)unused;
+  bfpilot_appinst_result_t result;
+  bfpilot_launcher_diag_t diag;
+  memset(&diag, 0, sizeof(diag));
+  int rc = bfpilot_appinst_install_tile(&result);
+
+  diag.launcher_enabled = 1;
+  diag.launcher_attempted = 1;
+  diag.appinst_init_rc = result.init_result;
+  diag.title_dir_resolved = result.title_dir_resolved;
+  diag.install_title_dir_resolved = result.title_dir_resolved;
+  diag.install_title_rc = result.primary_result;
+  diag.uninstall_resolved = 0;
+  diag.uninstall_rc = BFPILOT_DIAG_SKIPPED;
+  diag.install_all_resolved = result.install_all_resolved;
+  diag.install_all_rc = result.fallback_result;
+  diag.user_app_writable = result.user_app_writable;
+  diag.launcher_install_rc = rc;
+  snprintf(diag.launcher_final_state, sizeof(diag.launcher_final_state),
+           "%s", rc == 0 && result.skipped_unchanged ? "up_to_date" :
+                   rc == 0 ? "installed" :
+                   rc == -ENOSYS ? "appinst_unavailable" : "failed");
+  websrv_set_launcher_diag(&diag);
+  bfpilot_diag_set_launcher_status(diag.launcher_final_state, rc);
+
+  if(rc == 0) {
+    bfpilot_notify("BFpilot", result.skipped_unchanged
+        ? "Media tile already up to date"
+        : "Media tile installed or refreshed");
+  } else {
+    bfpilot_notify("BFpilot", "Media tile install failed; file manager remains ready");
   }
-  return 1;
+  atomic_store(&g_tile_busy, 0);
+  return NULL;
 }
 
 void
 bfpilot_tile_bootstrap_try(void) {
-  static int done;
-  const char *found = NULL;
-  int rc;
+  int expected = 0;
+  if(!atomic_compare_exchange_strong(&g_tile_started, &expected, 1)) return;
+  atomic_store(&g_tile_busy, 1);
 
-  if(done) return;
-  done = 1;
-
-  for(int i = 0; k_installer_candidates[i]; i++) {
-    if(file_is_elf(k_installer_candidates[i])) {
-      found = k_installer_candidates[i];
-      break;
+  pthread_t thread;
+  pthread_attr_t attr;
+  pthread_attr_t *thread_attr = NULL;
+  int rc = pthread_attr_init(&attr);
+  if(rc == 0) {
+    thread_attr = &attr;
+    int stack_rc = pthread_attr_setstacksize(&attr, 512U * 1024U);
+    if(stack_rc != 0) {
+      bfpilot_log("tile bootstrap: could not set worker stack rc=%d", stack_rc);
     }
+  } else {
+    bfpilot_log("tile bootstrap: could not initialize thread attributes rc=%d",
+                rc);
   }
-
-  if(!found) {
-    bfpilot_log("tile bootstrap: installer ELF not found under %s "
-                "(inject bfpilot-launcher-installer.elf separately for Media tile)",
-                BFPILOT_DATA_DIR);
+  rc = pthread_create(&thread, thread_attr, tile_thread, NULL);
+  if(thread_attr) pthread_attr_destroy(&attr);
+  if(rc == 0) {
+    pthread_detach(thread);
+    bfpilot_log("tile bootstrap: direct AppInst worker started");
     return;
   }
 
-  bfpilot_log("tile bootstrap: injecting %s", found);
-  rc = bfpilot_launch_payload_path(found);
-  if(rc == 0) {
-    bfpilot_notify("BFpilot", "home tile installer started");
-    bfpilot_log("tile bootstrap: installer sent to elfldr ok");
-  } else {
-    bfpilot_log("tile bootstrap: inject failed rc=%d", rc);
-    if(rc == -ECONNREFUSED) {
-      bfpilot_notify("BFpilot", "tile install skipped (elfldr offline)");
-    }
-  }
+  atomic_store(&g_tile_busy, 0);
+  atomic_store(&g_tile_started, 0);
+  bfpilot_diag_set_launcher_status("thread_failed", -rc);
+  bfpilot_log("tile bootstrap: pthread_create failed rc=%d", rc);
+}
+
+int
+bfpilot_tile_bootstrap_busy(void) {
+  return atomic_load(&g_tile_busy) != 0;
 }

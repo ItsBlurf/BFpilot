@@ -27,6 +27,7 @@
 #include "path_ops.h"
 #include "paths.h"
 #include "payload_launch.h"
+#include "pkg_install.h"
 #include "search.h"
 #include "text_format.h"
 #include "transfer.h"
@@ -56,6 +57,10 @@
 #define BFPILOT_SPACE_MARGIN_BYTES (256ULL * 1024ULL * 1024ULL)
 #define BFPILOT_TEXT_MAX_SIZE (5U * 1024U * 1024U)
 #define BFPILOT_ACTION_FORM_MAX_SIZE (8U * 1024U)
+#define BFPILOT_DOWNLOAD_FORM_MAX_SIZE (4U * 1024U * 1024U)
+#define BFPILOT_DOWNLOAD_MAX_PATHS 2048U
+#define BFPILOT_DOWNLOAD_BUF_SIZE (2U * 1024U * 1024U)
+#define BFPILOT_DOWNLOAD_PREPARE_TTL 120
 #define BFPILOT_FS_MAX_DEPTH 64U
 
 #define BFPILOT_MAX_SHORTCUTS 32
@@ -157,6 +162,17 @@ json_string(json_buf_t *b, const char *s) {
     default:
       if(*p < 0x20) {
         if(json_appendf(b, "\\u%04x", *p) != 0) return -1;
+      } else if(*p >= 0x80) {
+        size_t utf8_length = bfpilot_utf8_sequence_length(p);
+        if(utf8_length > 0) {
+          if(json_grow(b, utf8_length) != 0) return -1;
+          memcpy(b->data + b->len, p, utf8_length);
+          b->len += utf8_length;
+          b->data[b->len] = 0;
+          p += utf8_length - 1;
+        } else if(json_appendf(b, "\\udb80\\udc%02x", *p) != 0) {
+          return -1;
+        }
       } else {
         if(json_grow(b, 1) != 0) return -1;
         b->data[b->len++] = (char)*p;
@@ -391,6 +407,23 @@ static struct upload_state g_upload = {
 /* Serializes optimistic-version checks with atomic text replacements. */
 static pthread_mutex_t g_text_lock = PTHREAD_MUTEX_INITIALIZER;
 
+struct download_request_state {
+  pthread_mutex_t lock;
+  char          **paths;
+  size_t          path_count;
+  unsigned long   id;
+  unsigned long   next_id;
+  int             started;
+  time_t          prepared_at;
+};
+
+static struct download_request_state g_download = {
+  .lock = PTHREAD_MUTEX_INITIALIZER,
+  .next_id = 1,
+};
+
+static void download_free_paths(char **paths, size_t count);
+
 atomic_int g_archive_busy = 0;
 #if BFPILOT_ENABLE_INTEGRATED_ARCHIVE
 extern int g_archive_cancel;
@@ -403,6 +436,12 @@ int g_archive_cancel = 0;
 int
 transfer_archive_busy(void) {
   return atomic_load(&g_archive_busy) != 0;
+}
+
+
+int
+transfer_job_busy(void) {
+  return atomic_load(&g_job.busy) != 0 || transfer_archive_busy();
 }
 
 
@@ -504,6 +543,33 @@ job_end(int rc, const char *err) {
               g_job.source_dev, g_job.destination_dev, g_job.current,
               err ? err : "");
   atomic_store(&g_job.busy, 0);
+}
+
+
+static int
+download_expire_pending(void) {
+  char **paths = NULL;
+  size_t count = 0;
+  time_t now = time(NULL);
+
+  pthread_mutex_lock(&g_download.lock);
+  if(g_download.paths && !g_download.started &&
+     g_download.prepared_at > 0 && now >= g_download.prepared_at &&
+     now - g_download.prepared_at >= BFPILOT_DOWNLOAD_PREPARE_TTL) {
+    paths = g_download.paths;
+    count = g_download.path_count;
+    g_download.paths = NULL;
+    g_download.path_count = 0;
+    g_download.id = 0;
+    g_download.prepared_at = 0;
+  }
+  pthread_mutex_unlock(&g_download.lock);
+  if(!paths) return 0;
+
+  download_free_paths(paths, count);
+  errno = ETIMEDOUT;
+  job_end(-1, "download was not started within 120 seconds");
+  return 1;
 }
 
 
@@ -1767,8 +1833,9 @@ list_request(const http_request_t *req) {
     first = 0;
     if(json_append(&b, "{\"name\":") != 0 ||
        json_string(&b, ent->d_name) != 0 ||
-       json_appendf(&b, ",\"dir\":%s",
-                    S_ISDIR(st.st_mode) ? "true" : "false") != 0) break;
+       json_appendf(&b, ",\"dir\":%s,\"mode\":%u",
+                    S_ISDIR(st.st_mode) ? "true" : "false",
+                    (unsigned)(st.st_mode & 07777)) != 0) break;
     if(!fast_mode &&
        json_appendf(&b, ",\"size\":%ld,\"mtime\":%ld",
                     (long)st.st_size, (long)st.st_mtime) != 0) break;
@@ -1816,13 +1883,14 @@ stat_request(const http_request_t *req) {
   if(json_append(&b, "{\"ok\":true,\"path\":") != 0 ||
      json_string(&b, path) != 0 ||
      json_appendf(&b,
-                  ",\"dir\":%s,\"size\":%ld,\"mtime\":%ld,\"dev\":%lu,"
+                  ",\"dir\":%s,\"mode\":%u,\"size\":%ld,\"mtime\":%ld,\"dev\":%lu,"
                   "\"statvfs\":%s,\"totalBytes\":%llu,\"freeBytes\":%llu,"
                   "\"availableBytes\":%llu,\"reservedBytes\":%llu,"
                   "\"usedBytes\":%llu,\"usedPercent\":%.2f,"
                   "\"usableTotalBytes\":%llu,\"usableUsedBytes\":%llu,"
                   "\"usableUsedPercent\":%.2f}",
                   S_ISDIR(st.st_mode) ? "true" : "false",
+                  (unsigned)(st.st_mode & 07777),
                   (long)st.st_size, (long)st.st_mtime,
                   (unsigned long)st.st_dev, fs.ok ? "true" : "false",
                   fs.total, fs.free_bytes, fs.available, fs.reserved,
@@ -2444,6 +2512,7 @@ rename_handler(const http_request_t *req) {
 
 static int
 status_handler(const http_request_t *req) {
+  (void)download_expire_pending();
   int busy = atomic_load(&g_job.busy);
   long tb = atomic_load(&g_job.total_bytes);
   long cb = atomic_load(&g_job.copied_bytes);
@@ -2655,6 +2724,10 @@ form_get_arg(const char *body, const char *name, char *out, size_t out_size) {
       if(eq) memcpy(value, eq + 1, val_len);
       value[val_len] = 0;
       websrv_url_decode(decoded, sizeof(decoded), value);
+      if(!strcmp(name, "path") || !strcmp(name, "src") ||
+         !strcmp(name, "dst") || !strcmp(name, "root")) {
+        (void)bfpilot_path_decode_byte_tokens(decoded);
+      }
       if(strlen(decoded) >= out_size) return 0;
       memcpy(out, decoded, strlen(decoded) + 1);
       return 1;
@@ -2664,6 +2737,988 @@ form_get_arg(const char *body, const char *name, char *out, size_t out_size) {
     p = amp + 1;
   }
   return 0;
+}
+
+
+static void
+download_free_paths(char **paths, size_t count) {
+  if(!paths) return;
+  for(size_t i = 0; i < count; i++) free(paths[i]);
+  free(paths);
+}
+
+
+static int
+hex_digit_value(unsigned char c) {
+  if(c >= '0' && c <= '9') return (int)(c - '0');
+  if(c >= 'a' && c <= 'f') return (int)(c - 'a') + 10;
+  if(c >= 'A' && c <= 'F') return (int)(c - 'A') + 10;
+  return -1;
+}
+
+
+static int
+form_component_decode(const char *input, size_t input_size,
+                      char *output, size_t output_size) {
+  size_t used = 0;
+  if(!output || output_size == 0) return -1;
+  for(size_t i = 0; i < input_size; i++) {
+    unsigned char c = (unsigned char)input[i];
+    if(c == '+') {
+      c = ' ';
+    } else if(c == '%') {
+      if(i + 2 >= input_size) return -1;
+      int high = hex_digit_value((unsigned char)input[i + 1]);
+      int low = hex_digit_value((unsigned char)input[i + 2]);
+      if(high < 0 || low < 0) return -1;
+      c = (unsigned char)((high << 4) | low);
+      i += 2;
+    }
+    if(c == 0 || used + 1 >= output_size) return -1;
+    output[used++] = (char)c;
+  }
+  output[used] = 0;
+  return 0;
+}
+
+
+static int
+download_collect_paths(const char *body, char ***paths_out,
+                       size_t *count_out) {
+  char **paths = NULL;
+  size_t count = 0;
+  const char *cursor = body ? body : "";
+
+  while(*cursor) {
+    const char *amp = strchr(cursor, '&');
+    size_t pair_size = amp ? (size_t)(amp - cursor) : strlen(cursor);
+    const char *eq = memchr(cursor, '=', pair_size);
+    size_t key_size = eq ? (size_t)(eq - cursor) : pair_size;
+    size_t value_size = eq ? pair_size - key_size - 1 : 0;
+    char key[32];
+
+    if(form_component_decode(cursor, key_size, key, sizeof(key)) != 0) {
+      download_free_paths(paths, count);
+      errno = EINVAL;
+      return -1;
+    }
+    if(!strcmp(key, "path")) {
+      char decoded[1024];
+      char resolved[1024];
+      struct stat st;
+      int duplicate = 0;
+
+       if(count >= BFPILOT_DOWNLOAD_MAX_PATHS || !eq || value_size == 0 ||
+          form_component_decode(eq + 1, value_size, decoded,
+                                sizeof(decoded)) != 0) {
+         download_free_paths(paths, count);
+         errno = count >= BFPILOT_DOWNLOAD_MAX_PATHS ? E2BIG : EINVAL;
+         return -1;
+       }
+       (void)bfpilot_path_decode_byte_tokens(decoded);
+       if(!path_is_safe(decoded) ||
+          path_for_list(decoded, resolved, sizeof(resolved)) != 0 ||
+         lstat(resolved, &st) != 0 ||
+         (!S_ISREG(st.st_mode) && !S_ISDIR(st.st_mode))) {
+        download_free_paths(paths, count);
+        errno = count >= BFPILOT_DOWNLOAD_MAX_PATHS ? E2BIG : EINVAL;
+        return -1;
+      }
+      for(size_t i = 0; i < count; i++) {
+        if(!strcmp(paths[i], resolved)) {
+          duplicate = 1;
+          break;
+        }
+      }
+      if(!duplicate) {
+        char **next = realloc(paths, (count + 1) * sizeof(*paths));
+        if(!next) {
+          download_free_paths(paths, count);
+          errno = ENOMEM;
+          return -1;
+        }
+        paths = next;
+        paths[count] = strdup(resolved);
+        if(!paths[count]) {
+          download_free_paths(paths, count);
+          errno = ENOMEM;
+          return -1;
+        }
+        count++;
+      }
+    }
+    if(!amp) break;
+    cursor = amp + 1;
+  }
+
+  if(count == 0) {
+    download_free_paths(paths, count);
+    errno = EINVAL;
+    return -1;
+  }
+  *paths_out = paths;
+  *count_out = count;
+  return 0;
+}
+
+
+int
+transfer_pkg_install_request(const http_request_t *req,
+                             const char *initial_data, size_t initial_size,
+                             size_t content_size) {
+  char *body = NULL;
+  char **paths = NULL;
+  size_t count = 0;
+  char error[512];
+
+  if(read_request_body(req, initial_data, initial_size, content_size,
+                       BFPILOT_DOWNLOAD_FORM_MAX_SIZE, &body) != 0) {
+    return serve_error(req, errno == EFBIG ? 413 : 500,
+                       errno == EFBIG ? "PKG request is too large"
+                                      : strerror(errno));
+  }
+  if(download_collect_paths(body, &paths, &count) != 0) {
+    int saved_errno = errno;
+    free(body);
+    return serve_error(req, saved_errno == E2BIG ? 413 : 400,
+                       saved_errno == E2BIG ? "too many selected paths"
+                                            : "invalid PKG selection");
+  }
+  free(body);
+
+  int rc = bfpilot_pkg_install_start((const char *const *)paths, count,
+                                     error, sizeof(error));
+  download_free_paths(paths, count);
+  if(rc != 0) {
+    int status = rc == -EINVAL || rc == -ENAMETOOLONG || rc == -ENOTSUP ? 400 :
+                 rc == -EBUSY ? 409 :
+                 rc == -ENOENT ? 404 :
+                 rc == -ECONNREFUSED || rc == -ENETUNREACH ||
+                 rc == -ETIMEDOUT ? 503 : 500;
+    return serve_error(req, status, error[0] ? error : "PKG install failed");
+  }
+
+  char response[160];
+  int length = snprintf(response, sizeof(response),
+                        "{\"ok\":true,\"state\":\"queued\","
+                        "\"packageCount\":%lu}", (unsigned long)count);
+  return length < 0 || (size_t)length >= sizeof(response) ? -1 :
+      websrv_send(req->fd, 202, "application/json", response,
+                  (size_t)length);
+}
+
+
+int
+transfer_download_prepare_request(const http_request_t *req,
+                                  const char *initial_data,
+                                  size_t initial_size,
+                                  size_t content_size) {
+  char *body = NULL;
+  char **paths = NULL;
+  size_t count = 0;
+  unsigned long id;
+
+  (void)download_expire_pending();
+
+  if(read_request_body(req, initial_data, initial_size, content_size,
+                       BFPILOT_DOWNLOAD_FORM_MAX_SIZE, &body) != 0) {
+    return serve_error(req, errno == EFBIG ? 413 : 500,
+                       errno == EFBIG ? "download request is too large"
+                                      : strerror(errno));
+  }
+  if(download_collect_paths(body, &paths, &count) != 0) {
+    int saved_errno = errno;
+    free(body);
+    return serve_error(req, saved_errno == E2BIG ? 413 : 400,
+                       saved_errno == E2BIG ? "too many selected paths"
+                                            : "invalid download selection");
+  }
+  free(body);
+
+  if(!job_begin("download")) {
+    download_free_paths(paths, count);
+    return serve_error(req, 409,
+                       "another file-manager job is already running");
+  }
+
+  pthread_mutex_lock(&g_download.lock);
+  download_free_paths(g_download.paths, g_download.path_count);
+  g_download.paths = paths;
+  g_download.path_count = count;
+  g_download.id = g_download.next_id++;
+  if(g_download.next_id == 0) g_download.next_id = 1;
+  g_download.started = 0;
+  g_download.prepared_at = time(NULL);
+  id = g_download.id;
+  pthread_mutex_unlock(&g_download.lock);
+
+  pthread_mutex_lock(&g_job.lock);
+  snprintf(g_job.source, sizeof(g_job.source), "%s%s",
+           paths[0], count > 1 ? " ..." : "");
+  snprintf(g_job.current, sizeof(g_job.current), "%s", "waiting for browser");
+  pthread_mutex_unlock(&g_job.lock);
+
+  bfpilot_log("download prepared id=%lu selections=%lu first=%s",
+              id, (unsigned long)count, paths[0]);
+  char response[160];
+  int n = snprintf(response, sizeof(response),
+                   "{\"ok\":true,\"id\":%lu,\"count\":%lu}",
+                   id, (unsigned long)count);
+  if(n < 0 || (size_t)n >= sizeof(response)) {
+    errno = EOVERFLOW;
+    job_end(-1, "download response overflow");
+    return -1;
+  }
+  return websrv_send(req->fd, 200, "application/json", response, (size_t)n);
+}
+
+
+static int
+download_take_request(unsigned long id, char ***paths_out,
+                      size_t *count_out) {
+  int ok = 0;
+  (void)download_expire_pending();
+  pthread_mutex_lock(&g_download.lock);
+  if(g_download.paths && g_download.id == id && !g_download.started) {
+    g_download.started = 1;
+    *paths_out = g_download.paths;
+    *count_out = g_download.path_count;
+    g_download.paths = NULL;
+    g_download.path_count = 0;
+    g_download.prepared_at = 0;
+    ok = 1;
+  }
+  pthread_mutex_unlock(&g_download.lock);
+  return ok;
+}
+
+
+static int
+download_cancel_pending(void) {
+  char **paths = NULL;
+  size_t count = 0;
+
+  pthread_mutex_lock(&g_download.lock);
+  if(g_download.paths && !g_download.started) {
+    paths = g_download.paths;
+    count = g_download.path_count;
+    g_download.paths = NULL;
+    g_download.path_count = 0;
+    g_download.id = 0;
+    g_download.prepared_at = 0;
+  }
+  pthread_mutex_unlock(&g_download.lock);
+  if(!paths) return 0;
+
+  download_free_paths(paths, count);
+  errno = ECANCELED;
+  job_end(-1, "cancelled before download started");
+  return 1;
+}
+
+
+struct tar_seen_entry {
+  dev_t dev;
+  ino_t ino;
+};
+
+struct tar_seen_set {
+  struct tar_seen_entry *items;
+  size_t count;
+  size_t capacity;
+};
+
+static int
+tar_seen_add(struct tar_seen_set *seen, const struct stat *st) {
+  for(size_t i = 0; i < seen->count; i++) {
+    if(seen->items[i].dev == st->st_dev &&
+       seen->items[i].ino == st->st_ino) return 0;
+  }
+  if(seen->count == seen->capacity) {
+    size_t next_capacity = seen->capacity ? seen->capacity * 2 : 128;
+    struct tar_seen_entry *next = realloc(
+        seen->items, next_capacity * sizeof(*next));
+    if(!next) return -1;
+    seen->items = next;
+    seen->capacity = next_capacity;
+  }
+  seen->items[seen->count].dev = st->st_dev;
+  seen->items[seen->count].ino = st->st_ino;
+  seen->count++;
+  return 1;
+}
+
+
+static int
+download_count_path(const char *path, dev_t root_dev, unsigned depth,
+                    struct tar_seen_set *seen, unsigned long long *bytes,
+                    long *items) {
+  struct stat st;
+  if(depth > BFPILOT_FS_MAX_DEPTH) {
+    errno = ELOOP;
+    return -1;
+  }
+  if(job_cancelled()) {
+    errno = ECANCELED;
+    return -1;
+  }
+  if(lstat(path, &st) != 0) return -1;
+  if(st.st_dev != root_dev) {
+    bfpilot_log("download scan stopped at mount boundary path=%s root_dev=%lu child_dev=%lu",
+                path, (unsigned long)root_dev, (unsigned long)st.st_dev);
+    return 0;
+  }
+  if(S_ISREG(st.st_mode)) {
+    if(st.st_size < 0 ||
+       *bytes > ULLONG_MAX - (unsigned long long)st.st_size) {
+      errno = EOVERFLOW;
+      return -1;
+    }
+    *bytes += (unsigned long long)st.st_size;
+    (*items)++;
+    return 0;
+  }
+  if(!S_ISDIR(st.st_mode)) {
+    if(depth == 0) {
+      errno = ESTALE;
+      return -1;
+    }
+    return 0;
+  }
+
+  int added = tar_seen_add(seen, &st);
+  if(added < 0) {
+    errno = ENOMEM;
+    return -1;
+  }
+  if(added == 0) return 0;
+  (*items)++;
+  DIR *dir = opendir(path);
+  if(!dir) return -1;
+  struct stat opened;
+  int dir_fd = dirfd(dir);
+  if(dir_fd < 0 || fstat(dir_fd, &opened) != 0) {
+    int saved_errno = errno;
+    closedir(dir);
+    errno = saved_errno;
+    return -1;
+  }
+  if(opened.st_dev != st.st_dev || opened.st_ino != st.st_ino) {
+    closedir(dir);
+    errno = ESTALE;
+    return -1;
+  }
+
+  int rc = 0;
+  int saved_errno = 0;
+  for(;;) {
+    errno = 0;
+    struct dirent *entry = readdir(dir);
+    if(!entry) {
+      if(errno) {
+        saved_errno = errno;
+        rc = -1;
+      }
+      break;
+    }
+    if(!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) continue;
+    size_t need = strlen(path) + strlen(entry->d_name) + 2;
+    char *child = malloc(need);
+    if(!child) {
+      saved_errno = ENOMEM;
+      rc = -1;
+      break;
+    }
+    snprintf(child, need, "%s%s%s", path,
+             path[strlen(path) - 1] == '/' ? "" : "/", entry->d_name);
+    if(download_count_path(child, root_dev, depth + 1, seen, bytes,
+                           items) != 0) {
+      saved_errno = errno;
+      free(child);
+      rc = -1;
+      break;
+    }
+    free(child);
+  }
+  if(closedir(dir) != 0 && rc == 0) {
+    saved_errno = errno;
+    rc = -1;
+  }
+  if(rc != 0) errno = saved_errno;
+  return rc;
+}
+
+
+static int
+tar_put_number(unsigned char *field, size_t size, unsigned long long value) {
+  unsigned long long max_octal = 0;
+  if(size < 2) return -1;
+  for(size_t i = 0; i < size - 1; i++) {
+    if(max_octal > (ULLONG_MAX - 7) / 8) {
+      max_octal = ULLONG_MAX;
+      break;
+    }
+    max_octal = max_octal * 8 + 7;
+  }
+  memset(field, 0, size);
+  if(value <= max_octal) {
+    char format[20];
+    snprintf(format, sizeof(format), "%%0%zullo", size - 1);
+    snprintf((char *)field, size, format, value);
+    return 0;
+  }
+  for(size_t i = 0; i < size; i++) {
+    field[size - 1 - i] = (unsigned char)(value & 0xff);
+    value >>= 8;
+  }
+  if(value != 0) return -1;
+  field[0] |= 0x80;
+  return 0;
+}
+
+
+static int
+tar_split_ustar_name(const char *path, char name[100], char prefix[155]) {
+  size_t length = strlen(path);
+  memset(name, 0, 100);
+  memset(prefix, 0, 155);
+  if(length <= 100) {
+    memcpy(name, path, length);
+    return 0;
+  }
+  for(const char *slash = path + length; slash > path; slash--) {
+    if(slash[-1] != '/') continue;
+    size_t prefix_length = (size_t)(slash - 1 - path);
+    size_t name_length = length - prefix_length - 1;
+    if(prefix_length <= 155 && name_length > 0 && name_length <= 100) {
+      memcpy(prefix, path, prefix_length);
+      memcpy(name, slash, name_length);
+      return 0;
+    }
+  }
+  return -1;
+}
+
+
+static int
+tar_make_header(unsigned char header[512], const char *name,
+                const struct stat *st, char type, unsigned long long size) {
+  char tar_name[100];
+  char prefix[155];
+  if(tar_split_ustar_name(name, tar_name, prefix) != 0) {
+    const char *base = path_basename(name);
+    size_t base_size = strlen(base);
+    memset(tar_name, 0, sizeof(tar_name));
+    memcpy(tar_name, base,
+           base_size < sizeof(tar_name) ? base_size : sizeof(tar_name));
+    memset(prefix, 0, sizeof(prefix));
+  }
+
+  memset(header, 0, 512);
+  memcpy(header, tar_name, sizeof(tar_name));
+  if(tar_put_number(header + 100, 8,
+                    (unsigned long long)(st->st_mode & 07777)) != 0 ||
+     tar_put_number(header + 108, 8, 0) != 0 ||
+     tar_put_number(header + 116, 8, 0) != 0 ||
+     tar_put_number(header + 124, 12, size) != 0 ||
+     tar_put_number(header + 136, 12,
+                    st->st_mtime > 0 ? (unsigned long long)st->st_mtime : 0) != 0) {
+    errno = EOVERFLOW;
+    return -1;
+  }
+  memset(header + 148, ' ', 8);
+  header[156] = (unsigned char)type;
+  memcpy(header + 257, "ustar", 5);
+  header[262] = 0;
+  memcpy(header + 263, "00", 2);
+  memcpy(header + 345, prefix, sizeof(prefix));
+
+  unsigned int checksum = 0;
+  for(size_t i = 0; i < 512; i++) checksum += header[i];
+  snprintf((char *)header + 148, 8, "%06o", checksum);
+  header[154] = 0;
+  header[155] = ' ';
+  return 0;
+}
+
+
+static int
+tar_send_chunk(const http_request_t *req, const void *data, size_t size) {
+  if(job_cancelled()) {
+    errno = ECANCELED;
+    return -1;
+  }
+  return websrv_write_chunk(req->fd, data, size);
+}
+
+
+static int
+tar_send_zeros(const http_request_t *req, size_t size) {
+  static const unsigned char zeros[512] = {0};
+  while(size > 0) {
+    size_t part = size < sizeof(zeros) ? size : sizeof(zeros);
+    if(tar_send_chunk(req, zeros, part) != 0) return -1;
+    size -= part;
+  }
+  return 0;
+}
+
+
+static int
+tar_send_header(const http_request_t *req, const char *name,
+                const struct stat *st, char type, unsigned long long size) {
+  unsigned char header[512];
+  char fit_name[100];
+  char fit_prefix[155];
+  if(tar_split_ustar_name(name, fit_name, fit_prefix) != 0) {
+    struct stat long_st = *st;
+    const char longlink_name[] = "././@LongLink";
+    size_t long_size = strlen(name) + 1;
+    if(tar_make_header(header, longlink_name, &long_st, 'L',
+                       (unsigned long long)long_size) != 0 ||
+       tar_send_chunk(req, header, sizeof(header)) != 0 ||
+       tar_send_chunk(req, name, long_size) != 0 ||
+       tar_send_zeros(req, (512 - (long_size % 512)) % 512) != 0) {
+      return -1;
+    }
+  }
+  if(tar_make_header(header, name, st, type, size) != 0) return -1;
+  return tar_send_chunk(req, header, sizeof(header));
+}
+
+
+static int
+download_open_regular(const char *path, const struct stat *expected) {
+  int flags = O_RDONLY;
+#ifdef O_NOFOLLOW
+  flags |= O_NOFOLLOW;
+#endif
+  int fd = open(path, flags);
+  if(fd < 0) return -1;
+  struct stat opened;
+  if(fstat(fd, &opened) != 0) {
+    int saved_errno = errno;
+    close(fd);
+    errno = saved_errno;
+    return -1;
+  }
+  if(!S_ISREG(opened.st_mode) || opened.st_dev != expected->st_dev ||
+     opened.st_ino != expected->st_ino) {
+    close(fd);
+    errno = ESTALE;
+    return -1;
+  }
+  return fd;
+}
+
+
+static int
+tar_stream_path(const http_request_t *req, const char *path,
+                const char *archive_name, dev_t root_dev, unsigned depth,
+                struct tar_seen_set *seen, unsigned char *buffer,
+                size_t buffer_size) {
+  struct stat st;
+  if(depth > BFPILOT_FS_MAX_DEPTH) {
+    errno = ELOOP;
+    return -1;
+  }
+  if(job_cancelled()) {
+    errno = ECANCELED;
+    return -1;
+  }
+  if(lstat(path, &st) != 0) return -1;
+  if(st.st_dev != root_dev) return 0;
+  if(S_ISREG(st.st_mode)) {
+    if(st.st_size < 0) {
+      errno = EOVERFLOW;
+      return -1;
+    }
+    if(tar_send_header(req, archive_name, &st, '0',
+                       (unsigned long long)st.st_size) != 0) return -1;
+    int fd = download_open_regular(path, &st);
+    if(fd < 0) return -1;
+    job_set_current(path);
+    unsigned long long remaining = (unsigned long long)st.st_size;
+    int rc = 0;
+    int saved_errno = 0;
+    while(remaining > 0) {
+      size_t wanted = remaining < buffer_size ? (size_t)remaining : buffer_size;
+      ssize_t got = read(fd, buffer, wanted);
+      if(got < 0) {
+        if(errno == EINTR) continue;
+        saved_errno = errno;
+        rc = -1;
+        break;
+      }
+      if(got == 0) {
+        saved_errno = EIO;
+        rc = -1;
+        break;
+      }
+      atomic_fetch_add(&g_job.read_bytes, (long)got);
+      if(tar_send_chunk(req, buffer, (size_t)got) != 0) {
+        saved_errno = errno ? errno : EPIPE;
+        rc = -1;
+        break;
+      }
+      remaining -= (unsigned long long)got;
+      atomic_fetch_add(&g_job.copied_bytes, (long)got);
+      atomic_fetch_add(&g_job.written_bytes, (long)got);
+    }
+    if(close(fd) != 0 && rc == 0) {
+      saved_errno = errno;
+      rc = -1;
+    }
+    if(rc == 0 && tar_send_zeros(req,
+        (size_t)((512 - ((unsigned long long)st.st_size % 512)) % 512)) != 0) {
+      saved_errno = errno ? errno : EPIPE;
+      rc = -1;
+    }
+    if(rc == 0) atomic_fetch_add(&g_job.done_files, 1);
+    if(rc != 0) errno = saved_errno;
+    return rc;
+  }
+  if(!S_ISDIR(st.st_mode)) {
+    if(depth == 0) {
+      errno = ESTALE;
+      return -1;
+    }
+    return 0;
+  }
+
+  int added = tar_seen_add(seen, &st);
+  if(added < 0) {
+    errno = ENOMEM;
+    return -1;
+  }
+  if(added == 0) return 0;
+
+  size_t name_length = strlen(archive_name);
+  char *dir_name = malloc(name_length + 2);
+  if(!dir_name) return -1;
+  memcpy(dir_name, archive_name, name_length);
+  if(name_length == 0 || archive_name[name_length - 1] != '/') {
+    dir_name[name_length++] = '/';
+  }
+  dir_name[name_length] = 0;
+  if(tar_send_header(req, dir_name, &st, '5', 0) != 0) {
+    free(dir_name);
+    return -1;
+  }
+  atomic_fetch_add(&g_job.done_files, 1);
+  free(dir_name);
+
+  DIR *dir = opendir(path);
+  if(!dir) return -1;
+  struct stat opened;
+  int dir_fd = dirfd(dir);
+  if(dir_fd < 0 || fstat(dir_fd, &opened) != 0) {
+    int saved_errno = errno;
+    closedir(dir);
+    errno = saved_errno;
+    return -1;
+  }
+  if(opened.st_dev != st.st_dev || opened.st_ino != st.st_ino) {
+    closedir(dir);
+    errno = ESTALE;
+    return -1;
+  }
+
+  int rc = 0;
+  int saved_errno = 0;
+  for(;;) {
+    errno = 0;
+    struct dirent *entry = readdir(dir);
+    if(!entry) {
+      if(errno) {
+        saved_errno = errno;
+        rc = -1;
+      }
+      break;
+    }
+    if(!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) continue;
+    size_t child_size = strlen(path) + strlen(entry->d_name) + 2;
+    size_t name_size = strlen(archive_name) + strlen(entry->d_name) + 2;
+    char *child = malloc(child_size);
+    char *child_name = malloc(name_size);
+    if(!child || !child_name) {
+      free(child);
+      free(child_name);
+      saved_errno = ENOMEM;
+      rc = -1;
+      break;
+    }
+    snprintf(child, child_size, "%s%s%s", path,
+             path[strlen(path) - 1] == '/' ? "" : "/", entry->d_name);
+    snprintf(child_name, name_size, "%s%s%s", archive_name,
+             archive_name[strlen(archive_name) - 1] == '/' ? "" : "/",
+             entry->d_name);
+    if(tar_stream_path(req, child, child_name, root_dev, depth + 1,
+                       seen, buffer, buffer_size) != 0) {
+      saved_errno = errno;
+      free(child);
+      free(child_name);
+      rc = -1;
+      break;
+    }
+    free(child);
+    free(child_name);
+  }
+  if(closedir(dir) != 0 && rc == 0) {
+    saved_errno = errno;
+    rc = -1;
+  }
+  if(rc != 0) errno = saved_errno;
+  return rc;
+}
+
+
+static void
+download_header_filename(const char *name, char *extra, size_t extra_size) {
+  static const char hex[] = "0123456789ABCDEF";
+  char quoted[260];
+  char encoded[780];
+  size_t q = 0, e = 0;
+  const unsigned char *p = (const unsigned char *)(name ? name : "download");
+  while(*p && q + 1 < sizeof(quoted) && e + 3 < sizeof(encoded)) {
+    unsigned char c = *p++;
+    quoted[q++] = (c < 0x20 || c == 0x7f || c == '"' || c == '\\')
+                    ? '_' : (char)c;
+    if((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+       (c >= '0' && c <= '9') || c == '.' || c == '-' || c == '_') {
+      encoded[e++] = (char)c;
+    } else {
+      encoded[e++] = '%';
+      encoded[e++] = hex[c >> 4];
+      encoded[e++] = hex[c & 15];
+    }
+  }
+  quoted[q] = 0;
+  encoded[e] = 0;
+  snprintf(extra, extra_size,
+           "Content-Disposition: attachment; filename=\"%s\"; "
+           "filename*=UTF-8''%s\r\n",
+           quoted, encoded);
+}
+
+
+static char **
+download_root_names(char **paths, size_t count) {
+  char **names = calloc(count, sizeof(*names));
+  if(!names) return NULL;
+  for(size_t i = 0; i < count; i++) {
+    const char *base = path_basename(paths[i]);
+    if(!base || !base[0] || !strcmp(base, "/")) base = "root";
+    size_t suffix = 1;
+    char candidate[1024];
+    snprintf(candidate, sizeof(candidate), "%s", base);
+    for(;;) {
+      int unique = 1;
+      for(size_t j = 0; j < i; j++) {
+        if(!strcmp(names[j], candidate)) {
+          unique = 0;
+          break;
+        }
+      }
+      if(unique) break;
+      suffix++;
+      snprintf(candidate, sizeof(candidate), "%.*s-%lu",
+               980, base, (unsigned long)suffix);
+    }
+    names[i] = strdup(candidate);
+    if(!names[i]) {
+      download_free_paths(names, i);
+      return NULL;
+    }
+  }
+  return names;
+}
+
+
+static int
+download_stream_regular(const http_request_t *req, const char *path,
+                        const struct stat *st, unsigned char *buffer,
+                        size_t buffer_size) {
+  char extra[1200];
+  download_header_filename(path_basename(path), extra, sizeof(extra));
+  websrv_conn_set_keep_alive(0);
+  if(websrv_send_headers(req->fd, 200, "application/octet-stream",
+                         (size_t)st->st_size, extra) != 0) return -1;
+  int fd = download_open_regular(path, st);
+  if(fd < 0) return -1;
+  job_set_current(path);
+  unsigned long long remaining = (unsigned long long)st->st_size;
+  int rc = 0;
+  int saved_errno = 0;
+  while(remaining > 0) {
+    if(job_cancelled()) {
+      saved_errno = ECANCELED;
+      rc = -1;
+      break;
+    }
+    size_t wanted = remaining < buffer_size ? (size_t)remaining : buffer_size;
+    ssize_t got = read(fd, buffer, wanted);
+    if(got < 0) {
+      if(errno == EINTR) continue;
+      saved_errno = errno;
+      rc = -1;
+      break;
+    }
+    if(got == 0) {
+      saved_errno = EIO;
+      rc = -1;
+      break;
+    }
+    atomic_fetch_add(&g_job.read_bytes, (long)got);
+    if(websrv_write_all(req->fd, buffer, (size_t)got) != 0) {
+      saved_errno = errno ? errno : EPIPE;
+      rc = -1;
+      break;
+    }
+    remaining -= (unsigned long long)got;
+    atomic_fetch_add(&g_job.copied_bytes, (long)got);
+    atomic_fetch_add(&g_job.written_bytes, (long)got);
+  }
+  if(close(fd) != 0 && rc == 0) {
+    saved_errno = errno;
+    rc = -1;
+  }
+  if(rc == 0) atomic_store(&g_job.done_files, 1);
+  if(rc != 0) errno = saved_errno;
+  return rc;
+}
+
+
+static int
+download_stream_request(const http_request_t *req) {
+  char id_text[32];
+  char *end = NULL;
+  char **paths = NULL;
+  char **root_names = NULL;
+  size_t count = 0;
+  unsigned long id;
+  struct stat first;
+  int aligned = 0;
+  unsigned char *buffer = NULL;
+  int rc = -1;
+  int saved_errno = 0;
+
+  if(strcmp(req->method, "GET") != 0) {
+    return serve_error(req, 405, "download requires GET");
+  }
+  if(!websrv_get_query_arg(req, "id", id_text, sizeof(id_text))) {
+    return serve_error(req, 400, "missing download id");
+  }
+  errno = 0;
+  id = strtoul(id_text, &end, 10);
+  if(errno || !end || *end || id == 0 ||
+     !download_take_request(id, &paths, &count)) {
+    return serve_error(req, 404, "download request not found or already used");
+  }
+
+  buffer = alloc_aligned_io_buffer(BFPILOT_DOWNLOAD_BUF_SIZE, &aligned);
+  if(!buffer) {
+    saved_errno = ENOMEM;
+    goto done;
+  }
+
+  if(count == 1 && lstat(paths[0], &first) == 0 && S_ISREG(first.st_mode)) {
+    if(first.st_size < 0 || (uintmax_t)first.st_size > (uintmax_t)SIZE_MAX) {
+      saved_errno = EOVERFLOW;
+      goto done;
+    }
+    atomic_store(&g_job.total_bytes, (long)first.st_size);
+    atomic_store(&g_job.total_files, 1);
+    rc = download_stream_regular(req, paths[0], &first, buffer,
+                                 BFPILOT_DOWNLOAD_BUF_SIZE);
+    saved_errno = rc == 0 ? 0 : (errno ? errno : EIO);
+    goto done;
+  }
+
+  root_names = download_root_names(paths, count);
+  if(!root_names) {
+    saved_errno = ENOMEM;
+    goto done;
+  }
+
+  {
+    struct tar_seen_set count_seen = {0};
+    unsigned long long total_bytes = 0;
+    long total_items = 0;
+    job_set_current("preparing download");
+    for(size_t i = 0; i < count; i++) {
+      struct stat root_st;
+      if(lstat(paths[i], &root_st) != 0 ||
+         download_count_path(paths[i], root_st.st_dev, 0, &count_seen,
+                             &total_bytes, &total_items) != 0) {
+        saved_errno = errno ? errno : EIO;
+        free(count_seen.items);
+        goto done;
+      }
+    }
+    free(count_seen.items);
+    if(total_bytes > (unsigned long long)LONG_MAX || total_items > INT_MAX) {
+      saved_errno = EOVERFLOW;
+      goto done;
+    }
+    atomic_store(&g_job.total_bytes, (long)total_bytes);
+    atomic_store(&g_job.total_files, (int)total_items);
+  }
+
+  {
+    char archive_name[320];
+    char extra[1200];
+    if(count == 1) {
+      snprintf(archive_name, sizeof(archive_name), "%.*s.tar",
+               280, root_names[0]);
+    } else {
+      snprintf(archive_name, sizeof(archive_name), "%s", "bfpilot-download.tar");
+    }
+    download_header_filename(archive_name, extra, sizeof(extra));
+    websrv_conn_set_keep_alive(0);
+    if(websrv_send_chunked_headers(req->fd, 200, "application/x-tar",
+                                   extra) != 0) {
+      saved_errno = errno ? errno : EPIPE;
+      goto done;
+    }
+
+    struct tar_seen_set stream_seen = {0};
+    rc = 0;
+    for(size_t i = 0; i < count; i++) {
+      struct stat root_st;
+      if(lstat(paths[i], &root_st) != 0 ||
+         tar_stream_path(req, paths[i], root_names[i], root_st.st_dev, 0,
+                         &stream_seen, buffer,
+                         BFPILOT_DOWNLOAD_BUF_SIZE) != 0) {
+        saved_errno = errno ? errno : EIO;
+        rc = -1;
+        break;
+      }
+    }
+    free(stream_seen.items);
+    if(rc == 0 &&
+       (tar_send_zeros(req, 1024) != 0 ||
+        websrv_write_chunk_end(req->fd) != 0)) {
+      saved_errno = errno ? errno : EPIPE;
+      rc = -1;
+    }
+  }
+
+done:
+  free(buffer);
+  download_free_paths(root_names, count);
+  download_free_paths(paths, count);
+  if(rc == 0) {
+    bfpilot_log("download completed id=%lu selections=%lu aligned=%d",
+                id, (unsigned long)count, aligned);
+    job_end(0, NULL);
+    return 0;
+  }
+  errno = saved_errno ? saved_errno : EIO;
+  bfpilot_log("download failed id=%lu selections=%lu errno=%d aligned=%d",
+              id, (unsigned long)count, errno, aligned);
+  job_end(-1, errno == ECANCELED ? "download cancelled" : strerror(errno));
+  return -1;
 }
 
 
@@ -2716,7 +3771,8 @@ text_extension_allowed(const char *path) {
   static const char *const extensions[] = {
     ".txt", ".ini", ".json", ".xml", ".cfg", ".log", ".sh", ".bat",
     ".py", ".c", ".cpp", ".h", ".hpp", ".html", ".htm", ".css",
-    ".js", ".lua", ".md", ".csv", ".yaml", ".yml", ".conf", ".sql"
+    ".js", ".lua", ".md", ".csv", ".yaml", ".yml", ".conf", ".sql",
+    ".shn"
   };
   const char *dot = strrchr(path ? path : "", '.');
   if(!dot) return 0;
@@ -3243,15 +4299,9 @@ archive_write_status_prepared(const char *src, const char *dst,
                               unsigned threads, int priority_nice,
                               int cleanup_partial) {
   json_buf_t b = {0};
-#if BFPILOT_ENABLE_INTEGRATED_ARCHIVE
   const char *worker = "bfpilot-integrated-archive";
   const char *current = "starting integrated archive extractor";
   const char *requires_injection = "false";
-#else
-  const char *worker = "bfpilot-archive-worker";
-  const char *current = "inject bfpilot-archive-worker.elf";
-  const char *requires_injection = "true";
-#endif
   if(json_append(&b,
                  "{\"ok\":true,\"worker\":\"") != 0 ||
      json_append(&b, worker) != 0 ||
@@ -3291,13 +4341,8 @@ archive_write_status_prepared(const char *src, const char *dst,
 static int
 archive_status_handler(const http_request_t *req) {
   const char *idle_body =
-#if BFPILOT_ENABLE_INTEGRATED_ARCHIVE
       "{\"ok\":true,\"worker\":\"bfpilot-integrated-archive\","
       "\"state\":\"idle\",\"requiresInjection\":false}";
-#else
-      "{\"ok\":true,\"worker\":\"bfpilot-archive-worker\","
-      "\"state\":\"idle\",\"requiresInjection\":true}";
-#endif
   int fd = open(BFPILOT_ARCHIVE_STATUS, O_RDONLY);
   if(fd < 0) {
     return websrv_send(req->fd, 200, "application/json",
@@ -3340,16 +4385,9 @@ archive_status_handler(const http_request_t *req) {
 
 static int
 archive_support_handler(const http_request_t *req) {
-#if BFPILOT_ENABLE_INTEGRATED_ARCHIVE
   const char body[] =
       "{\"ok\":true,\"worker\":\"bfpilot-integrated-archive\","
-      "\"fallbackWorker\":\"bfpilot-archive-worker.elf\","
       "\"requiresInjection\":false,"
-#else
-  const char body[] =
-      "{\"ok\":true,\"worker\":\"bfpilot-archive-worker.elf\","
-      "\"requiresInjection\":true,"
-#endif
       "\"jobPath\":\"" BFPILOT_ARCHIVE_JOB "\","
       "\"statusPath\":\"" BFPILOT_ARCHIVE_STATUS "\","
       "\"supported\":[\"rar\",\"7z\",\"7z.001\",\"zip\"],"
@@ -3382,8 +4420,12 @@ transfer_archive_prepare_request(const http_request_t *req,
                                  size_t initial_size,
                                  size_t content_size) {
   char *body = NULL;
-  char src[1024], dst[1024], password[512], threads[32], nice[32],
-       cleanup_partial[16];
+  char src[1024] = {0};
+  char dst[1024] = {0};
+  char password[512] = {0};
+  char threads[32] = {0};
+  char nice[32] = {0};
+  char cleanup_partial[16] = {0};
 
   if(atomic_load(&g_job.busy)) {
     drain_body(req->fd, initial_size, content_size);
@@ -3435,8 +4477,9 @@ archive_busy_claimed:
     return serve_error(req, 400, "archive prepare body is too large or invalid");
   }
 
-  int ok = form_get_arg(body, "src", src, sizeof(src)) &&
-           form_get_arg(body, "dst", dst, sizeof(dst));
+  int have_src = form_get_arg(body, "src", src, sizeof(src));
+  int have_dst = form_get_arg(body, "dst", dst, sizeof(dst));
+  int ok = have_src && have_dst;
   if(!form_get_arg(body, "password", password, sizeof(password))) {
     password[0] = 0;
   }
@@ -3567,14 +4610,8 @@ archive_busy_claimed:
 
   json_buf_t res = {0};
   if(json_append(&res,
-#if BFPILOT_ENABLE_INTEGRATED_ARCHIVE
                  "{\"ok\":true,\"worker\":\"bfpilot-integrated-archive\","
-                 "\"fallbackWorker\":\"bfpilot-archive-worker.elf\","
                  "\"requiresInjection\":false,\"jobPath\":") != 0 ||
-#else
-                 "{\"ok\":true,\"worker\":\"bfpilot-archive-worker.elf\","
-                 "\"requiresInjection\":true,\"jobPath\":") != 0 ||
-#endif
      json_string(&res, BFPILOT_ARCHIVE_JOB) != 0 ||
      json_append(&res, ",\"statusPath\":") != 0 ||
      json_string(&res, BFPILOT_ARCHIVE_STATUS) != 0 ||
@@ -3589,11 +4626,7 @@ archive_busy_claimed:
      json_append(&res, ",\"cleanupPartial\":") != 0 ||
      json_append(&res, cleanup_partial_enabled ? "true" : "false") != 0 ||
      json_append(&res, ",\"next\":") != 0 ||
-#if BFPILOT_ENABLE_INTEGRATED_ARCHIVE
      json_string(&res, "archive extraction started") != 0 ||
-#else
-     json_string(&res, "inject bfpilot-archive-worker.elf") != 0 ||
-#endif
      json_append(&res, "}") != 0) {
     free(res.data);
 #if BFPILOT_ENABLE_INTEGRATED_ARCHIVE
@@ -3608,6 +4641,7 @@ archive_busy_claimed:
 static int
 cancel_handler(const http_request_t *req) {
   g_archive_cancel = 1;
+  if(download_cancel_pending()) return status_handler(req);
   if(atomic_load(&g_job.busy)) {
     atomic_store(&g_job.cancel, 1);
   }
@@ -3636,6 +4670,8 @@ transfer_request(const http_request_t *req, const char *url) {
   if(!strcmp(url, "/api/fs/rename")) return rename_handler(req);
   if(!strcmp(url, "/api/fs/job/status")) return status_handler(req);
   if(!strcmp(url, "/api/fs/transfer/stats")) return transfer_stats_handler(req);
+  if(!strcmp(url, "/api/fs/download")) return download_stream_request(req);
+  if(!strcmp(url, "/api/fs/pkg/status")) return bfpilot_pkg_status_request(req);
   if(!strcmp(url, "/api/fs/text")) return text_read_request(req);
   if(!strcmp(url, "/api/fs/archive/status")) return archive_status_handler(req);
   if(!strcmp(url, "/api/fs/archive/support")) return archive_support_handler(req);
@@ -3928,12 +4964,13 @@ transfer_upload_request(const http_request_t *req, const char *initial_data,
     size_t want = remaining < UPLOAD_BUF_SIZE ? remaining : UPLOAD_BUF_SIZE;
     long r0 = monotonic_ms();
     ssize_t n = recv(req->fd, buf, want, 0);
+    int recv_errno = n < 0 ? errno : 0;
     long r1 = monotonic_ms();
     if(n < 0) {
-      if(errno == EINTR) continue;
+      if(recv_errno == EINTR) continue;
       failed = 1;
-      failure_errno = errno;
-      snprintf(err, sizeof(err), "recv: %s", strerror(errno));
+      failure_errno = recv_errno;
+      snprintf(err, sizeof(err), "recv: %s", strerror(recv_errno));
       break;
     }
     if(n == 0) {

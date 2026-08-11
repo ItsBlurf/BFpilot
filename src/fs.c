@@ -20,6 +20,7 @@
 
 #include "fs.h"
 #include "mime.h"
+#include "path_ops.h"
 #include "websrv.h"
 
 
@@ -150,6 +151,17 @@ buf_json_string(dynbuf_t *b, const char *s) {
     default:
       if(*p < 0x20) {
         if(buf_appendf(b, "\\u%04x", *p) != 0) return -1;
+      } else if(*p >= 0x80) {
+        size_t utf8_length = bfpilot_utf8_sequence_length(p);
+        if(utf8_length > 0) {
+          if(buf_grow(b, utf8_length) != 0) return -1;
+          memcpy(b->data + b->len, p, utf8_length);
+          b->len += utf8_length;
+          b->data[b->len] = 0;
+          p += utf8_length - 1;
+        } else if(buf_appendf(b, "\\udb80\\udc%02x", *p) != 0) {
+          return -1;
+        }
       } else {
         if(buf_grow(b, 1) != 0) return -1;
         b->data[b->len++] = (char)*p;
@@ -191,12 +203,6 @@ mode_char(const struct stat *st, dev_t parent_dev) {
   if(S_ISFIFO(st->st_mode)) return 'p';
   if(S_ISSOCK(st->st_mode)) return 's';
   return '-';
-}
-
-
-static int
-path_is_safe(const char *path) {
-  return path && path[0] == '/' && !strstr(path, "..");
 }
 
 
@@ -296,7 +302,8 @@ dir_request(const http_request_t *req, const char *path) {
   DIR *dir = opendir(path);
   if(!dir) return websrv_send_error_json(req->fd, 404, strerror(errno));
 
-  if(fstat(dirfd(dir), &st) != 0) {
+  int fd = dirfd(dir);
+  if(fd < 0 || fstat(fd, &st) != 0) {
     closedir(dir);
     return websrv_send_error_json(req->fd, 404, strerror(errno));
   }
@@ -378,10 +385,11 @@ file_request(const http_request_t *req, const char *path) {
     size_t to_read = remaining < STREAM_BUF_SIZE ? remaining : STREAM_BUF_SIZE;
     long read_started = monotonic_ms();
     ssize_t n = read(fd, buf, to_read);
+    int read_errno = n < 0 ? errno : 0;
     read_ms += monotonic_ms() - read_started;
     if(n < 0) {
-      if(errno == EINTR) continue;
-      saved_errno = errno;
+      if(read_errno == EINTR) continue;
+      saved_errno = read_errno;
       rc = -1;
       break;
     }
@@ -429,7 +437,7 @@ fs_request(const http_request_t *req, const char *url) {
   }
   normalize_path(path);
 
-  if(!path_is_safe(path)) {
+  if(!bfpilot_path_is_safe(path)) {
     return websrv_send_error_json(req->fd, 400, "unsafe path");
   }
 

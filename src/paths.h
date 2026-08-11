@@ -1,7 +1,7 @@
 /*
  * Canonical on-console data layout for BFpilot.
  * Single root: /data/BFpilot — do not introduce alternate casings or
- * sibling trees (/data/bfpilot, /data/BFPILOT, /data/bfpilot-launcher-installer).
+ * sibling trees with alternate casing.
  */
 
 #pragma once
@@ -18,9 +18,9 @@
 #define BFPILOT_SEARCH_IDX         BFPILOT_DATA_DIR "/search.idx"
 #define BFPILOT_SEARCH_IDX_TMP     BFPILOT_DATA_DIR "/search.idx.tmp"
 #define BFPILOT_SEARCH_CRAWL_LOG   BFPILOT_DATA_DIR "/search_crawl.log"
-#define BFPILOT_LAUNCHER_LOG       BFPILOT_DATA_DIR "/launcher-installer.log"
-#define BFPILOT_INSTALLER_ELF_PATH BFPILOT_DATA_DIR "/bfpilot-launcher-installer.elf"
-
+#define BFPILOT_PKG_STATUS_PATH    BFPILOT_DATA_DIR "/pkg-install-status.json"
+#define BFPILOT_PKG_STATUS_TMP     BFPILOT_DATA_DIR "/pkg-install-status.tmp"
+#define BFPILOT_PKG_LOG_PATH       BFPILOT_DATA_DIR "/pkg-installer.log"
 /* Integrated archive jobs live under the same data root. */
 #define BFPILOT_ARCHIVE_INTEGRATED_DIR BFPILOT_DATA_DIR "/archive-integrated"
 #define BFPILOT_ARCHIVE_STANDALONE_DIR BFPILOT_DATA_DIR "/archive"

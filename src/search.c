@@ -22,6 +22,7 @@
 #include <fcntl.h>
 
 #include "diag.h"
+#include "path_ops.h"
 #include "paths.h"
 #include "websrv.h"
 
@@ -228,6 +229,17 @@ json_string(json_buf_t *b, const char *s) {
     default:
       if(*p < 0x20) {
         if(json_appendf(b, "\\u%04x", *p) != 0) return -1;
+      } else if(*p >= 0x80) {
+        size_t utf8_length = bfpilot_utf8_sequence_length(p);
+        if(utf8_length > 0) {
+          if(json_grow(b, utf8_length) != 0) return -1;
+          memcpy(b->data + b->len, p, utf8_length);
+          b->len += utf8_length;
+          b->data[b->len] = 0;
+          p += utf8_length - 1;
+        } else if(json_appendf(b, "\\udb80\\udc%02x", *p) != 0) {
+          return -1;
+        }
       } else {
         if(json_grow(b, 1) != 0) return -1;
         b->data[b->len++] = (char)*p;
@@ -999,6 +1011,7 @@ crawl_one_root(search_index_t *idx, const char *root, char *error,
   if(crawl_queue_push(&dirs, &count, &cap, root) != 0) {
     *saved_errno = ENOMEM;
     snprintf(error, error_sz, "%s", "out of memory");
+    free(dirs);
     return -1;
   }
 
@@ -1701,6 +1714,7 @@ bfpilot_search_shutdown(void) {
 
 int
 bfpilot_search_request(const http_request_t *req, const char *url) {
+  if(!url) return serve_error(req, 400, "missing search endpoint");
   int is_rebuild = url && !strcmp(url, "/api/fs/search/rebuild");
   /* Load disk cache without holding the search lock (avoid blocking HTTP).
    * Skip on rebuild — we are about to replace the index anyway. */

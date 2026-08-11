@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.4.4 Alpha 1 (2026-08-11)
+
+* Replaced separate release helpers with one all-in-one `bfpilot.elf`
+* Kept Media-tile AppInst direct and embedded a private fresh-process worker for
+  reliable full-content PKG installation
+* Added bounded AppInst initialization, loopback-only worker control, and clean
+  worker shutdown during exit or reinjection
+* Added strict PKG validation, NPXS rejection, and `/data` to `/user/data` local-path mapping
+* Kept tile reinjection idempotent with exact assets plus a successful-registration marker
+* Added persistent path/sort state, guarded Circle/back navigation, parent-folder
+  reveal, and right-biased long-path display from the upstream v1.0-v1.4 audit
+* Integrated the latest file-manager safety, transfer, archive, and UX fixes
+
 ## v0.4.3 (2026-07-27)
 
 * Added create/edit text files and recursive folder uploads

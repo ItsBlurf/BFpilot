@@ -101,11 +101,18 @@ def wait_search(base: str, timeout_s: float = 180.0) -> tuple[bool, object]:
         if not ok:
             return False, body
         if isinstance(body, dict):
-            # rebuilt / idle / not running
-            if body.get("busy") is False or body.get("running") is False:
-                return True, body
-            if body.get("phase") in ("idle", "done", "ready", None) and not body.get("busy"):
-                return True, body
+            # `running` is the authoritative BFpilot search state.  Do not
+            # interpret a missing optional `busy`/`phase` field as idle: that
+            # used to make this harness cancel a valid rebuild immediately.
+            if body.get("running") is True:
+                time.sleep(0.5)
+                continue
+            if body.get("running") is False:
+                return bool(body.get("indexed")) and not body.get("error"), body
+            if "busy" in body and body.get("busy") is False:
+                return not body.get("error"), body
+            if "phase" in body and body.get("phase") in ("idle", "done", "ready"):
+                return not body.get("error"), body
             # some builds use state string
             st = str(body.get("state") or body.get("status") or "").lower()
             if st in ("idle", "done", "ready", "complete", "completed"):

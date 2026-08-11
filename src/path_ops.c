@@ -5,6 +5,7 @@
 #include <ctype.h>
 #include <dirent.h>
 #include <errno.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include <strings.h>
@@ -12,6 +13,64 @@
 #include <unistd.h>
 
 #include "path_ops.h"
+
+size_t
+bfpilot_utf8_sequence_length(const unsigned char *s) {
+  uint32_t codepoint;
+  size_t length;
+  if(!s || !s[0]) return 0;
+  if(s[0] < 0x80) return 1;
+  if((s[0] & 0xe0) == 0xc0) {
+    codepoint = s[0] & 0x1f;
+    length = 2;
+  } else if((s[0] & 0xf0) == 0xe0) {
+    codepoint = s[0] & 0x0f;
+    length = 3;
+  } else if((s[0] & 0xf8) == 0xf0) {
+    codepoint = s[0] & 0x07;
+    length = 4;
+  } else {
+    return 0;
+  }
+  for(size_t i = 1; i < length; i++) {
+    if(!s[i] || (s[i] & 0xc0) != 0x80) return 0;
+    codepoint = (codepoint << 6) | (s[i] & 0x3f);
+  }
+  if((length == 2 && codepoint < 0x80) ||
+     (length == 3 && codepoint < 0x800) ||
+     (length == 4 && (codepoint < 0x10000 || codepoint > 0x10ffff)) ||
+     (codepoint >= 0xd800 && codepoint <= 0xdfff)) return 0;
+  return length;
+}
+
+int
+bfpilot_path_decode_byte_tokens(char *path) {
+  unsigned char *read = (unsigned char *)path;
+  unsigned char *write = (unsigned char *)path;
+  int changed = 0;
+  if(!path) return 0;
+  while(*read) {
+    size_t length = bfpilot_utf8_sequence_length(read);
+    if(length == 4) {
+      uint32_t codepoint = ((uint32_t)(read[0] & 0x07) << 18) |
+                           ((uint32_t)(read[1] & 0x3f) << 12) |
+                           ((uint32_t)(read[2] & 0x3f) << 6) |
+                           (uint32_t)(read[3] & 0x3f);
+      if(codepoint >= 0xf0080 && codepoint <= 0xf00ff) {
+        *write++ = (unsigned char)(codepoint - 0xf0000);
+        read += 4;
+        changed = 1;
+        continue;
+      }
+    }
+    if(length == 0) length = 1;
+    memmove(write, read, length);
+    write += length;
+    read += length;
+  }
+  *write = 0;
+  return changed;
+}
 
 /* Host unit tests on MinGW lack lstat; PS5 SDK has full POSIX. */
 #if defined(_WIN32) && !defined(__ORBIS__) && !defined(__PROSPERO__)
@@ -22,9 +81,24 @@
 
 int
 bfpilot_path_is_safe(const char *path) {
-  if(!path || !*path) return 0;
-  if(path[0] != '/') return 0;
-  if(strstr(path, "..")) return 0;
+  const unsigned char *p;
+
+  if(!path || path[0] != '/') return 0;
+  p = (const unsigned char *)path;
+  while(*p) {
+    const unsigned char *start;
+    size_t length;
+
+    if(*p < 0x20 || *p == 0x7f) return 0;
+    while(*p == '/') p++;
+    start = p;
+    while(*p && *p != '/') {
+      if(*p < 0x20 || *p == 0x7f) return 0;
+      p++;
+    }
+    length = (size_t)(p - start);
+    if(length == 2 && start[0] == '.' && start[1] == '.') return 0;
+  }
   return 1;
 }
 

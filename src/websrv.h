@@ -13,6 +13,7 @@ typedef struct http_request {
   char method[8];
   char path[1024];
   char query[2048];
+  char action[64];
 } http_request_t;
 
 typedef void (*websrv_ready_cb_t)(unsigned short port, void *arg);
@@ -43,6 +44,13 @@ int  websrv_conn_get_keep_alive(void);
 int websrv_send_headers(int fd, int status, const char *mime,
                         size_t size, const char *extra);
 
+int websrv_send_chunked_headers(int fd, int status, const char *mime,
+                                const char *extra);
+
+int websrv_write_chunk(int fd, const void *data, size_t size);
+
+int websrv_write_chunk_end(int fd);
+
 int websrv_send(int fd, int status, const char *mime,
                 const void *data, size_t size);
 
@@ -57,8 +65,6 @@ void websrv_url_decode(char *out, size_t out_size, const char *in);
 
 int websrv_listen(unsigned short port, websrv_ready_cb_t ready_cb,
                   void *ready_arg);
-
-void websrv_set_runtime_diag(int launcher_disabled);
 
 void websrv_set_launcher_diag(const bfpilot_launcher_diag_t *diag);
 

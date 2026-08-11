@@ -1,9 +1,7 @@
 /*
  * BFpilot - archive extraction worker.
  *
- * This file is used in two modes:
- * - optionally linked into bfpilot.elf when integrated archive support is enabled
- * - built as bfpilot-archive-worker.elf for the standalone extraction daemon
+ * This file is linked into bfpilot.elf as its integrated archive component.
  */
 
 #include "archive_worker.h"
@@ -330,20 +328,26 @@ DeleteRecursiveForce(const std::string &path) {
     bool ok = true;
     int first_errno = 0;
     struct dirent *ent;
-    errno = 0;
-    while((ent = readdir(d)) != NULL) {
+    int read_errno = 0;
+    for(;;) {
+      errno = 0;
+      ent = readdir(d);
+      if(!ent) {
+        read_errno = errno;
+        break;
+      }
       if(!strcmp(ent->d_name, ".") || !strcmp(ent->d_name, "..")) continue;
       if(!DeleteRecursiveForce(JoinPath(path, ent->d_name))) {
         ok = false;
         if(first_errno == 0) first_errno = errno ? errno : EIO;
       }
     }
-    int saved_errno = errno;
-    closedir(d);
-    if(saved_errno != 0) {
-      errno = saved_errno;
+    int close_rc = closedir(d);
+    if(read_errno != 0) {
+      errno = read_errno;
       return false;
     }
+    if(close_rc != 0) return false;
     if(!ok) {
       errno = first_errno ? first_errno : EIO;
       return false;
@@ -400,6 +404,10 @@ JsonEscape(const std::string &value) {
       if(ch < 0x20) {
         char buf[8];
         snprintf(buf, sizeof(buf), "\\u%04x", ch);
+        out += buf;
+      } else if(ch >= 0x80) {
+        char buf[16];
+        snprintf(buf, sizeof(buf), "\\udb80\\udc%02x", ch);
         out += buf;
       } else {
         out += (char)ch;
@@ -710,13 +718,8 @@ WriteStatus(bool force) {
   unsigned long long rar_mt_large_blocks = g_rar_mt_large_blocks.load();
 
   char body[8192];
-#ifdef BFPILOT_ARCHIVE_NO_MAIN
   const char *worker_name = "bfpilot-integrated-archive";
   const char *requires_injection = "false";
-#else
-  const char *worker_name = "bfpilot-archive-worker";
-  const char *requires_injection = "true";
-#endif
   int n = snprintf(
       body, sizeof(body),
       "{\"ok\":true,\"worker\":\"%s\","
@@ -2424,11 +2427,3 @@ bfpilot_archive_stop_daemon(void) {
     usleep(20000);
   }
 }
-
-#ifndef BFPILOT_ARCHIVE_NO_MAIN
-int
-main(void) {
-  ArchiveDaemonMain(NULL);
-  return 0;
-}
-#endif

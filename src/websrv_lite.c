@@ -20,8 +20,12 @@
 #include <sys/socket.h>
 
 #include "asset.h"
+#include "appinst_direct.h"
 #include "diag.h"
 #include "fs.h"
+#include "path_ops.h"
+#include "pkg_install.h"
+#include "tile_bootstrap.h"
 #include "transfer.h"
 #include "version.h"
 #include "websrv.h"
@@ -54,9 +58,9 @@ static int             g_websrv_srvfd = -1;
 static pthread_mutex_t g_websrv_lock = PTHREAD_MUTEX_INITIALIZER;
 static volatile sig_atomic_t g_websrv_exit_requested = 0;
 static unsigned short  g_websrv_port = BFPILOT_WEB_PORT;
-static int             g_launcher_runtime_disabled = 0;
+static pthread_mutex_t g_launcher_lock = PTHREAD_MUTEX_INITIALIZER;
 static bfpilot_launcher_diag_t g_launcher_diag = {
-  .launcher_enabled = 0,
+  .launcher_enabled = 1,
   .launcher_attempted = 0,
   .appinst_init_rc = -1,
   .title_dir_resolved = 0,
@@ -73,28 +77,12 @@ static bfpilot_launcher_diag_t g_launcher_diag = {
 
 
 void
-websrv_set_runtime_diag(int launcher_disabled) {
-  g_launcher_runtime_disabled = launcher_disabled ? 1 : 0;
-  g_launcher_diag.launcher_enabled =
-      BFPILOT_ENABLE_LAUNCHER && !g_launcher_runtime_disabled;
-  if(!g_launcher_diag.launcher_attempted) {
-    g_launcher_diag.appinst_init_rc = BFPILOT_DIAG_SKIPPED;
-    g_launcher_diag.install_title_rc = BFPILOT_DIAG_SKIPPED;
-    g_launcher_diag.uninstall_rc = BFPILOT_DIAG_SKIPPED;
-    g_launcher_diag.install_all_rc = BFPILOT_DIAG_SKIPPED;
-    snprintf(g_launcher_diag.launcher_final_state,
-             sizeof(g_launcher_diag.launcher_final_state), "%s", "skipped");
-  }
-}
-
-
-void
 websrv_set_launcher_diag(const bfpilot_launcher_diag_t *diag) {
   if(!diag) return;
+  pthread_mutex_lock(&g_launcher_lock);
   g_launcher_diag = *diag;
-  g_launcher_diag.launcher_enabled =
-      BFPILOT_ENABLE_LAUNCHER && !g_launcher_runtime_disabled &&
-      diag->launcher_enabled;
+  g_launcher_diag.launcher_enabled = diag->launcher_enabled;
+  pthread_mutex_unlock(&g_launcher_lock);
 }
 
 
@@ -111,13 +99,16 @@ status_text(int status) {
   switch(status) {
   case 200: return "OK";
   case 201: return "Created";
+  case 202: return "Accepted";
   case 204: return "No Content";
   case 400: return "Bad Request";
   case 403: return "Forbidden";
   case 404: return "Not Found";
   case 405: return "Method Not Allowed";
   case 409: return "Conflict";
+  case 413: return "Payload Too Large";
   case 500: return "Internal Server Error";
+  case 503: return "Service Unavailable";
   case 507: return "Insufficient Storage";
   default:  return "OK";
   }
@@ -161,7 +152,7 @@ websrv_send_headers(int fd, int status, const char *mime, size_t size,
   int n = snprintf(header, sizeof(header),
                    "HTTP/1.1 %d %s\r\n"
                    "Connection: %s\r\n"
-                   "Access-Control-Allow-Origin: *\r\n"
+                   "X-Content-Type-Options: nosniff\r\n"
                    "Cache-Control: no-store, no-cache, must-revalidate, max-age=0\r\n"
                    "Pragma: no-cache\r\n"
                    "Expires: 0\r\n"
@@ -176,6 +167,53 @@ websrv_send_headers(int fd, int status, const char *mime, size_t size,
                    extra ? extra : "");
   if(n < 0 || (size_t)n >= sizeof(header)) return -1;
   return websrv_write_all(fd, header, (size_t)n);
+}
+
+
+int
+websrv_send_chunked_headers(int fd, int status, const char *mime,
+                            const char *extra) {
+  char header[4096];
+  const char *conn = g_tls_keep_alive ? "keep-alive" : "close";
+  int n = snprintf(header, sizeof(header),
+                   "HTTP/1.1 %d %s\r\n"
+                   "Connection: %s\r\n"
+                   "X-Content-Type-Options: nosniff\r\n"
+                   "Cache-Control: no-store, no-cache, must-revalidate, max-age=0\r\n"
+                   "Pragma: no-cache\r\n"
+                   "Expires: 0\r\n"
+                   "Content-Type: %s\r\n"
+                   "Transfer-Encoding: chunked\r\n"
+                   "%s"
+                   "\r\n",
+                   status, status_text(status), conn,
+                   mime ? mime : "application/octet-stream",
+                   extra ? extra : "");
+  if(n < 0 || (size_t)n >= sizeof(header)) return -1;
+  return websrv_write_all(fd, header, (size_t)n);
+}
+
+
+int
+websrv_write_chunk(int fd, const void *data, size_t size) {
+  char prefix[32];
+  int n;
+
+  if(size == 0) return 0;
+  n = snprintf(prefix, sizeof(prefix), "%lx\r\n", (unsigned long)size);
+  if(n < 0 || (size_t)n >= sizeof(prefix)) return -1;
+  if(websrv_write_all(fd, prefix, (size_t)n) != 0 ||
+     websrv_write_all(fd, data, size) != 0 ||
+     websrv_write_all(fd, "\r\n", 2) != 0) {
+    return -1;
+  }
+  return 0;
+}
+
+
+int
+websrv_write_chunk_end(int fd) {
+  return websrv_write_all(fd, "0\r\n\r\n", 5);
 }
 
 
@@ -330,6 +368,10 @@ websrv_get_query_arg(const http_request_t *req, const char *name,
       if(eq) memcpy(value, eq + 1, val_len);
       value[val_len] = 0;
       websrv_url_decode(out, out_size, value);
+      if(!strcmp(name, "path") || !strcmp(name, "src") ||
+         !strcmp(name, "dst") || !strcmp(name, "root")) {
+        (void)bfpilot_path_decode_byte_tokens(out);
+      }
       return 1;
     }
 
@@ -393,6 +435,40 @@ client_wants_close(const char *headers) {
 }
 
 
+static int
+header_value(const char *headers, const char *name, char *out,
+             size_t out_size) {
+  size_t name_len;
+  const char *line;
+  if(!headers || !name || !out || out_size == 0) return 0;
+  out[0] = 0;
+  name_len = strlen(name);
+  line = strstr(headers, "\r\n");
+  if(!line) return 0;
+  line += 2;
+  while(*line) {
+    const char *next = strstr(line, "\r\n");
+    size_t line_len = next ? (size_t)(next - line) : strlen(line);
+    if(line_len == 0) break;
+    if(line_len > name_len && line[name_len] == ':' &&
+       !strncasecmp(line, name, name_len)) {
+      const char *value = line + name_len + 1;
+      const char *end = line + line_len;
+      while(value < end && (*value == ' ' || *value == '\t')) value++;
+      while(end > value && (end[-1] == ' ' || end[-1] == '\t')) end--;
+      size_t value_len = (size_t)(end - value);
+      if(value_len == 0 || value_len >= out_size) return 0;
+      memcpy(out, value, value_len);
+      out[value_len] = 0;
+      return 1;
+    }
+    if(!next) break;
+    line = next + 2;
+  }
+  return 0;
+}
+
+
 static const char *
 json_bool(int value) {
   return value ? "true" : "false";
@@ -418,15 +494,23 @@ status_request(const http_request_t *req) {
                    "\"mode\":\"%s\","
                    "\"pid\":%ld,"
                    "\"now\":%ld,"
-                   "\"services\":[\"web\",\"file-manager\"],"
+                   "\"services\":[\"web\",\"file-manager\",\"archive\","
+                   "\"tile-installer\",\"pkg-installer\"],"
                    "\"diagReadOnly\":true,"
+                   "\"allInOne\":true,"
                    "\"launcherCompiled\":%s,"
                    "\"launcherDisabled\":%s,"
+                   "\"tileBusy\":%s,"
+                   "\"pkgBusy\":%s,"
+                   "\"fileJobBusy\":%s,"
                    "\"port\":%u}",
                    VERSION_TAG, BUILD_VERSION, BFPILOT_BUILD_MODE,
                    (long)getpid(), (long)now,
-                   BFPILOT_ENABLE_LAUNCHER ? "true" : "false",
-                   g_launcher_runtime_disabled ? "true" : "false",
+                   "true",
+                   "false",
+                   bfpilot_tile_bootstrap_busy() ? "true" : "false",
+                   bfpilot_pkg_is_busy() ? "true" : "false",
+                   transfer_job_busy() ? "true" : "false",
                    (unsigned int)g_websrv_port);
   if(n < 0) return -1;
   if((size_t)n >= sizeof(body)) n = (int)sizeof(body) - 1;
@@ -453,6 +537,10 @@ diag_request(const http_request_t *req) {
   int can_write_user_app = bfpilot_diag_can_write_user_app();
   int core_server_started =
       bfpilot_diag_bind_rc() == 0 && bfpilot_diag_listen_rc() == 0;
+  bfpilot_launcher_diag_t launcher_diag;
+  pthread_mutex_lock(&g_launcher_lock);
+  launcher_diag = g_launcher_diag;
+  pthread_mutex_unlock(&g_launcher_lock);
 
   bfpilot_diag_get_cwd(cwd, sizeof(cwd));
   int last_errno = bfpilot_diag_last_errno();
@@ -460,7 +548,7 @@ diag_request(const http_request_t *req) {
   json_error_escape(launcher_status_json, sizeof(launcher_status_json),
                     bfpilot_diag_launcher_status());
   json_error_escape(launcher_final_json, sizeof(launcher_final_json),
-                    g_launcher_diag.launcher_final_state);
+                    launcher_diag.launcher_final_state);
   json_error_escape(checkpoint_json, sizeof(checkpoint_json),
                     bfpilot_diag_checkpoint());
 
@@ -474,6 +562,7 @@ diag_request(const http_request_t *req) {
                    "\"now\":%ld,"
                    "\"uptime\":%ld,"
                    "\"port\":%u,"
+                   "\"firmwareMajor\":%d,"
                    "\"cwd\":\"%s\","
                    "\"can_stat_root\":%s,"
                    "\"can_opendir_data\":%s,"
@@ -532,12 +621,17 @@ diag_request(const http_request_t *req) {
                    "\"/api/fs/archive/support\","
                    "\"/api/fs/archive/status\","
                    "\"/api/fs/archive/prepare\","
+                   "\"/api/fs/download/prepare\","
+                   "\"/api/fs/download\","
+                   "\"/api/fs/pkg/install\","
+                   "\"/api/fs/pkg/status\","
                    "\"/api/fs/launch\","
                    "\"/api/fs/chmod\"]}",
                    VERSION_TAG, BUILD_VERSION, BFPILOT_BUILD_MODE,
                    (long)getpid(), (long)now,
                    bfpilot_diag_uptime(),
                    (unsigned int)g_websrv_port,
+                   bfpilot_appinst_firmware_major(),
                    cwd_json,
                    json_bool(can_stat_root),
                    json_bool(can_opendir_data),
@@ -551,12 +645,12 @@ diag_request(const http_request_t *req) {
                    last_errno,
                    checkpoint_json,
                    json_bool(core_server_started),
-                   json_bool(g_launcher_diag.launcher_attempted),
-                   g_launcher_diag.appinst_init_rc,
-                   json_bool(g_launcher_diag.title_dir_resolved),
-                   g_launcher_diag.install_title_rc,
-                   g_launcher_diag.install_all_rc,
-                   g_launcher_diag.uninstall_rc,
+                   json_bool(launcher_diag.launcher_attempted),
+                   launcher_diag.appinst_init_rc,
+                   json_bool(launcher_diag.title_dir_resolved),
+                   launcher_diag.install_title_rc,
+                   launcher_diag.install_all_rc,
+                   launcher_diag.uninstall_rc,
                    launcher_final_json,
                    bfpilot_diag_netctl_rc(),
                    bfpilot_diag_user_service_rc(),
@@ -567,20 +661,20 @@ diag_request(const http_request_t *req) {
                    bfpilot_diag_listen_rc(),
                    launcher_status_json,
                    bfpilot_diag_launcher_rc(),
-                   json_bool(BFPILOT_ENABLE_LAUNCHER),
-                   json_bool(g_launcher_runtime_disabled),
-                   json_bool(g_launcher_diag.launcher_enabled),
-                   json_bool(g_launcher_diag.launcher_attempted),
-                   g_launcher_diag.appinst_init_rc,
-                   json_bool(g_launcher_diag.title_dir_resolved),
-                   json_bool(g_launcher_diag.install_title_dir_resolved),
-                   g_launcher_diag.install_title_rc,
-                   json_bool(g_launcher_diag.uninstall_resolved),
-                   g_launcher_diag.uninstall_rc,
-                   json_bool(g_launcher_diag.install_all_resolved),
-                   g_launcher_diag.install_all_rc,
-                   json_tristate(g_launcher_diag.user_app_writable),
-                   g_launcher_diag.launcher_install_rc,
+                   "true",
+                   "false",
+                   json_bool(launcher_diag.launcher_enabled),
+                   json_bool(launcher_diag.launcher_attempted),
+                   launcher_diag.appinst_init_rc,
+                   json_bool(launcher_diag.title_dir_resolved),
+                   json_bool(launcher_diag.install_title_dir_resolved),
+                   launcher_diag.install_title_rc,
+                   json_bool(launcher_diag.uninstall_resolved),
+                   launcher_diag.uninstall_rc,
+                   json_bool(launcher_diag.install_all_resolved),
+                   launcher_diag.install_all_rc,
+                   json_tristate(launcher_diag.user_app_writable),
+                   launcher_diag.launcher_install_rc,
                    launcher_final_json);
   if(n < 0) return -1;
   if((size_t)n >= sizeof(body)) n = (int)sizeof(body) - 1;
@@ -616,6 +710,18 @@ shutdown_request(const http_request_t *req) {
   if(!websrv_get_query_arg(req, "token", token, sizeof(token)) ||
      strcmp(token, CONTROL_TOKEN) != 0) {
     return websrv_send_error_json(req->fd, 403, "forbidden");
+  }
+  if(transfer_job_busy()) {
+    return websrv_send_error_json(req->fd, 409,
+                                  "file-manager job is still running");
+  }
+  if(bfpilot_tile_bootstrap_busy()) {
+    return websrv_send_error_json(req->fd, 409,
+                                  "Media tile installation is still running");
+  }
+  if(bfpilot_pkg_is_busy()) {
+    return websrv_send_error_json(req->fd, 409,
+                                  "PKG submission is still running");
   }
 
   const char body[] = "{\"ok\":true,\"shutdown\":true}";
@@ -680,6 +786,18 @@ dispatch_request(const http_request_t *req, const char *initial_body,
     if(!strcmp(req->path, "/api/fs/archive/prepare")) {
       return transfer_archive_prepare_request(req, initial_body, initial_size,
                                               content_size);
+    }
+    if(!strcmp(req->path, "/api/fs/download/prepare")) {
+      return transfer_download_prepare_request(req, initial_body, initial_size,
+                                               content_size);
+    }
+    if(!strcmp(req->path, "/api/fs/pkg/install")) {
+      if(strcmp(req->action, "install-pkg") != 0) {
+        return websrv_send_error_json(req->fd, 403,
+                                      "missing PKG install confirmation header");
+      }
+      return transfer_pkg_install_request(req, initial_body, initial_size,
+                                          content_size);
     }
     return websrv_send_error_json(req->fd, 404, "not found");
   }
@@ -753,6 +871,8 @@ client_thread(void *arg) {
     req.fd = fd;
     req.keep_alive = keep;
     snprintf(req.method, sizeof(req.method), "%s", method);
+    (void)header_value(buf, "X-BFpilot-Action", req.action,
+                       sizeof(req.action));
 
     char *query = strchr(target, '?');
     if(query) {
@@ -760,6 +880,7 @@ client_thread(void *arg) {
       snprintf(req.query, sizeof(req.query), "%s", query);
     }
     websrv_url_decode(req.path, sizeof(req.path), target);
+    (void)bfpilot_path_decode_byte_tokens(req.path);
 
     size_t content_size = content_length_from_headers(buf);
     size_t body_in_buf = used - (size_t)header_end;

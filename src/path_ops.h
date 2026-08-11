@@ -21,3 +21,9 @@ int bfpilot_path_chmod(const char *path, mode_t mode);
 
 /* Parse octal mode string "444" / "0444" / "755". Returns -1 on bad input. */
 int bfpilot_parse_mode_octal(const char *s, mode_t *out_mode);
+
+/* Length of one valid UTF-8 sequence at s, or 0 for an invalid byte. */
+size_t bfpilot_utf8_sequence_length(const unsigned char *s);
+
+/* Decode BFpilot's private-use JSON byte tokens back to filesystem bytes. */
+int bfpilot_path_decode_byte_tokens(char *path);

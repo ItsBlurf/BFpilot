@@ -25,6 +25,16 @@ assert(
 )
 assert(html.includes("const parent = list;"), 'virtual list listens to its own scroller')
 assert(html.includes("row.addEventListener('dblclick'"), 'double-click handler exists')
+assert(html.includes("window.addEventListener('popstate'") &&
+  html.includes('seedHistoryPath') && html.includes('pathNavigationBlocked'),
+  'Circle/browser back follows guarded directory history')
+assert(html.includes('revealPathInList') && html.includes("row.dataset.path"),
+  'returning to a parent reveals the folder that was left')
+assert(html.includes('input.scrollLeft = input.scrollWidth'),
+  'long editable paths reveal their rightmost component')
+assert(html.includes("const PATH_STORAGE_KEY = 'bfpilot:last-path:v1'") &&
+  html.includes('readSavedPath()') && html.includes('savePath(state.path)'),
+  'the last successful folder survives a browser reload')
 
 const clickBlock = html.slice(
   html.indexOf("row.addEventListener('click'"),
@@ -85,11 +95,11 @@ assert(actionsBlock.indexOf('id="delete"') < actionsBlock.indexOf('<details clas
   'Delete is a direct toolbar action')
 assert(!morePanel.includes('id="new-text"') && !morePanel.includes('id="delete"'),
   'New Text File and Delete are not hidden in More')
-assert(version.includes('v0.4.3') && makefile.includes('v0.4.3'),
+assert(version.includes('v0.4.4-alpha.1') && makefile.includes('v0.4.4-alpha.1'),
   'release version is consistent')
 
 const scriptMatch = html.match(/<script>([\s\S]*)<\/script>/)
 assert(scriptMatch, 'inline application script found')
 new Function(scriptMatch[1])
 
-console.log('v0.4.3 UI checks passed')
+console.log('v0.4.4-alpha.1 UI checks passed')

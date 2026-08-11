@@ -445,9 +445,34 @@
     .file-head,
     .file-row {
       display: grid;
-      grid-template-columns: 28px 42px minmax(0, 1fr) 92px 112px;
+      grid-template-columns: 28px 42px minmax(0, 1fr) 74px 82px 112px 74px;
       gap: 8px;
       align-items: center;
+    }
+
+    .sort-head {
+      min-width: 0;
+      padding: 0;
+      border: 0;
+      background: transparent;
+      color: inherit;
+      font: inherit;
+      text-align: left;
+      cursor: pointer;
+      box-shadow: none;
+    }
+
+    .sort-head:hover,
+    .sort-head.active {
+      color: var(--ink);
+      background: transparent;
+      border: 0;
+    }
+
+    .sort-head.active::after {
+      content: attr(data-arrow);
+      margin-left: 4px;
+      color: var(--mint-2);
     }
 
     .chk-col {
@@ -493,6 +518,13 @@
 
     .file-row:hover {
       background: #172231;
+    }
+
+    .file-row:focus,
+    .file-row.revealed {
+      outline: 2px solid var(--deep-2);
+      outline-offset: -2px;
+      background: #172a3d;
     }
 
     .file-row.selected {
@@ -868,8 +900,12 @@
         grid-template-columns: 28px 40px minmax(0, 1fr) 78px;
       }
 
-      .file-head span:last-child,
-      .file-row .mtime {
+      .file-head .type-kind,
+      .file-row .type-kind,
+      .file-head .mtime,
+      .file-row .mtime,
+      .file-head .mode,
+      .file-row .mode {
         display: none;
       }
 
@@ -960,6 +996,7 @@
           <button id="download">Download</button>
           <button id="edit-file" class="primary">Edit</button>
           <button id="load-payload" class="primary" title="Send selected .elf/.bin/.js to elfldr on port 9021">Load payload</button>
+          <button id="install-pkg" class="warn" title="Install selected PS4/PS5 PKG files">Install PKG</button>
           <button id="extract" class="primary">Extract</button>
         </span>
         <button id="delete" class="danger">Delete</button>
@@ -982,8 +1019,10 @@
           <span class="chk-col"><input type="checkbox" disabled></span>
           <span>Kind</span>
           <span>Name</span>
-          <span>Type</span>
-          <span>Modified</span>
+          <span class="type-kind">Type</span>
+          <span class="size">Size</span>
+          <span class="mtime">Modified</span>
+          <span class="mode">Permissions</span>
         </div>
       </div>
     </section>
@@ -1035,6 +1074,7 @@
 
   <input id="file-picker" class="hidden" type="file" multiple>
   <input id="folder-picker" class="hidden" type="file" multiple webkitdirectory directory>
+  <iframe id="download-frame" class="hidden" title="File download"></iframe>
   <div id="toast" class="toast"></div>
 
   <div id="log-overlay" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.85); z-index: 9999; padding: 20px; box-sizing: border-box; flex-direction: column;">
@@ -1046,6 +1086,7 @@
           <option value="error-history">PS5 Error History (/system_data/priv/error/history/)</option>
           <option value="vsh">PS5 VSH Log (/system_data/priv/vshlog/vshlog.0.txt)</option>
           <option value="archive">Archive Extractor Log (archive-worker.log)</option>
+          <option value="pkg">PKG Installer Log (pkg-installer.log)</option>
           <option value="search">Search Crawler Log (search_crawl.log)</option>
           <option value="boot">Bfpilot Boot Log (boot.log)</option>
         </select>
@@ -1102,14 +1143,24 @@
       jobTimer: 0,
       jobHideTimer: 0,
       archiveTimer: 0,
+      pkgTimer: 0,
       searchTimer: 0,
+      loadingPath: false,
+      historyReady: false,
       search: {
         active: false,
         root: 'all',
         query: ''
       },
-      clipboard: null
+      clipboard: null,
+      sort: {
+        key: 'name',
+        direction: 1
+      }
     };
+
+    const SORT_STORAGE_KEY = 'bfpilot:list-sort:v1';
+    const PATH_STORAGE_KEY = 'bfpilot:last-path:v1';
 
     const el = id => document.getElementById(id);
 
@@ -1134,6 +1185,124 @@
       path = cleanPath(path);
       if (path === '/') return '/';
       return path.slice(path.lastIndexOf('/') + 1) || path;
+    }
+
+    function historyPath() {
+      const hash = window.location.hash || '';
+      if (hash.length <= 1) return '';
+      try {
+        const path = decodeURIComponent(hash.slice(1));
+        return path[0] === '/' ? cleanPath(path) : '';
+      } catch (err) {
+        return '';
+      }
+    }
+
+    function writeHistoryPath(path, replace) {
+      if (!window.history || !window.history.pushState) return;
+      const clean = cleanPath(path);
+      const hash = '#' + encodeURIComponent(clean);
+      if (window.location.hash === hash) return;
+      const data = { bfpilotPath: clean };
+      if (replace && window.history.replaceState) {
+        window.history.replaceState(data, '', hash);
+      } else {
+        window.history.pushState(data, '', hash);
+      }
+    }
+
+    function pathHistoryChain(path) {
+      const clean = cleanPath(path);
+      if (clean === '/') return ['/'];
+      const chain = ['/'];
+      let current = '';
+      clean.split('/').slice(1).forEach((part) => {
+        if (!part) return;
+        current += '/' + part;
+        chain.push(current);
+      });
+      return chain;
+    }
+
+    function seedHistoryPath(path) {
+      if (!window.history || !window.history.pushState ||
+          !window.history.replaceState) return;
+      const chain = pathHistoryChain(path);
+      chain.forEach((entry, index) => writeHistoryPath(entry, index === 0));
+      state.historyReady = true;
+    }
+
+    function historyModeForPath(path) {
+      const target = cleanPath(path);
+      if (target === state.path) return '';
+      return parentPath(target) === state.path ? 'push' : 'chain';
+    }
+
+    function pathNavigationBlocked() {
+      return Boolean(state.loadingPath || state.uploadBusy || state.jobTimer ||
+        state.archiveTimer || state.pkgTimer || state.searchTimer ||
+        el('image-overlay').style.display === 'flex' ||
+        el('editor-overlay').style.display === 'flex' ||
+        el('log-overlay').style.display === 'flex');
+    }
+
+    function setPathInput(path) {
+      const input = el('path');
+      input.value = cleanPath(path);
+      input.title = displayFsText(input.value);
+      requestAnimationFrame(() => {
+        if (document.activeElement !== input) input.scrollLeft = input.scrollWidth;
+      });
+    }
+
+    function readSavedPath() {
+      try {
+        const path = localStorage.getItem(PATH_STORAGE_KEY) || '';
+        return path[0] === '/' ? cleanPath(path) : '';
+      } catch (err) {
+        return '';
+      }
+    }
+
+    function savePath(path) {
+      try {
+        localStorage.setItem(PATH_STORAGE_KEY, cleanPath(path));
+      } catch (err) {}
+    }
+
+    /* Invalid filesystem bytes arrive as private-use tokens. Keep the raw
+       value for API round-trips and decode only what the user sees. */
+    function displayFsText(value) {
+      const text = String(value || '');
+      let output = '';
+      let bytes = [];
+      const flush = () => {
+        if (!bytes.length) return;
+        const data = new Uint8Array(bytes);
+        let decoded = '';
+        if (typeof TextDecoder !== 'undefined') {
+          try {
+            decoded = new TextDecoder('utf-8', { fatal: true }).decode(data);
+          } catch (err) {
+            try { decoded = new TextDecoder('gb18030').decode(data); } catch (ignored) {}
+          }
+        }
+        if (!decoded) decoded = bytes.map((byte) => String.fromCharCode(byte)).join('');
+        output += decoded;
+        bytes = [];
+      };
+      for (let index = 0; index < text.length;) {
+        const codepoint = text.codePointAt(index);
+        if (codepoint >= 0xf0080 && codepoint <= 0xf00ff) {
+          bytes.push(codepoint - 0xf0000);
+        } else {
+          flush();
+          output += String.fromCodePoint(codepoint);
+        }
+        index += codepoint > 0xffff ? 2 : 1;
+      }
+      flush();
+      return output;
     }
 
     function entryPath(entry) {
@@ -1205,10 +1374,73 @@
     }
 
     function sortEntries(entries) {
+      const key = state.sort.key;
+      const direction = state.sort.direction;
       return entries.slice().sort((a, b) => {
         if (a.dir !== b.dir) return a.dir ? -1 : 1;
-        return a.name.localeCompare(b.name);
+        let result = 0;
+        if (key === 'type') {
+          result = fileType(a).localeCompare(fileType(b), undefined, {
+            numeric: true, sensitivity: 'base'
+          });
+        } else if (key === 'size') {
+          result = Number(a.size || 0) - Number(b.size || 0);
+        } else if (key === 'mtime') {
+          result = Number(a.mtime || 0) - Number(b.mtime || 0);
+        } else if (key === 'mode') {
+          result = Number(a.mode || 0) - Number(b.mode || 0);
+        } else {
+          result = displayFsText(a.name).localeCompare(displayFsText(b.name), undefined, {
+            numeric: true, sensitivity: 'base'
+          });
+        }
+        if (result === 0) {
+          result = displayFsText(a.name).localeCompare(displayFsText(b.name), undefined, {
+            numeric: true, sensitivity: 'base'
+          });
+        }
+        return result * direction;
       });
+    }
+
+    function fileType(entry) {
+      if (entry && entry.dir) return 'folder';
+      const name = String(entry && entry.name || '');
+      const dot = name.lastIndexOf('.');
+      return dot > 0 && dot + 1 < name.length
+        ? name.slice(dot + 1).toLowerCase()
+        : 'file';
+    }
+
+    function formatMode(mode) {
+      if (!Number.isFinite(Number(mode))) return '';
+      return '0' + (Number(mode) & 0xfff).toString(8).padStart(3, '0');
+    }
+
+    function loadSortPreference() {
+      try {
+        const value = JSON.parse(localStorage.getItem(SORT_STORAGE_KEY) || '{}');
+        if (['name', 'type', 'size', 'mtime', 'mode'].includes(value.key)) {
+          state.sort.key = value.key;
+        }
+        if (value.direction === -1 || value.direction === 1) {
+          state.sort.direction = value.direction;
+        }
+      } catch (err) {}
+    }
+
+    function setSort(key) {
+      if (!['name', 'type', 'size', 'mtime', 'mode'].includes(key)) return;
+      if (state.sort.key === key) state.sort.direction *= -1;
+      else {
+        state.sort.key = key;
+        state.sort.direction = 1;
+      }
+      try {
+        localStorage.setItem(SORT_STORAGE_KEY, JSON.stringify(state.sort));
+      } catch (err) {}
+      state.entries = sortEntries(state.entries);
+      drawList();
     }
 
     function shortSize(size) {
@@ -1516,7 +1748,7 @@
       if (failedFiles > 0) parts.push(failedFiles + ' failed');
       if (job.cancelling) parts.push('cancelling');
 
-      if (job.current && total > 0) parts.push(job.current);
+      if (job.current && total > 0) parts.push(displayFsText(job.current));
       if (!parts.length) return job.error || 'Done';
       return parts.join(' | ');
     }
@@ -1559,7 +1791,7 @@
       }
       if (failed > 0) parts.push(failed + ' failed');
       if (cancelling) parts.push('cancelling');
-      if (name) parts.push(name);
+      if (name) parts.push(displayFsText(name));
 
       return parts.join(' | ');
     }
@@ -1578,7 +1810,7 @@
       const parts = [];
       if (job.state === 'prepared') {
         parts.push('Job prepared');
-        parts.push(job.requiresInjection ? 'inject bfpilot-archive-worker.elf to start' : 'starting');
+        parts.push('starting integrated extractor');
       } else {
         parts.push(job.state || 'archive');
       }
@@ -1596,8 +1828,8 @@
       if (job.filesDone || job.totalFiles) {
         parts.push(Number(job.filesDone || 0) + ' / ' + Number(job.totalFiles || 0) + ' files');
       }
-      if (job.current) parts.push(job.current);
-      if (job.error) parts.push(job.error);
+      if (job.current) parts.push(displayFsText(job.current));
+      if (job.error) parts.push(displayFsText(job.error));
       return parts.join(' | ');
     }
 
@@ -1724,19 +1956,22 @@
           ['Size', exactSize(du.size)],
           ['Files', String(du.files || 0)],
           ['Folders', String(Math.max(0, (du.dirs || 0) - 1))],
-          ['Path', path]
+          ['Permissions', formatMode(entry.mode)],
+          ['Path', displayFsText(path)]
         ];
         const note = 'Full recursive size calculated on selection only.';
-        renderDetail(entry.name, rows, note);
+        renderDetail(displayFsText(entry.name), rows, note);
       } catch (err) {
         if (token !== state.detailToken) return;
         const rows = [
           ['Kind', 'Folder'],
           ['Size', exactSize(entry.size)],
           ['Modified', formatDate(entry.mtime)],
-          ['Path', path]
+          ['Permissions', formatMode(entry.mode)],
+          ['Path', displayFsText(path)]
         ];
-        renderDetail(entry.name, rows, 'Could not calculate folder size: ' + err.message);
+        renderDetail(displayFsText(entry.name), rows,
+          'Could not calculate folder size: ' + err.message);
       }
     }
 
@@ -1749,6 +1984,10 @@
       });
       el('remove-shortcut').disabled = !currentCustom;
       el('customize-shortcut').disabled = !currentCustom;
+    }
+
+    function isPkgName(name) {
+      return String(name || '').toLowerCase().endsWith('.pkg');
     }
 
     function updateClipboard() {
@@ -1770,7 +2009,8 @@
       title.textContent = (clipboard.verb === 'move' ? 'Move ' : 'Copy ') +
         count + (count === 1 ? ' item' : ' items');
       status.appendChild(title);
-      const names = clipboard.entries.slice(0, 3).map((entry) => entry.name).join(', ');
+      const names = clipboard.entries.slice(0, 3)
+        .map((entry) => displayFsText(entry.name)).join(', ');
       status.appendChild(document.createTextNode(
         names + (count > 3 ? ' +' + (count - 3) + ' more' : '')
       ));
@@ -1811,8 +2051,11 @@
       el('selection').textContent = entries.length + ' selected';
       el('open-folder').disabled = !(one && one.dir);
       el('rename').disabled = !one;
-      el('download').disabled = !(one && !one.dir);
+      el('download').disabled = entries.length === 0;
       el('load-payload').disabled = !(one && canLaunchPayload(one));
+      const pkgCount = entries.filter((entry) => !entry.dir && isPkgName(entry.name)).length;
+      el('install-pkg').disabled = pkgCount === 0;
+      el('install-pkg').textContent = pkgCount > 1 ? 'Install ' + pkgCount + ' PKGs' : 'Install PKG';
       el('chmod').disabled = entries.length === 0;
       el('extract').disabled = !(one && !one.dir && isArchiveName(one.name));
       el('delete').disabled = entries.length === 0;
@@ -1832,7 +2075,7 @@
       const detail = el('detail');
       if (!entries.length) {
         renderDetail('No selection', [
-          ['Path', state.search.active ? 'Search results' : state.path],
+          ['Path', state.search.active ? 'Search results' : displayFsText(state.path)],
           ['Items', state.entries.length + ' visible']
         ], 'Select a file or folder to see size and modified date.');
         return;
@@ -1847,14 +2090,15 @@
           ['Kind', entry.dir ? 'Folder' : 'File'],
           ['Size', exactSize(entry.size)],
           ['Modified', formatDate(entry.mtime)],
-          ['Path', path]
+          ['Permissions', formatMode(entry.mode)],
+          ['Path', displayFsText(path)]
         ];
         let note = '';
         if (entry.dir) {
           note = 'Calculating full folder size...';
           loadFolderSize(path, token, entry);
         }
-        renderDetail(entry.name, rows, note);
+        renderDetail(displayFsText(entry.name), rows, note);
         return;
       }
 
@@ -1865,11 +2109,12 @@
         ['Files', String(files)],
         ['Folders', String(dirs)],
         ['File size', exactSize(totalFileBytes)],
-        ['Location', state.search.active ? 'Search results' : state.path]
+        ['Location', state.search.active ? 'Search results' : displayFsText(state.path)]
       ], dirs ? 'Folder contents are not included in the total.' : '');
     }
 
     function highlightPath(path, query) {
+      path = displayFsText(path);
       const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
       if (!terms.length) return escHtml(path);
       // Split into directory part and filename
@@ -1899,19 +2144,25 @@
       const row = document.createElement('div');
       row.className = 'file-row ' + (entry.dir ? 'dir ' : '') +
         (parent ? 'parent' : '') + (entry.path ? ' search-result' : '');
+      row.dataset.path = cleanPath(path);
+      row.tabIndex = -1;
       row.innerHTML = chkHtml +
-        '<span class="tag"></span><span class="name"></span><span class="muted-cell type"></span><span class="muted-cell mtime"></span>';
+        '<span class="tag"></span><span class="name"></span>' +
+        '<span class="muted-cell type-kind"></span><span class="muted-cell size"></span>' +
+        '<span class="muted-cell mtime"></span><span class="muted-cell mode"></span>';
 
       row.querySelector('.tag').textContent = entry.dir ? 'DIR' : 'FILE';
       const nameEl = row.querySelector('.name');
-      nameEl.title = path;
+      nameEl.title = displayFsText(path);
       if (entry.path && state.search.query) {
         nameEl.innerHTML = highlightPath(path, state.search.query);
       } else {
-        nameEl.textContent = entry.path ? path : entry.name;
+        nameEl.textContent = displayFsText(entry.path ? path : entry.name);
       }
-      row.querySelector('.type').textContent = parent ? '' : (entry.dir ? 'folder' : shortSize(entry.size || 0));
+      row.querySelector('.type-kind').textContent = parent ? '' : fileType(entry);
+      row.querySelector('.size').textContent = parent || entry.dir ? '' : shortSize(entry.size || 0);
       row.querySelector('.mtime').textContent = entry.mtime ? new Date(entry.mtime * 1000).toLocaleDateString() : '';
+      row.querySelector('.mode').textContent = parent ? '' : formatMode(entry.mode);
 
       if (!parent && state.selected.has(key)) {
         row.classList.add('selected');
@@ -1919,7 +2170,7 @@
 
       row.addEventListener('click', (event) => {
         if (parent) {
-          openPath(parentPath(state.path));
+          navigateParent();
           return;
         }
         /* Checkbox column: multi-select (PS5-friendly) */
@@ -1946,6 +2197,8 @@
           openPath(next);
         } else if (canLaunchPayload(entry)) {
           launchPayloadPath(next);
+        } else if (isPkgName(entry.name)) {
+          installSelectedPkgs([entry]);
         } else if (canEdit(entry)) {
           openEditor(next);
         } else if (canViewImage(entry)) {
@@ -1965,11 +2218,21 @@
       const head = document.createElement('div');
       head.className = 'file-head';
       const allSelected = state.entries.length > 0 && state.entries.every(e => state.selected.has(entryKey(e)));
+      const sortHeader = (key, label, extraClass) => {
+        const active = state.sort.key === key;
+        return '<button class="sort-head ' + (extraClass || '') + (active ? ' active' : '') +
+          '" data-sort="' + key + '" data-arrow="' +
+          (state.sort.direction > 0 ? '\u25b2' : '\u25bc') + '">' + label + '</button>';
+      };
       head.innerHTML = `<span class="chk-col select-all-hit"><input type="checkbox" id="select-all-checkbox" ${allSelected ? 'checked' : ''} style="cursor: pointer;"></span>` +
-        (state.search.active
-          ? '<span>Kind</span><span>Path</span><span>Type</span><span>Modified</span>'
-          : '<span>Kind</span><span>Name</span><span>Type</span><span>Modified</span>');
+        '<span>Kind</span>' + sortHeader('name', state.search.active ? 'Path' : 'Name') +
+        sortHeader('type', 'Type', 'type-kind') + sortHeader('size', 'Size', 'size') +
+        sortHeader('mtime', 'Modified', 'mtime') + sortHeader('mode', 'Permissions', 'mode');
       list.appendChild(head);
+
+      head.querySelectorAll('[data-sort]').forEach((button) => {
+        button.addEventListener('click', () => setSort(button.dataset.sort));
+      });
 
       head.querySelector('#select-all-checkbox').addEventListener('click', (event) => {
         event.stopPropagation();
@@ -2034,15 +2297,49 @@
       updateSelection();
     }
 
+    function revealPathInList(path) {
+      const clean = cleanPath(path);
+      const entryIndex = state.entries.findIndex((entry) =>
+        cleanPath(entryPath(entry)) === clean);
+      if (entryIndex < 0) return false;
+
+      const list = el('list');
+      const parentOffset = !state.search.active && state.path !== '/' ? 1 : 0;
+      const rowHeight = 43;
+      const rowTop = (entryIndex + parentOffset) * rowHeight;
+      list.scrollTop = Math.max(0,
+        rowTop - Math.max(0, Math.floor((list.clientHeight - rowHeight) / 2)));
+      requestAnimationFrame(() => {
+        const rows = list.querySelectorAll('.file-row');
+        for (const row of rows) {
+          if (row.dataset.path !== clean) continue;
+          row.classList.add('revealed');
+          try {
+            row.focus({ preventScroll: true });
+          } catch (err) {
+            row.focus();
+          }
+          setTimeout(() => row.classList.remove('revealed'), 1400);
+          break;
+        }
+      });
+      return true;
+    }
+
     function showLoading() {
       const list = el('list');
       list.textContent = '';
       const head = document.createElement('div');
       head.className = 'file-head';
-      head.innerHTML = '<span class="chk-col"><input type="checkbox" disabled></span><span>Kind</span><span>Name</span><span>Type</span><span>Modified</span>';
+      head.innerHTML = '<span class="chk-col"><input type="checkbox" disabled></span>' +
+        '<span>Kind</span><span>Name</span><span class="type-kind">Type</span>' +
+        '<span class="size">Size</span><span class="mtime">Modified</span>' +
+        '<span class="mode">Permissions</span>';
       const row = document.createElement('div');
       row.className = 'file-row';
-      row.innerHTML = '<span class="chk-col"></span><span class="tag">...</span><span class="name">Loading</span><span></span><span></span>';
+      row.innerHTML = '<span class="chk-col"></span><span class="tag">...</span>' +
+        '<span class="name">Loading</span><span class="type-kind"></span>' +
+        '<span class="size"></span><span class="mtime"></span><span class="mode"></span>';
       list.appendChild(head);
       list.appendChild(row);
     }
@@ -2141,11 +2438,11 @@
         state.search.active = true;
         state.search.query = query;
         state.search.root = data.indexedRoot || data.root || state.search.root || 'all';
-        state.entries = (data.results || []).map((entry) => {
+        state.entries = sortEntries((data.results || []).map((entry) => {
           entry.path = cleanPath(entry.path);
           entry.name = entry.name || baseName(entry.path);
           return entry;
-        });
+        }));
         state.selected.clear();
         drawList();
         const suffix = data.hasMore ? '+' : '';
@@ -2177,28 +2474,80 @@
       }
     }
 
-    async function refresh() {
+    async function loadDirectory(path, options) {
+      options = options || {};
+      if (state.loadingPath) return false;
+      const previousPath = state.path;
+      const previousEntries = state.entries;
+      const previousSelection = new Set(state.selected);
+      const previousSearchActive = state.search.active;
+      const targetPath = cleanPath(path || previousPath);
+      state.loadingPath = true;
       state.search.active = false;
-      state.path = cleanPath(el('path').value || state.path);
-      el('path').value = state.path;
+      setPathInput(targetPath);
       showLoading();
 
       try {
-        const data = await api('/api/fs/list?path=' + encodeURIComponent(state.path));
+        const data = await api('/api/fs/list?path=' + encodeURIComponent(targetPath));
+        state.path = targetPath;
+        savePath(state.path);
         state.entries = sortEntries(data.entries || []);
         state.selected.clear();
         drawList();
+        if (options.historyMode === 'chain') {
+          seedHistoryPath(state.path);
+        } else if (options.historyMode) {
+          writeHistoryPath(state.path, options.historyMode === 'replace');
+        }
+        if (options.revealPath) revealPathInList(options.revealPath);
+        return true;
       } catch (err) {
-        state.entries = [];
+        state.path = previousPath;
+        state.entries = previousEntries;
+        state.selected = previousSelection;
+        state.search.active = previousSearchActive;
+        setPathInput(previousPath);
         drawList();
         toast(err.message, 'err');
+        return false;
+      } finally {
+        state.loadingPath = false;
       }
     }
 
-    async function openPath(path) {
-      state.path = cleanPath(path);
-      el('path').value = state.path;
-      await refresh();
+    async function refresh() {
+      const targetPath = cleanPath(el('path').value || state.path);
+      const historyMode = historyModeForPath(targetPath);
+      return loadDirectory(targetPath, { historyMode });
+    }
+
+    async function openPath(path, options) {
+      options = options || {};
+      if (pathNavigationBlocked()) {
+        toast('Finish or cancel the active task first', 'err');
+        return false;
+      }
+      const targetPath = cleanPath(path);
+      return loadDirectory(path, {
+        historyMode: options.historyMode === undefined
+          ? historyModeForPath(targetPath) : options.historyMode,
+        revealPath: options.revealPath || ''
+      });
+    }
+
+    function navigateParent() {
+      if (state.path === '/') return;
+      if (pathNavigationBlocked()) {
+        toast('Finish or cancel the active task first', 'err');
+        return;
+      }
+      if (state.historyReady && historyPath() === state.path &&
+          window.history && window.history.back) {
+        window.history.back();
+        return;
+      }
+      const previousPath = state.path;
+      openPath(parentPath(previousPath), { revealPath: previousPath });
     }
 
     async function executeTransfer(verb, entries, target) {
@@ -2369,7 +2718,7 @@
         toast('Select one item', 'err');
         return;
       }
-      const next = prompt('New name', entries[0].name);
+      const next = prompt('New name', displayFsText(entries[0].name));
       if (!next || next === entries[0].name) return;
       const srcPath = entryPath(entries[0]);
       const dstPath = joinPath(parentPath(srcPath), next);
@@ -2384,13 +2733,131 @@
       }
     }
 
-    function downloadSelected() {
+    async function downloadSelected() {
       const entries = selectedEntries();
-      if (entries.length !== 1 || entries[0].dir) {
-        toast('Select one file', 'err');
+      if (!entries.length) {
+        toast('Select files or folders', 'err');
         return;
       }
-      window.open(fileUrl(entryPath(entries[0])), '_blank');
+      try {
+        const body = new URLSearchParams();
+        entries.forEach((entry) => body.append('path', entryPath(entry)));
+        const response = await fetch('/api/fs/download/prepare', {
+          method: 'POST',
+          cache: 'no-store',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: body.toString()
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok || data.ok === false || !data.id) {
+          throw new Error(data.error || ('HTTP ' + response.status));
+        }
+        const frame = el('download-frame');
+        frame.src = '/api/fs/download?id=' + encodeURIComponent(data.id) +
+          '&t=' + Date.now();
+        toast(entries.length === 1 && !entries[0].dir
+          ? 'Download started'
+          : 'TAR download started (no PS5 staging file)', 'ok');
+        pollJob();
+      } catch (err) {
+        toast('download: ' + err.message, 'err');
+      }
+    }
+
+    function pkgProgressText(status) {
+      const parts = [status.message || status.state || 'PKG installation'];
+      const count = Number(status.packageCount || 0);
+      if (count > 0) {
+        parts.push(Number(status.submitted || 0) + '/' + count + ' submitted');
+      }
+      if (Number(status.totalBytes || 0) > 0) {
+        parts.push(shortSize(Number(status.totalBytes || 0)) + ' selected');
+      }
+      if (status.path) parts.push(displayFsText(status.path));
+      if (status.result && status.resultHex) parts.push(status.resultHex);
+      return parts.join(' | ');
+    }
+
+    function pollPkgStatus() {
+      if (state.pkgTimer) clearInterval(state.pkgTimer);
+      if (state.jobHideTimer) {
+        clearTimeout(state.jobHideTimer);
+        state.jobHideTimer = 0;
+      }
+      el('job').classList.add('show');
+      el('job-verb').textContent = 'install PKG';
+      el('job-cancel').disabled = true;
+      let missed = 0;
+
+      async function tick() {
+        try {
+          const status = await api('/api/fs/pkg/status');
+          missed = 0;
+          const pct = Math.max(0, Math.min(100, Number(status.percent || 0)));
+          el('job-fill').style.width = pct.toFixed(1) + '%';
+          el('job-text').textContent = pkgProgressText(status);
+          const failed = status.state === 'error' ||
+            status.state === 'completed_with_errors';
+          const accepted = status.state === 'accepted';
+          if (failed || accepted) {
+            clearInterval(state.pkgTimer);
+            state.pkgTimer = 0;
+            toast(failed ? ('PKG install: ' + (status.message || status.resultHex || 'failed')) :
+              'PKG queue accepted by AppInst; watch PS5 notifications',
+              failed ? 'err' : 'ok');
+            state.jobHideTimer = setTimeout(() => {
+              state.jobHideTimer = 0;
+              el('job').classList.remove('show');
+              el('job-cancel').disabled = false;
+            }, accepted ? 5000 : 3000);
+          }
+        } catch (err) {
+          missed++;
+          if (missed >= 30) {
+            clearInterval(state.pkgTimer);
+            state.pkgTimer = 0;
+            el('job').classList.remove('show');
+            el('job-cancel').disabled = false;
+            toast('PKG status: ' + err.message, 'err');
+          }
+        }
+      }
+      tick();
+      state.pkgTimer = setInterval(tick, 1000);
+    }
+
+    async function installSelectedPkgs(explicitEntries) {
+      const packages = (explicitEntries || selectedEntries()).filter(
+        (entry) => !entry.dir && isPkgName(entry.name));
+      if (!packages.length) {
+        toast('Select one or more .pkg files', 'err');
+        return;
+      }
+      const names = packages.slice(0, 3)
+        .map((entry) => displayFsText(entry.name)).join(', ');
+      if (!confirm('Install ' + packages.length + ' package(s)?\n\n' + names +
+        (packages.length > 3 ? '\n+' + (packages.length - 3) + ' more' : ''))) return;
+      try {
+        const body = new URLSearchParams();
+        packages.forEach((entry) => body.append('path', entryPath(entry)));
+        const response = await fetch('/api/fs/pkg/install', {
+          method: 'POST',
+          cache: 'no-store',
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'X-BFpilot-Action': 'install-pkg'
+          },
+          body: body.toString()
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok || data.ok === false) {
+          throw new Error(data.error || ('HTTP ' + response.status));
+        }
+        toast('PKG installer started', 'ok');
+        pollPkgStatus();
+      } catch (err) {
+        toast('install PKG: ' + err.message, 'err');
+      }
     }
 
     async function extractSelected() {
@@ -2696,7 +3163,8 @@
              lower.endsWith('.yaml') ||
              lower.endsWith('.yml') ||
              lower.endsWith('.conf') ||
-             lower.endsWith('.sql');
+             lower.endsWith('.sql') ||
+             lower.endsWith('.shn');
     }
 
     function isImageName(name) {
@@ -2904,6 +3372,7 @@
     }
 
     async function boot() {
+      loadSortPreference();
       renderPlaces();
       await refreshPlaces(false);
 
@@ -2970,6 +3439,7 @@
         let path = '';
         if (value === 'bfpilot') path = '/data/BFpilot/log.txt';
         else if (value === 'archive') path = '/data/BFpilot/archive-integrated/archive-worker.log';
+        else if (value === 'pkg') path = '/data/BFpilot/pkg-installer.log';
         else if (value === 'search') path = '/data/BFpilot/search_crawl.log';
         else if (value === 'boot') path = '/data/BFpilot/boot.log';
         else if (value === 'vsh') path = '/system_data/priv/vshlog/vshlog.0.txt';
@@ -3004,7 +3474,7 @@
         fetchLogs();
       });
 
-      el('up').addEventListener('click', () => openPath(parentPath(state.path)));
+      el('up').addEventListener('click', navigateParent);
       el('go').addEventListener('click', refresh);
       el('refresh').addEventListener('click', refresh);
       el('add-shortcut').addEventListener('click', addShortcut);
@@ -3080,6 +3550,23 @@
       el('path').addEventListener('keydown', (event) => {
         if (event.key === 'Enter') refresh();
       });
+      el('path').addEventListener('blur', () => setPathInput(el('path').value));
+      window.addEventListener('resize', () => setPathInput(state.path));
+      window.addEventListener('popstate', async (event) => {
+        if (!state.historyReady) return;
+        if (pathNavigationBlocked()) {
+          writeHistoryPath(state.path, false);
+          toast('Finish or cancel the active task first', 'err');
+          return;
+        }
+        const target = event.state && event.state.bfpilotPath
+          ? cleanPath(event.state.bfpilotPath) : historyPath();
+        if (!target || target === state.path) return;
+        const previousPath = state.path;
+        const revealPath = parentPath(previousPath) === target ? previousPath : '';
+        const loaded = await loadDirectory(target, { revealPath });
+        if (!loaded) writeHistoryPath(state.path, false);
+      });
       el('search-go').addEventListener('click', runSearch);
       el('search-rebuild').addEventListener('click', rebuildSearchIndex);
       el('search-cancel').addEventListener('click', cancelSearchIndex);
@@ -3094,6 +3581,7 @@
       el('rename').addEventListener('click', renameOne);
       el('download').addEventListener('click', downloadSelected);
       el('load-payload').addEventListener('click', loadPayloadSelected);
+      el('install-pkg').addEventListener('click', () => installSelectedPkgs());
       el('open-folder').addEventListener('click', openSelectedFolder);
       el('chmod').addEventListener('click', chmodSelected);
       el('extract').addEventListener('click', extractSelected);
@@ -3199,7 +3687,11 @@
         uploadFiles(files);
       });
 
-      await refresh();
+      const initialPath = historyPath() || readSavedPath() || state.path;
+      let loaded = await loadDirectory(initialPath);
+      if (!loaded && initialPath !== '/data') loaded = await loadDirectory('/data');
+      if (!loaded && state.path !== '/') loaded = await loadDirectory('/');
+      if (loaded) seedHistoryPath(state.path);
       if (!state.placesTimer) {
         state.placesTimer = setInterval(() => refreshPlaces(true), 8000);
       }
@@ -3219,6 +3711,11 @@
       api('/api/fs/archive/status').then((job) => {
         if (job.state === 'prepared' || job.state === 'running' || job.state === 'finalizing') {
           pollArchiveStatus();
+        }
+      }).catch(() => {});
+      api('/api/fs/pkg/status').then((status) => {
+        if (['queued', 'starting', 'submitting'].includes(status.state)) {
+          pollPkgStatus();
         }
       }).catch(() => {});
       refreshSearchStatus(true).then((status) => {

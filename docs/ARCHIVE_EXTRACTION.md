@@ -1,6 +1,6 @@
 # Archive extraction
 
-Extraction runs inside `bfpilot.elf`. The standalone `bfpilot-archive-worker.elf` is only a diagnostic build of the same code.
+Extraction runs inside `bfpilot.elf`; no standalone archive payload is built or distributed.
 
 ## Paths
 

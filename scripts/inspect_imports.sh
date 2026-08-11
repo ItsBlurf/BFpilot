@@ -1,197 +1,125 @@
 #!/usr/bin/env bash
-# Compatibility checks for BFpilot ELFs.
-# Main bfpilot.elf must NOT link AppInst (breaks loaders). Tile install is the
-# separate bfpilot-launcher-installer.elf only (Media category 65536).
+# Structural and dependency checks for the one-ELF BFpilot release.
 set -euo pipefail
 
 find_tool() {
   local name="$1"
   if [[ -n "${LLVM_BINDIR:-}" ]]; then
-    if [[ -x "${LLVM_BINDIR}/${name}" ]]; then
-      printf '%s\n' "${LLVM_BINDIR}/${name}"
-      return 0
-    fi
-    if [[ -x "${LLVM_BINDIR}/${name}.exe" ]]; then
-      printf '%s\n' "${LLVM_BINDIR}/${name}.exe"
-      return 0
-    fi
+    [[ -x "${LLVM_BINDIR}/${name}" ]] && { printf '%s\n' "${LLVM_BINDIR}/${name}"; return; }
+    [[ -x "${LLVM_BINDIR}/${name}.exe" ]] && { printf '%s\n' "${LLVM_BINDIR}/${name}.exe"; return; }
   fi
-  if command -v "${name}" >/dev/null 2>&1; then
-    command -v "${name}"
-    return 0
-  fi
-  if command -v "${name}.exe" >/dev/null 2>&1; then
-    command -v "${name}.exe"
-    return 0
-  fi
-  return 1
+  command -v "${name}" 2>/dev/null || command -v "${name}.exe" 2>/dev/null || true
 }
 
-READELF="$(find_tool llvm-readelf || find_tool readelf || true)"
-READOBJ="$(find_tool llvm-readobj || true)"
-NM="$(find_tool llvm-nm || find_tool nm || true)"
-STRINGS="$(find_tool llvm-strings || find_tool strings || true)"
-TMP_DIR="${TMPDIR:-/tmp}"
-if ! mkdir -p "${TMP_DIR}" >/dev/null 2>&1; then
-  TMP_DIR="build/tmp"
-  mkdir -p "${TMP_DIR}"
-fi
+READELF="$(find_tool llvm-readelf)"
+[[ -n "${READELF}" ]] || READELF="$(find_tool readelf)"
+READOBJ="$(find_tool llvm-readobj)"
+STRINGS="$(find_tool llvm-strings)"
+[[ -n "${STRINGS}" ]] || STRINGS="$(find_tool strings)"
 
-if [[ -z "${STRINGS}" ]]; then
-  echo "inspect-imports: strings or llvm-strings is required" >&2
-  exit 1
-fi
+[[ -n "${READELF}" ]] || { echo "inspect-imports: readelf is required" >&2; exit 1; }
+[[ -n "${STRINGS}" ]] || { echo "inspect-imports: strings is required" >&2; exit 1; }
 
-if [[ $# -eq 0 ]]; then
-  echo "inspect-imports: no ELF files provided" >&2
-  exit 1
-fi
+file="${1:-bfpilot.elf}"
+[[ $# -le 1 ]] || { echo "inspect-imports: expected one release ELF" >&2; exit 1; }
+[[ -f "${file}" ]] || { echo "inspect-imports: missing ${file}" >&2; exit 1; }
+
+for obsolete in \
+  bfpilot-launcher-installer.elf \
+  bfpilot-pkg-installer.elf \
+  bfpilot-archive-worker.elf \
+  build/internal/bfpilot-appinst-helper.elf; do
+  if [[ -f "${obsolete}" ]]; then
+    echo "inspect-imports: obsolete helper artifact still exists: ${obsolete}" >&2
+    exit 1
+  fi
+done
+
+header="$("${READELF}" -h "${file}")"
+for expected in \
+  'Class:.*ELF64' \
+  'Data:.*little endian' \
+  'OS/ABI:.*FreeBSD' \
+  'Type:.*DYN' \
+  'Machine:.*(X86-64|x86-64)'; do
+  printf '%s\n' "${header}" | grep -E "${expected}" >/dev/null || {
+    echo "inspect-imports: invalid PS5 ELF header (${expected})" >&2
+    exit 1
+  }
+done
 
 needed_libraries() {
-  local file="$1"
   if [[ -n "${READOBJ}" ]]; then
-    "${READOBJ}" --needed-libs "${file}" 2>/dev/null |
-      grep -E '^[[:space:]]+[^[:space:]]+\.sprx$' |
-      sed -E 's/^[[:space:]]+//'
-  elif [[ -n "${READELF}" ]]; then
-    "${READELF}" -d "${file}" 2>/dev/null |
+    "${READOBJ}" --needed-libs "$1" 2>/dev/null |
+      grep -E '^[[:space:]]+[^[:space:]]+\.sprx$' | sed -E 's/^[[:space:]]+//'
+  else
+    "${READELF}" -d "$1" 2>/dev/null |
       sed -nE 's/.*Shared library: \[([^]]+)\].*/\1/p'
   fi
 }
 
-
-check_ps5_elf_header() {
-  local file="$1"
-  local header
-  if [[ -z "${READELF}" ]]; then
-    echo "inspect-imports: readelf or llvm-readelf is required for ELF validation" >&2
-    return 1
-  fi
-  header="$("${READELF}" -h "${file}" 2>/dev/null)"
-  for expected in \
-    'Class:.*ELF64' \
-    'Data:.*little endian' \
-    'OS/ABI:.*FreeBSD' \
-    'Type:.*DYN' \
-    'Machine:.*(X86-64|x86-64)'; do
-    if ! printf '%s\n' "${header}" | grep -E "${expected}" >/dev/null; then
-      echo "inspect-imports: ${file} has an invalid PS5 ELF header (${expected})" >&2
-      return 1
-    fi
-  done
-}
-
-
-check_no_direct_appinst_import() {
-  local file="$1"
-  local needed
-  needed="$(needed_libraries "${file}" || true)"
-  if printf '%s\n' "${needed}" |
-     grep -E 'libSceAppInstUtil\.sprx|libSceSystemService\.sprx|libSceUserService\.sprx|libkernel_sys\.sprx' >/dev/null; then
-    echo
-    echo "inspect-imports: unsafe direct launcher import in ${file}" >&2
+needed="$(needed_libraries "${file}" || true)"
+for required in libSceIpmi.sprx libSceAppInstUtil.sprx; do
+  printf '%s\n' "${needed}" | grep -Fx "${required}" >/dev/null || {
+    echo "inspect-imports: one-ELF installer is missing ${required}" >&2
     printf '%s\n' "${needed}" >&2
-    return 1
-  fi
+    exit 1
+  }
+done
+if printf '%s\n' "${needed}" |
+   grep -E 'libSceSystemService\.sprx|libSceUserService\.sprx|libkernel_sys\.sprx' >/dev/null; then
+  echo "inspect-imports: unnecessary privileged dependency found" >&2
+  printf '%s\n' "${needed}" >&2
+  exit 1
+fi
+
+require_string() {
+  "${STRINGS}" "${file}" 2>/dev/null | grep -aF "$1" >/dev/null || {
+    echo "inspect-imports: missing all-in-one marker: $1" >&2
+    exit 1
+  }
 }
 
+require_string 'sceAppInstUtilInitialize'
+require_string 'sceAppInstUtilInstallByPackage'
+require_string 'sceAppInstUtilAppInstallAll'
+require_string 'direct_tile+embedded_pkg_worker'
+require_string 'BFPL00001'
+require_string '65536'
+require_string '/api/fs/pkg/install'
+require_string '/api/fs/archive/prepare'
+require_string '/api/fs/download/prepare'
 
-for file in "$@"; do
-  echo
-  echo "== ${file} =="
-  if [[ ! -f "${file}" ]]; then
-    echo "missing"
-    continue
-  fi
-
-  check_ps5_elf_header "${file}"
-
-  size="$(wc -c < "${file}" | tr -d '[:space:]')"
-  echo "file size: ${size} bytes"
-
-  echo "-- dynamic libraries/imports --"
-  if [[ -n "${READOBJ}" ]]; then
-    "${READOBJ}" --needed-libs "${file}" || true
-  elif [[ -n "${READELF}" ]]; then
-    "${READELF}" -d "${file}" | grep -E 'NEEDED|SONAME' || true
-  else
-    echo "no llvm-readobj/readelf available"
-  fi
-
-  echo "-- undefined symbols --"
-  if [[ -n "${READELF}" ]]; then
-    "${READELF}" --dyn-syms "${file}" | grep -E 'UND|Undefined' || true
-  elif [[ -n "${NM}" ]]; then
-    "${NM}" -u "${file}" || true
-  else
-    echo "no llvm-readelf/readelf/nm available"
-  fi
-
-  echo "-- SCE-related strings/symbol hints --"
-  "${STRINGS}" "${file}" | grep -Ei '(^|[^A-Za-z0-9_])(sce|Sce|AppInst|SystemService|UserService|BFPL00001|app_installer)' || true
+abi_source="src/pkg_worker_main.c"
+for shape in \
+  'languages[30][8]' \
+  'playgo_scenario_ids[64][3]' \
+  'content_ids[64][48]' \
+  'unknown[6480]' \
+  'sizeof(appinst_playgo_info_t) == 9984'; do
+  grep -F "${shape}" "${abi_source}" >/dev/null || {
+    echo "inspect-imports: AppInst ABI guard missing: ${shape}" >&2
+    exit 1
+  }
 done
 
-for file in "$@"; do
-  case "${file}" in
-    bfpilot-launcher-installer.elf|./bfpilot-launcher-installer.elf)
-      continue
-      ;;
-  esac
-  if [[ -f "${file}" ]]; then
-    check_no_direct_appinst_import "${file}"
-  fi
-done
-
-if [[ -f bfpilot.elf ]]; then
-  if "${STRINGS}" bfpilot.elf 2>/dev/null |
-     grep -aE 'libSceAppInstUtil\.sprx|sceAppInstUtilInitialize' >"${TMP_DIR}/bfpilot-forbidden-imports.txt" 2>/dev/null; then
-    echo
-    echo "inspect-imports: forbidden launcher/AppInst content in bfpilot.elf" >&2
-    cat "${TMP_DIR}/bfpilot-forbidden-imports.txt" >&2
-    exit 1
-  fi
-  # Scrub may rewrite sprx name; still reject live AppInst symbols
-  if command -v python3 >/dev/null 2>&1; then
-    if python3 - <<'PY'
-import pathlib
-data = pathlib.Path("bfpilot.elf").read_bytes()
-# NEEDED-style / live install entry points must not remain
-needles = [b"sceAppInstUtilInitialize", b"sceAppInstUtilAppInstallAll"]
-for n in needles:
-    if n in data:
-        raise SystemExit(1)
-raise SystemExit(0)
-PY
-    then
-      :
-    else
-      echo "inspect-imports: forbidden AppInst symbols in bfpilot.elf" >&2
-      exit 1
-    fi
-  fi
-  echo "inspect-imports: bfpilot.elf free of AppInst (file manager only) OK"
+if grep -R -E 'appinst_dispatch|appinst_helper|internal_helper_blob' \
+     Makefile src >/dev/null; then
+  echo "inspect-imports: obsolete AppInst helper architecture remains" >&2
+  exit 1
 fi
 
-if [[ -f bfpilot-launcher-installer.elf ]]; then
-  installer_needed="$(needed_libraries bfpilot-launcher-installer.elf || true)"
-  for required in libkernel_sys.sprx libSceSystemService.sprx \
-                  libSceUserService.sprx libSceAppInstUtil.sprx; do
-    if ! printf '%s\n' "${installer_needed}" | grep -q "${required}"; then
-      echo
-      echo "inspect-imports: bfpilot-launcher-installer.elf missing ${required}" >&2
-      exit 1
-    fi
-  done
-  if ! "${STRINGS}" bfpilot-launcher-installer.elf 2>/dev/null | grep -aF 'BFPL00001' >/dev/null; then
-    echo "inspect-imports: installer missing BFPL00001" >&2
-    exit 1
-  fi
-  if ! "${STRINGS}" bfpilot-launcher-installer.elf 2>/dev/null | grep -aF '65536' >/dev/null; then
-    echo "inspect-imports: installer missing Media category 65536" >&2
-    exit 1
-  fi
-  echo "inspect-imports: launcher-installer Media AppInst OK"
-fi
+echo "== ${file} =="
+echo "file size: $(wc -c < "${file}" | tr -d '[:space:]') bytes"
+echo "needed libraries:"
+printf '%s\n' "${needed}"
+grep -F 'PKG_WORKER_BIN := build/internal/' Makefile >/dev/null || {
+  echo "inspect-imports: private embedded PKG worker is not wired" >&2
+  exit 1
+}
+grep -F 'INCASSET(bfpilot_pkg_worker_elf' src/pkg_worker_client.c >/dev/null || {
+  echo "inspect-imports: private PKG worker is not embedded" >&2
+  exit 1
+}
 
-echo
-echo "inspect-imports: compatibility checks passed"
+echo "inspect-imports: one distributed ELF with direct tile AppInst and embedded PKG worker passed"

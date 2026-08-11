@@ -24,8 +24,8 @@ PYTHON ?= python3
 # Ship / daily use must stay 5905.
 WEB_PORT ?= 5905
 
-VERSION_TAG := bfpilot-v0.4.3
-BUILD_VERSION ?= v0.4.3
+VERSION_TAG := bfpilot-v0.4.4-alpha.1
+BUILD_VERSION ?= v0.4.4-alpha.1
 
 LLVM_CONFIG ?= $(if $(wildcard $(PS5_PAYLOAD_SDK)/bin/prospero-llvm-config),$(PS5_PAYLOAD_SDK)/bin/prospero-llvm-config,$(CURDIR)/build-tools/llvm-config)
 LLVM_BINDIR ?= $(shell "$(LLVM_CONFIG)" --bindir 2>/dev/null || dirname "$$(command -v clang 2>/dev/null || command -v clang.exe 2>/dev/null || command -v llvm-strip 2>/dev/null || command -v llvm-strip.exe 2>/dev/null || echo clang)" 2>/dev/null || echo .)
@@ -33,8 +33,10 @@ export LLVM_BINDIR
 export LLVM_CONFIG
 
 BFPILOT_BIN := bfpilot.elf
-LAUNCHER_INSTALLER_BIN := bfpilot-launcher-installer.elf
-ARCHIVE_WORKER_BIN := bfpilot-archive-worker.elf
+PKG_WORKER_BIN := build/internal/bfpilot-pkg-worker.elf
+PKG_WORKER_OBJ := build/internal/pkg_worker_main.o
+LEGACY_HELPER_BINS := bfpilot-launcher-installer.elf
+LEGACY_HELPER_BINS += bfpilot-archive-worker.elf bfpilot-pkg-installer.elf
 
 WEB_SRCS := src/lite_main.c
 WEB_SRCS += src/boot_marker.c
@@ -50,10 +52,10 @@ WEB_SRCS += src/text_format.c
 WEB_SRCS += src/payload_launch.c
 WEB_SRCS += src/tile_bootstrap.c
 WEB_SRCS += src/path_ops.c
-
-LAUNCHER_INSTALLER_SRCS := src/launcher_installer_force_main.c
-LAUNCHER_INSTALLER_SRCS += src/boot_marker.c
-LAUNCHER_INSTALLER_SRCS += src/notify.c
+WEB_SRCS += src/pkg_install.c
+WEB_SRCS += src/pkg_file.c
+WEB_SRCS += src/pkg_worker_client.c
+WEB_SRCS += src/appinst_direct.c
 
 ARCHIVE_WORKER_SRCS := src/archive_worker.cpp
 
@@ -122,9 +124,6 @@ GEN_SRCS := $(patsubst assets/%,gen/assets/%,$(ASSETS:=.c))
 APP_ASSETS := assets-app/param.json assets-app/icon0.png
 
 BFPILOT_OBJS := $(patsubst %.c,build/bfpilot/%.o,$(WEB_SRCS) $(GEN_SRCS))
-LAUNCHER_INSTALLER_OBJS := $(patsubst %.c,build/launcher-installer/%.o,$(LAUNCHER_INSTALLER_SRCS))
-ARCHIVE_WORKER_OBJS := $(patsubst %.cpp,build/archive-worker/%.o,$(ARCHIVE_WORKER_SRCS) $(ARCHIVE_UNRAR_SRCS) $(ARCHIVE_SEVENZ_CPP_SRCS))
-ARCHIVE_WORKER_OBJS += $(patsubst %.c,build/archive-worker/%.o,$(ARCHIVE_SEVENZ_C_SRCS))
 BFPILOT_ARCHIVE_OBJS := $(patsubst %.cpp,build/bfpilot-archive/%.o,$(ARCHIVE_WORKER_SRCS) $(ARCHIVE_UNRAR_SRCS) $(ARCHIVE_SEVENZ_CPP_SRCS))
 BFPILOT_ARCHIVE_OBJS += $(patsubst %.c,build/bfpilot-archive/%.o,$(ARCHIVE_SEVENZ_C_SRCS))
 
@@ -134,18 +133,17 @@ COMMON_CFLAGS += -DVERSION_TAG=\"$(VERSION_TAG)\"
 COMMON_CFLAGS += -DBUILD_VERSION=\"$(BUILD_VERSION)\"
 COMMON_CFLAGS += -DBFPILOT_SDK_PATH=\"$(PS5_PAYLOAD_SDK)\"
 
-# Integrated RAR/7z/ZIP extract (~1.2+ MiB of unrar+7z+miniz). Set 0 for lite ELF:
-#   mingw32-make bfpilot ENABLE_ARCHIVE=0
-ENABLE_ARCHIVE ?= 1
+# RAR/7z/ZIP extraction is always part of the all-in-one release.
+ENABLE_ARCHIVE := 1
 
 BFPILOT_CFLAGS := $(COMMON_CFLAGS)
 BFPILOT_CFLAGS += -DBFPILOT_PAYLOAD_NAME=\"bfpilot\"
 BFPILOT_CFLAGS += -DBFPILOT_BUILD_MODE=\"file-manager\"
 BFPILOT_CFLAGS += -DBFPILOT_WEB_PORT=$(WEB_PORT)
 BFPILOT_CFLAGS += -DBFPILOT_DEBUG_NOTIFICATIONS=0
-# AppInst stays in separate launcher-installer only (main ELF must not link it).
-BFPILOT_CFLAGS += -DBFPILOT_ENABLE_LAUNCHER=0
-BFPILOT_CFLAGS += -DBFPILOT_DISABLE_LAUNCHER=1
+BFPILOT_CFLAGS += -DBFPILOT_BOOT_NOTIFY=0
+# Tile registration and the embedded PKG worker are always in this one file.
+# Match established PS5 payloads by linking AppInst together with SceIpmi.
 BFPILOT_CFLAGS += -DBFPILOT_ENABLE_INTEGRATED_ARCHIVE=$(ENABLE_ARCHIVE)
 
 ifeq ($(ENABLE_ARCHIVE),1)
@@ -154,13 +152,7 @@ else
 BFPILOT_LINK_ARCHIVE_OBJS :=
 endif
 
-LAUNCHER_INSTALLER_CFLAGS := $(COMMON_CFLAGS)
-LAUNCHER_INSTALLER_CFLAGS += -DBFPILOT_PAYLOAD_NAME=\"bfpilot-launcher-installer\"
-LAUNCHER_INSTALLER_CFLAGS += -DBFPILOT_BUILD_MODE=\"launcher-installer-force\"
-
 COMMON_LDFLAGS := -Wl,--gc-sections
-PRIVILEGED_APPINST_LDLIBS := -lkernel_sys -lSceSystemService
-PRIVILEGED_APPINST_LDLIBS += -lSceUserService -lSceAppInstUtil
 ARCHIVE_WORKER_DEFINES := -D_FILE_OFFSET_BITS=64 -D_LARGEFILE_SOURCE -D_UNIX
 ARCHIVE_WORKER_DEFINES += -DPS5_PAYLOAD -DSILENT -DRAR_SMP -DNDEBUG
 ARCHIVE_SEVENZ_DEFINES := -D_FILE_OFFSET_BITS=64 -D_LARGEFILE_SOURCE -D_UNIX
@@ -179,40 +171,15 @@ ARCHIVE_WORKER_LDFLAGS := -pthread -lSceNotification
 CC_CMD := $(PYTHON) compile_wrapper.py "$(CC)"
 CXX_CMD := $(PYTHON) compile_wrapper.py "$(CXX)"
 STRIP_CMD := "$(STRIP)"
-LD_CMD := "$(LD)"
 DEPLOY_CMD := "$(PS5_DEPLOY)"
 
 ifeq ($(HOST_IS_WINDOWS),1)
 CURDIR_POSIX := $(shell pwd)
-PS5_PAYLOAD_SDK_POSIX := $(shell cygpath -u "$(PS5_PAYLOAD_SDK)" 2>/dev/null || printf '%s' "$(PS5_PAYLOAD_SDK)")
-LLVM_CONFIG_POSIX := $(shell cygpath -u "$(LLVM_CONFIG)" 2>/dev/null || printf '%s' "$(LLVM_CONFIG)")
-LLVM_BINDIR_POSIX := $(shell cygpath -u "$(LLVM_BINDIR)" 2>/dev/null || printf '%s' "$(LLVM_BINDIR)")
 PS5_PAYLOAD_SDK_SHELL := $(subst \,/,$(PS5_PAYLOAD_SDK))
 LLVM_CONFIG_SHELL := $(subst \,/,$(LLVM_CONFIG))
 LLVM_BINDIR_SHELL := $(subst \,/,$(LLVM_BINDIR))
 RUN_ENV := cd "$(CURDIR_POSIX)" && export LLVM_CONFIG="$(LLVM_CONFIG_SHELL)" && export LLVM_BINDIR="$(LLVM_BINDIR_SHELL)" && export PATH="$(LLVM_BINDIR_SHELL):$$PATH"
 STRIP_CMD := "$(LLVM_BINDIR_SHELL)/llvm-strip"
-LD_CMD := "$(PS5_PAYLOAD_SDK_SHELL)/win/prospero-lld.exe"
-WINDOWS_LINK_PREFIX := -m elf_x86_64_fbsd --sysroot="$(PS5_PAYLOAD_SDK_SHELL)"
-WINDOWS_LINK_PREFIX += -pie --eh-frame-hdr --hash-style=sysv --build-id=uuid
-WINDOWS_LINK_PREFIX += --unresolved-symbols=report-all -z now
-WINDOWS_LINK_PREFIX += -z start-stop-visibility=hidden -z rodynamic
-WINDOWS_LINK_PREFIX += -z common-page-size=0x4000 -z max-page-size=0x4000
-WINDOWS_LINK_PREFIX += -z dead-reloc-in-nonalloc=.debug_*=0xffffffffffffffff
-WINDOWS_LINK_PREFIX += -z dead-reloc-in-nonalloc=.debug_ranges=0xfffffffffffffffe
-WINDOWS_LINK_PREFIX += -z dead-reloc-in-nonalloc=.debug_loc=0xfffffffffffffffe
-WINDOWS_LINK_PREFIX += --default-script main.script --lto=full
-WINDOWS_LINK_PREFIX += -plugin-opt=-emit-jump-table-sizes-section --gc-sections
-WINDOWS_LINK_PREFIX += -L"$(PS5_PAYLOAD_SDK_SHELL)/target/lib"
-WINDOWS_LINK_PREFIX += -L"$(PS5_PAYLOAD_SDK_SHELL)/target/user/homebrew/lib" -L.
-WINDOWS_LINK_PREFIX += -l:crt1.o -l:crti.o -l:crtbegin.o -lc
-WINDOWS_WEB_SUFFIX := -lkernel_web -lSceLibcInternal -lSceNet
-WINDOWS_WEB_SUFFIX += -lc_stub_weak -lkernel_stub_weak
-WINDOWS_WEB_SUFFIX += -l:crtend.o -l:crtn.o
-WINDOWS_APPINST_SUFFIX := -lkernel_sys -lSceSystemService
-WINDOWS_APPINST_SUFFIX += -lSceUserService -lSceAppInstUtil
-WINDOWS_APPINST_SUFFIX += -lSceLibcInternal -lc_stub_weak -lkernel_stub_weak
-WINDOWS_APPINST_SUFFIX += -l:crtend.o -l:crtn.o
 WINDOWS_CXX_LD_CMD := "$(PS5_PAYLOAD_SDK_SHELL)/win/prospero-lld.exe"
 WINDOWS_CXX_LINK_PREFIX := -m elf_x86_64_fbsd --sysroot="$(PS5_PAYLOAD_SDK_SHELL)"
 WINDOWS_CXX_LINK_PREFIX += -pie --eh-frame-hdr --hash-style=sysv --build-id=uuid
@@ -228,10 +195,19 @@ WINDOWS_CXX_LINK_PREFIX += -L"$(PS5_PAYLOAD_SDK_SHELL)/target/lib"
 WINDOWS_CXX_LINK_PREFIX += -L"$(PS5_PAYLOAD_SDK_SHELL)/target/user/homebrew/lib" -L.
 WINDOWS_CXX_LINK_PREFIX += -l:crt1.o -l:crti.o -l:crtbegin.o
 WINDOWS_CXX_LINK_PREFIX += -lunwind -lc++abi -lc++ -lc
-# Main ELF = file manager only (no AppInst — loaders reject it in this payload).
-WINDOWS_CXX_LINK_SUFFIX := -lSceNotification -lkernel_web -lSceLibcInternal
+# AppInst uses SceIpmi internally; keep both direct dependencies in the main ELF.
+# They must follow the objects so LLD preserves the same dependency order as
+# the official compiler-driver build.
+WINDOWS_CXX_LINK_SUFFIX := -lSceIpmi -lSceAppInstUtil
+WINDOWS_CXX_LINK_SUFFIX += -lSceNotification -lkernel_web -lSceLibcInternal
 WINDOWS_CXX_LINK_SUFFIX += -lSceNet -lpthread -lc_stub_weak -lkernel_stub_weak
 WINDOWS_CXX_LINK_SUFFIX += -l:crtend.o -l:crtn.o
+WINDOWS_PKG_WORKER_LINK_SUFFIX := -lSceSystemService -lSceUserService
+WINDOWS_PKG_WORKER_LINK_SUFFIX += -lSceAppInstUtil -lSceNotification
+WINDOWS_PKG_WORKER_LINK_SUFFIX += -lkernel_sys -lSceNet -lpthread
+WINDOWS_PKG_WORKER_LINK_SUFFIX += -lSceLibcInternal -lkernel_web
+WINDOWS_PKG_WORKER_LINK_SUFFIX += -lc_stub_weak -lkernel_stub_weak
+WINDOWS_PKG_WORKER_LINK_SUFFIX += -l:crtend.o -l:crtn.o
 define run
 $(RUN_ENV) && $(1)
 endef
@@ -241,13 +217,9 @@ $(1)
 endef
 endif
 
-all: bfpilot launcher-installer archive-worker
+all: bfpilot
 
 bfpilot: $(BFPILOT_BIN)
-
-launcher-installer: $(LAUNCHER_INSTALLER_BIN)
-
-archive-worker: $(ARCHIVE_WORKER_BIN)
 
 gen/assets:
 	$(call run,mkdir -p $@)
@@ -259,68 +231,48 @@ build/bfpilot/%.o: %.c Makefile
 	$(call run,mkdir -p $(dir $@))
 	$(call run,$(CC_CMD) $(BFPILOT_CFLAGS) -c $< -o $@)
 
-build/launcher-installer/%.o: %.c Makefile
+# The worker is embedded as bytes in the public bfpilot.elf. It is never a
+# release artifact and exists in build/ only long enough to feed .incbin.
+$(PKG_WORKER_OBJ): src/pkg_worker_main.c Makefile
 	$(call run,mkdir -p $(dir $@))
-	$(call run,$(CC_CMD) $(LAUNCHER_INSTALLER_CFLAGS) -c $< -o $@)
+	$(call run,$(CC_CMD) -Os -Wall -Wextra -Werror -Isrc -c $< -o $@)
 
-build/archive-worker/%.o: %.cpp Makefile
-	$(call run,mkdir -p $(dir $@))
-	$(call run,$(CXX_CMD) $(ARCHIVE_WORKER_CXXFLAGS) $(ARCHIVE_WORKER_DEFINES) $(ARCHIVE_SEVENZ_DEFINES) $(ARCHIVE_WORKER_INCLUDES) -DUNRAR -c $< -o $@)
+ifeq ($(HOST_IS_WINDOWS),1)
+$(PKG_WORKER_BIN): $(PKG_WORKER_OBJ)
+	$(call run,$(WINDOWS_CXX_LD_CMD) -o $@ $(WINDOWS_CXX_LINK_PREFIX) $< $(WINDOWS_PKG_WORKER_LINK_SUFFIX))
+	$(call run,$(STRIP_CMD) --strip-all $@)
+else
+$(PKG_WORKER_BIN): $(PKG_WORKER_OBJ)
+	$(call run,$(CC_CMD) $(COMMON_LDFLAGS) -o $@ $< -lSceSystemService -lSceUserService -lSceAppInstUtil -lSceNotification -lkernel_sys -lpthread)
+	$(call run,$(STRIP_CMD) --strip-all $@)
+endif
 
-build/archive-worker/%.o: %.c Makefile
-	$(call run,mkdir -p $(dir $@))
-	$(call run,$(CC_CMD) $(ARCHIVE_WORKER_CFLAGS) $(ARCHIVE_WORKER_DEFINES) $(ARCHIVE_SEVENZ_DEFINES) $(ARCHIVE_WORKER_INCLUDES) -c $< -o $@)
+build/bfpilot/src/pkg_worker_client.o: $(PKG_WORKER_BIN)
 
 build/bfpilot-archive/%.o: %.cpp Makefile
 	$(call run,mkdir -p $(dir $@))
-	$(call run,$(CXX_CMD) $(ARCHIVE_WORKER_CXXFLAGS) $(ARCHIVE_WORKER_DEFINES) $(ARCHIVE_SEVENZ_DEFINES) $(ARCHIVE_WORKER_INCLUDES) -DUNRAR -DBFPILOT_ARCHIVE_NO_MAIN -DBFPILOT_ARCHIVE_INTEGRATED=1 -c $< -o $@)
+	$(call run,$(CXX_CMD) $(ARCHIVE_WORKER_CXXFLAGS) $(ARCHIVE_WORKER_DEFINES) $(ARCHIVE_SEVENZ_DEFINES) $(ARCHIVE_WORKER_INCLUDES) -DUNRAR -DBFPILOT_ARCHIVE_INTEGRATED=1 -c $< -o $@)
 
 build/bfpilot-archive/%.o: %.c Makefile
 	$(call run,mkdir -p $(dir $@))
 	$(call run,$(CC_CMD) $(ARCHIVE_WORKER_CFLAGS) $(ARCHIVE_WORKER_DEFINES) $(ARCHIVE_SEVENZ_DEFINES) $(ARCHIVE_WORKER_INCLUDES) -DBFPILOT_ARCHIVE_INTEGRATED=1 -c $< -o $@)
 
 ifeq ($(HOST_IS_WINDOWS),1)
-$(BFPILOT_BIN): $(BFPILOT_OBJS) $(if $(filter 1,$(ENABLE_ARCHIVE)),$(BFPILOT_ARCHIVE_OBJS))
+$(BFPILOT_BIN): $(BFPILOT_OBJS) $(if $(filter 1,$(ENABLE_ARCHIVE)),$(BFPILOT_ARCHIVE_OBJS)) $(APP_ASSETS)
 	$(file >build/bfpilot-link.rsp,$(BFPILOT_OBJS) $(BFPILOT_LINK_ARCHIVE_OBJS))
 	$(call run,$(WINDOWS_CXX_LD_CMD) -o $@ $(WINDOWS_CXX_LINK_PREFIX) @build/bfpilot-link.rsp $(WINDOWS_CXX_LINK_SUFFIX))
 	$(call run,$(STRIP_CMD) --strip-all $@)
-	$(call run,$(PYTHON) scripts/scrub_main_payload.py $@)
-
-$(LAUNCHER_INSTALLER_BIN): $(LAUNCHER_INSTALLER_OBJS) $(APP_ASSETS)
-	$(call run,$(LD_CMD) -o $@ $(WINDOWS_LINK_PREFIX) $(LAUNCHER_INSTALLER_OBJS) $(WINDOWS_APPINST_SUFFIX))
-	$(call run,$(STRIP_CMD) --strip-all $@)
-
-$(ARCHIVE_WORKER_BIN): $(ARCHIVE_WORKER_OBJS)
-	$(file >build/archive-worker-link.rsp,$(ARCHIVE_WORKER_OBJS))
-	$(call run,$(WINDOWS_CXX_LD_CMD) -o $@ $(WINDOWS_CXX_LINK_PREFIX) @build/archive-worker-link.rsp $(WINDOWS_CXX_LINK_SUFFIX))
-	$(call run,$(STRIP_CMD) --strip-all $@)
 else
-$(BFPILOT_BIN): $(BFPILOT_OBJS) $(if $(filter 1,$(ENABLE_ARCHIVE)),$(BFPILOT_ARCHIVE_OBJS))
-	$(call run,$(CXX_CMD) $(COMMON_LDFLAGS) -o $@ $(BFPILOT_OBJS) $(BFPILOT_LINK_ARCHIVE_OBJS) $(ARCHIVE_WORKER_LDFLAGS))
-	$(call run,$(STRIP_CMD) --strip-all $@)
-	$(call run,$(PYTHON) scripts/scrub_main_payload.py $@)
-
-$(LAUNCHER_INSTALLER_BIN): $(LAUNCHER_INSTALLER_OBJS) $(APP_ASSETS)
-	$(call run,$(CC_CMD) $(LAUNCHER_INSTALLER_CFLAGS) $(COMMON_LDFLAGS) -o $@ $(LAUNCHER_INSTALLER_OBJS) $(PRIVILEGED_APPINST_LDLIBS))
-	$(call run,$(STRIP_CMD) --strip-all $@)
-
-$(ARCHIVE_WORKER_BIN): $(ARCHIVE_WORKER_OBJS)
-	$(call run,$(CXX_CMD) -o $@ $(ARCHIVE_WORKER_OBJS) $(ARCHIVE_WORKER_LDFLAGS))
+$(BFPILOT_BIN): $(BFPILOT_OBJS) $(if $(filter 1,$(ENABLE_ARCHIVE)),$(BFPILOT_ARCHIVE_OBJS)) $(APP_ASSETS)
+	$(call run,$(CXX_CMD) $(COMMON_LDFLAGS) -Wl,--no-as-needed -lSceIpmi -o $@ $(BFPILOT_OBJS) $(BFPILOT_LINK_ARCHIVE_OBJS) -lSceAppInstUtil $(ARCHIVE_WORKER_LDFLAGS))
 	$(call run,$(STRIP_CMD) --strip-all $@)
 endif
 
-# Lite file-manager only (no integrated unrar/7z/miniz) — near historical ~200 KiB class.
-bfpilot-lite:
-	$(MAKE) bfpilot ENABLE_ARCHIVE=0 BUILD_VERSION=$(BUILD_VERSION)-lite
-
 inspect-imports: all
-	$(call run,bash scripts/inspect_imports.sh $(BFPILOT_BIN) $(LAUNCHER_INSTALLER_BIN) $(ARCHIVE_WORKER_BIN))
+	$(call run,bash scripts/inspect_imports.sh $(BFPILOT_BIN))
 
 deploy-bfpilot: bfpilot
 	$(call run,$(DEPLOY_CMD) -h $(PS5_HOST) -p $(PS5_PORT) $(BFPILOT_BIN))
-
-deploy-launcher-installer: launcher-installer
-	$(call run,$(DEPLOY_CMD) -h $(PS5_HOST) -p $(PS5_PORT) $(LAUNCHER_INSTALLER_BIN))
 
 ps5-diag:
 	$(call run,$(PYTHON) scripts/ps5_diag.py)
@@ -338,7 +290,7 @@ ps5-transfer-perf:
 	$(call run,$(PYTHON) scripts/ps5_transfer_perf.py)
 
 clean:
-	$(call run,rm -rf $(BFPILOT_BIN) $(LAUNCHER_INSTALLER_BIN) $(ARCHIVE_WORKER_BIN) build gen)
+	$(call run,rm -rf $(BFPILOT_BIN) $(LEGACY_HELPER_BINS) build gen)
 
 .SECONDARY: $(GEN_SRCS)
-.PHONY: all bfpilot bfpilot-lite launcher-installer archive-worker inspect-imports clean deploy-bfpilot deploy-launcher-installer ps5-diag ps5-smoke ps5-storage-audit ps5-archive-perf ps5-transfer-perf
+.PHONY: all bfpilot inspect-imports clean deploy-bfpilot ps5-diag ps5-smoke ps5-storage-audit ps5-archive-perf ps5-transfer-perf

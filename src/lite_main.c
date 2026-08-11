@@ -1,8 +1,8 @@
 /*
  * BFpilot - minimal PS5 browser file manager payload.
  *
- * Runtime surface is intentionally small: one HTTP file-manager server,
- * startup notification, and no companion side services.
+ * Runtime surface is intentionally small: one HTTP file-manager server and
+ * an on-demand private AppInst worker embedded in the same distributed ELF.
  */
 
 #include <errno.h>
@@ -22,6 +22,9 @@
 #include <net/if.h>
 #include <netinet/in.h>
 
+#include <ps5/payload.h>
+
+#include "appinst_direct.h"
 #include "boot_marker.h"
 #include "diag.h"
 #include "notify.h"
@@ -201,6 +204,12 @@ json_long_field(const char *json, const char *field) {
 static int
 old_server_busy(unsigned short port) {
   char response[2048];
+  if(local_http_get(port, "/api/status", response, sizeof(response)) == 0 &&
+     (strstr(response, "\"tileBusy\":true") != NULL ||
+      strstr(response, "\"pkgBusy\":true") != NULL ||
+      strstr(response, "\"fileJobBusy\":true") != NULL)) {
+    return 1;
+  }
   if(local_http_get(port, "/api/fs/job/status", response,
                     sizeof(response)) != 0) {
     return 0;
@@ -210,9 +219,13 @@ old_server_busy(unsigned short port) {
                     sizeof(response)) != 0) {
     return 0;
   }
-  return strstr(response, "\"state\":\"running\"") != NULL ||
-         strstr(response, "\"state\":\"finalizing\"") != NULL ||
-         strstr(response, "\"state\":\"starting\"") != NULL;
+  if(strstr(response, "\"state\":\"running\"") != NULL ||
+     strstr(response, "\"state\":\"finalizing\"") != NULL ||
+     strstr(response, "\"state\":\"starting\"") != NULL) return 1;
+  if(local_http_get(port, "/api/fs/pkg/status", response,
+                    sizeof(response)) == 0 &&
+     strstr(response, "\"busy\":true") != NULL) return 1;
+  return 0;
 }
 
 
@@ -298,7 +311,7 @@ on_web_ready(unsigned short port, void *arg) {
     state->notified = 1;
   }
 
-  /* Home Media tile via separate installer ELF + elfldr — AppInst stays out of main. */
+  /* Run direct AppInst work only after the file manager is already ready. */
   bfpilot_tile_bootstrap_try();
 
   debug_notify("BFpilot debug", "web server ready");
@@ -319,10 +332,7 @@ main(int argc, char **argv) {
   for(int i = 0; i < argc; i++) {
     bfpilot_log("argv[%d]=%s", i, argv && argv[i] ? argv[i] : "(null)");
   }
-  bfpilot_log("PS5 SDK build flags sdk_path=%s enable_launcher=%d "
-              "disable_launcher=%d",
-              BFPILOT_SDK_PATH, BFPILOT_ENABLE_LAUNCHER,
-              BFPILOT_DISABLE_LAUNCHER);
+  bfpilot_log("PS5 SDK build path=%s", BFPILOT_SDK_PATH);
   bfpilot_log("diagnostic paths log=%s crash=%s data_dir=%s",
               BFPILOT_LOG_PATH, BFPILOT_CRASH_LOG_PATH, BFPILOT_DATA_DIR);
 
@@ -331,24 +341,25 @@ main(int argc, char **argv) {
   detect_lan_ip(ready.ip, sizeof(ready.ip));
   ready.port = runtime_port_requested(argc, argv);
   websrv_set_runtime_port(ready.port);
-  websrv_set_runtime_diag(1);
   bfpilot_log("runtime web_port=%u", (unsigned int)ready.port);
-  bfpilot_log("runtime launcher=separate_payload");
+  bfpilot_log("runtime architecture=single_distribution_elf "
+              "appinst=direct_tile+embedded_pkg_worker archive=integrated");
 
   puts(".----------------------------------------------.");
   puts("|  BFpilot                                     |");
   printf("|  %-18s  browser file manager        |\n", VERSION_TAG);
   puts("'----------------------------------------------'");
   puts("");
-  puts("  active: standalone web file manager");
+  puts("  active: all-in-one web file manager");
   printf("  mode: %s\n", BFPILOT_BUILD_MODE);
   puts("  scope: browse, upload, download, copy, move, delete, rename, mkdir");
 #if BFPILOT_ENABLE_INTEGRATED_ARCHIVE
   puts("  archive: integrated extractor enabled; no worker injection required");
 #else
-  puts("  archive: prepare jobs only; inject bfpilot-archive-worker.elf to extract");
+  puts("  archive: disabled in this custom lite build");
 #endif
-  puts("  ps5 app: Media tile via separate bfpilot-launcher-installer.elf");
+  puts("  ps5 app: integrated Media tile installer");
+  puts("  packages: integrated local PKG submission");
   puts("  payloads: double-click .elf/.bin to load via elfldr :9021");
   printf("  data dir: %s (only)\n", BFPILOT_DATA_DIR);
   printf("  web ui: http://%s:%u/\n", ready.ip, (unsigned int)ready.port);
@@ -368,10 +379,10 @@ main(int argc, char **argv) {
 #endif
 
   bfpilot_diag_set_service_rcs(BFPILOT_DIAG_SKIPPED, BFPILOT_DIAG_SKIPPED);
-  bfpilot_diag_set_launcher_status("separate_payload", BFPILOT_DIAG_SKIPPED);
+  bfpilot_diag_set_launcher_status("starting", BFPILOT_DIAG_SKIPPED);
   bfpilot_log("sceNetCtlInit rc=skipped");
   bfpilot_log("sceUserServiceInitialize rc=skipped");
-  bfpilot_log("launcher skipped: separate payload (inject installer for Media tile)");
+  bfpilot_log("direct AppInst tile check will start after the HTTP listener is ready");
 
   bfpilot_checkpoint("handoff check");
   debug_notify("BFpilot debug", "handoff check");
@@ -380,6 +391,7 @@ main(int argc, char **argv) {
   if(handoff_status < 0) {
     bfpilot_checkpoint("handoff blocked");
     puts("  reload: old listener still active; exiting this injection");
+    payload_exit(0);
     return 0;
   }
 
@@ -410,8 +422,9 @@ main(int argc, char **argv) {
 #if BFPILOT_ENABLE_INTEGRATED_ARCHIVE
   bfpilot_archive_stop_daemon();
 #endif
+  int pkg_worker_stop_rc = bfpilot_pkg_worker_stop();
+  bfpilot_log("pkg worker stop rc=%d", pkg_worker_stop_rc);
   bfpilot_search_shutdown();
-
-  _exit(0);
+  payload_exit(0);
   return 0;
 }

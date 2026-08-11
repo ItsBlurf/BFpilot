@@ -27,9 +27,33 @@ test_parse_mode(void) {
 static void
 test_safe(void) {
   assert(bfpilot_path_is_safe("/data/foo") == 1);
+  assert(bfpilot_path_is_safe("/") == 1);
+  assert(bfpilot_path_is_safe("/data/file..backup") == 1);
+  assert(bfpilot_path_is_safe("/data/.../file") == 1);
   assert(bfpilot_path_is_safe("data/foo") == 0);
   assert(bfpilot_path_is_safe("/data/../etc") == 0);
+  assert(bfpilot_path_is_safe("/data/foo/..") == 0);
+  assert(bfpilot_path_is_safe("/../data") == 0);
+  assert(bfpilot_path_is_safe("/data/bad\nname") == 0);
   puts("PASS path_is_safe");
+}
+
+static void
+test_byte_tokens(void) {
+  char path[] = "/data/\xe6\x97\xa5-\xf3\xb0\x82\x80.bin";
+  static const unsigned char expected[] = {
+    '/', 'd', 'a', 't', 'a', '/', 0xe6, 0x97, 0xa5, '-', 0x80,
+    '.', 'b', 'i', 'n', 0
+  };
+  assert(bfpilot_path_decode_byte_tokens(path) == 1);
+  assert(memcmp(path, expected, sizeof(expected)) == 0);
+
+  char unicode[] = "/data/\xc3\xa9.txt";
+  char original[sizeof(unicode)];
+  memcpy(original, unicode, sizeof(unicode));
+  assert(bfpilot_path_decode_byte_tokens(unicode) == 0);
+  assert(memcmp(unicode, original, sizeof(unicode)) == 0);
+  puts("PASS reversible filesystem byte tokens");
 }
 
 #if defined(_WIN32)
@@ -119,6 +143,7 @@ int
 main(void) {
   test_parse_mode();
   test_safe();
+  test_byte_tokens();
   test_chmod_and_stat();
   test_resolve_ci();
   puts("ALL path_ops host tests passed");

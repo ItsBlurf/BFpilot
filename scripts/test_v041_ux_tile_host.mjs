@@ -1,5 +1,5 @@
 /**
- * Structural checks for v0.4.1: UX, single data dir, separate Media installer.
+ * Structural checks for BFpilot UX, one data dir, and the all-in-one payload.
  */
 import assert from 'assert'
 import fs from 'fs'
@@ -15,7 +15,9 @@ const liteMain = read('src/lite_main.c')
 const param = read('assets-app/param.json')
 const makefile = read('Makefile')
 const tileBoot = read('src/tile_bootstrap.c')
-const launcher = read('src/launcher_installer_force_main.c')
+const appinst = read('src/appinst_direct.c')
+const pkgWorker = read('src/pkg_worker_main.c')
+const pkgClient = read('src/pkg_worker_client.c')
 const transfer = read('src/transfer.c')
 const pathOps = read('src/path_ops.c')
 const versionH = read('src/version.h')
@@ -47,28 +49,72 @@ for (const f of srcFiles) {
          `no installer dir root in ${path.relative(root, f)}`)
 }
 
-// --- Separate launcher model (main must NOT embed AppInst install) ---
-assert(!fs.existsSync(path.join(root, 'src/app_installer.c')), 'no app_installer.c in main tree')
-assert(!makefile.includes('app_installer.c'), 'app_installer not in Makefile WEB_SRCS')
-assert(makefile.includes('BFPILOT_ENABLE_LAUNCHER=0') || makefile.includes('ENABLE_LAUNCHER=0'),
-       'launcher disabled in main flags')
-assert(makefile.includes('scrub_main_payload.py'), 'scrub main payload for AppInst fingerprints')
-assert(liteMain.includes('bfpilot_tile_bootstrap_try'), 'tile bootstrap for separate installer')
-assert(liteMain.includes('separate_payload') || liteMain.includes('separate'),
-       'runtime separate_payload messaging')
-assert(!liteMain.includes('bfpilot_install_app_if_needed'), 'main must not call embedded install')
+// --- One distributed payload: direct tile path plus private embedded worker ---
+for (const source of ['src/appinst_direct.c', 'src/pkg_file.c',
+                      'src/pkg_install.c', 'src/pkg_worker_client.c']) {
+  assert(makefile.includes(source), `${source} is linked into bfpilot.elf`)
+}
+assert(!makefile.includes('BFPILOT_ENABLE_LAUNCHER') &&
+       !makefile.includes('BFPILOT_DISABLE_LAUNCHER'),
+       'obsolete optional-launcher build modes are gone')
+assert(!makefile.includes('scrub_main_payload.py'), 'runtime AppInst strings are not corrupted')
+assert(!makefile.includes('launcher-installer:'), 'no launcher helper target')
+assert(!makefile.includes('pkg-installer:'), 'no PKG helper target')
+assert(liteMain.includes('bfpilot_tile_bootstrap_try'), 'integrated tile bootstrap')
+assert(liteMain.includes('single_distribution_elf'), 'runtime all-in-one diagnostic')
+assert(makefile.includes('PKG_WORKER_BIN := build/internal/') &&
+       pkgClient.includes('INCASSET(bfpilot_pkg_worker_elf') &&
+       pkgClient.includes('bfpilot_launch_payload_memory'),
+       'private worker is embedded in the one distributed ELF')
+assert(makefile.includes('-lSceIpmi -lSceAppInstUtil'),
+       'main ELF directly links AppInst with its IPMI dependency')
+assert(!appinst.includes('dlclose(') && !appinst.includes('AppInstUtilTerminate'),
+       'tile AppInst state is not torn down under a running file manager')
+assert(appinst.includes('sceAppInstUtilInitialize()') &&
+       pkgWorker.includes('sceAppInstUtilInstallByPackage('),
+       'tile and full-content PKG AppInst calls are built into one payload')
+assert(appinst.includes('sysctlbyname("kern.version"') &&
+       appinst.includes('PS5_SHELLCORE_AUTHID') &&
+       appinst.includes('PS5_SYSTEM_INSTALL_AUTHID'),
+       'AppInst selects the identity from a safe firmware query')
+assert(appinst.includes('authid_acquire_locked') &&
+       appinst.includes('authid_release_locked') &&
+       appinst.includes('for(int attempt = 0; attempt < 3; attempt++)'),
+       'AppInst limits auth-ID changes to a verified, retry-restored window')
 
-// --- Media tile lives in separate installer ---
+// --- The embedded Media tile and PKG installer use the same runtime ---
 const paramObj = JSON.parse(param)
 assert.strictEqual(paramObj.applicationCategoryType, 65536, 'Media category 65536')
 assert.strictEqual(paramObj.titleId, 'BFPL00001')
 assert.ok(String(paramObj.deeplinkUri).includes('5905'))
-assert(launcher.includes('BFPILOT_APP_TITLE_ID') || launcher.includes('BFPL00001') ||
-       launcher.includes('bfpilot_param_json'), 'installer embeds app assets')
-assert(launcher.includes('sceAppInstUtilInitialize') || launcher.includes('AppInst'),
-       'installer uses AppInst')
-assert(tileBoot.includes('BFPILOT_INSTALLER_ELF_PATH') ||
-       tileBoot.includes('/data/BFpilot/bfpilot-launcher-installer.elf'))
+assert(appinst.includes('bfpilot_param_json') && appinst.includes('bfpilot_icon0_png'),
+       'main ELF embeds app assets')
+assert(appinst.includes('.bfpilot-registered') &&
+       appinst.includes('g_tile_registration_marker'),
+       'tile skip requires a marker written only after successful registration')
+assert(pkgWorker.includes('sceAppInstUtilInstallByPackage'), 'integrated PKG install')
+assert(pkgWorker.includes('"/user%s"') &&
+       !pkgWorker.includes('"file:///user%s"'),
+       'local PKGs use absolute AppInst paths and map /data to /user/data')
+assert(!pkgWorker.includes('sceAppInstUtilAppInstallPkg') &&
+       pkgWorker.includes('.uri = install_path') &&
+       pkgWorker.includes('fresh elfldr'),
+       'local PKGs use a fresh full-content worker without hollow-tile fallback')
+assert(pkgWorker.includes('languages[30][8]') &&
+       pkgWorker.includes('sizeof(appinst_playgo_info_t) == 9984'),
+       'correct AppInst PlayGo ABI')
+assert(pkgWorker.includes('htonl(INADDR_LOOPBACK)') &&
+       pkgWorker.includes('PS5_SYSTEM_INSTALL_AUTHID') &&
+       pkgWorker.includes('major >= 10'),
+       'private worker is loopback-only and uses the FW10+ SYSTEM gate')
+assert(pkgWorker.includes('INIT_TIMEOUT_SENTINEL') &&
+       pkgWorker.includes('start_appinst_initialize') &&
+       pkgClient.includes('bfpilot_pkg_worker_stop') &&
+       liteMain.includes('bfpilot_pkg_worker_stop'),
+       'AppInst init is bounded and clean shutdown retires the private worker')
+assert(tileBoot.includes('bfpilot_appinst_install_tile'), 'tile uses direct AppInst')
+assert(html.includes("lower.endsWith('.shn')") && transfer.includes('".shn"'),
+       'upstream .shn text support exists in both UI and server validation')
 
 // --- Prior issue surface (#7-12, #10) ---
 assert(html.includes("row.addEventListener('dblclick'") &&
@@ -78,7 +124,7 @@ assert(html.includes("endsWith('.7z')"), '#9')
 assert(transfer.includes('chmod_request') || transfer.includes('/api/fs/chmod'), '#10')
 assert(html.includes('chmodSelected') || html.includes('id="chmod"'), '#10 ui')
 assert(html.includes('row-checkbox') && html.includes('select-all-checkbox'), '#11')
-assert(versionH.includes('v0.4.3') && makefile.includes('v0.4.3'),
+assert(versionH.includes('v0.4.4-alpha.1') && makefile.includes('v0.4.4-alpha.1'),
        'current release version')
 
-console.log('v0.4.3 separate-launcher + UX host checks passed')
+console.log('v0.4.4-alpha.1 all-in-one + UX host checks passed')

@@ -31,4 +31,17 @@ int transfer_archive_prepare_request(const http_request_t *req,
                                      size_t initial_size,
                                      size_t content_size);
 
+int transfer_download_prepare_request(const http_request_t *req,
+                                      const char *initial_data,
+                                      size_t initial_size,
+                                      size_t content_size);
+
+int transfer_pkg_install_request(const http_request_t *req,
+                                 const char *initial_data,
+                                 size_t initial_size,
+                                 size_t content_size);
+
 int transfer_archive_busy(void);
+
+/* True while a copy/move/delete/download/archive job must not be interrupted. */
+int transfer_job_busy(void);

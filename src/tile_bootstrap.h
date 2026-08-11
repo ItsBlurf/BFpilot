@@ -1,10 +1,8 @@
-/*
- * After the web UI is up, optionally inject the separate launcher installer
- * so the home-screen tile gets installed/refreshed without linking AppInst
- * into bfpilot.elf.
- */
+/* Integrated BFpilot Media-tile bootstrap. */
 
 #pragma once
 
-/* Non-blocking best-effort. Safe to call once per process start. */
+/* Starts the one-shot installer thread without blocking the web listener. */
 void bfpilot_tile_bootstrap_try(void);
+
+int bfpilot_tile_bootstrap_busy(void);

@@ -8,17 +8,15 @@ http://<PS5_IP>:5905/
 
 Works from the PS5 browser or any PC/phone on the same network.
 
-Version **v0.4.3**. The v0.4.1 baseline was tested on FW **11.60**.
+Current development version **v0.4.4-alpha.1**. The v0.4.1 baseline was tested on FW **11.60**.
 
 ## Payloads
 
 | File | What it is |
 |------|------------|
-| `bfpilot.elf` | File manager + archive extract (port **5905**). Inject this for the UI. **No AppInst** in this ELF. |
-| `bfpilot-launcher-installer.elf` | Home menu **Media** tile (`BFPL00001` → `http://127.0.0.1:5905/`). Inject once, or put the **file** under `/data/BFpilot/` so the main ELF auto-starts it after the UI is up. |
-| `bfpilot-archive-worker.elf` | Build-only diagnostic. You don't need this for normal use. |
+| `bfpilot.elf` | All-in-one file manager, archive extractor, PKG installer, and **Media** tile installer on port **5905**. |
 
-**Typical use:** inject `bfpilot.elf`, then inject `bfpilot-launcher-installer.elf` once for the Media shelf tile (or keep a copy at `/data/BFpilot/bfpilot-launcher-installer.elf`).
+**Typical use:** inject `bfpilot.elf`. It starts the UI first, then installs or refreshes the `BFPL00001` Media tile when needed. There is no second installer ELF.
 
 **Data layout:** everything lives under **`/data/BFpilot`** only (logs, search index, shortcuts, archive jobs).
 
@@ -36,6 +34,8 @@ Version **v0.4.3**. The v0.4.1 baseline was tested on FW **11.60**.
 - Same-device, no-symlink recursive traversal with a 64-level depth cap and immediate abort on fatal storage/vnode errors
 - ShadowMountPlus warning before writes to its common scan roots
 - Single-click selects; double-click opens folders; the Open button works with controllers
+- Circle/browser Back returns through folder history; active operations block accidental navigation, and returning to a parent reveals the folder just left
+- The last successful folder and sort mode survive a browser reload; long paths keep their rightmost component visible
 - Folder size is calculated when a folder is selected
 
 **Selection**
@@ -57,7 +57,7 @@ Version **v0.4.3**. The v0.4.1 baseline was tested on FW **11.60**.
 
 **Viewers**
 - Images: png/jpg/gif/bmp/webp/ico/svg — pan, zoom, rotate
-- Create/edit common source, config, markup, script, and CSV text files, max 5 MB; UTF-8 validation, change-conflict detection, atomic save, and preservation of an existing UTF-8 BOM/newline style
+- Create/edit common source, config, markup, script, CSV, and `.shn` text files, max 5 MB; UTF-8 validation, change-conflict detection, atomic save, and preservation of an existing UTF-8 BOM/newline style
 - Logs button: BFpilot logs, archive/search/boot logs, VSH log, error history
 
 **Other**
@@ -84,8 +84,6 @@ Grab the latest release: https://github.com/ItsBlurf/BFpilot/releases
 
 ```sh
 python3 payload_sender.py <PS5_IP> 9021 bfpilot.elf
-# optional tile:
-python3 payload_sender.py <PS5_IP> 9021 bfpilot-launcher-installer.elf
 ```
 
 Or send the ELFs with [ps5-payload-manager](https://github.com/itsPLK/ps5-payload-manager) / [Blurfer](https://github.com/ItsBlurf/Blurfer).
@@ -106,11 +104,10 @@ make inspect-imports
 
 Windows: `build.cmd` if your toolchain is already set up.
 
-Outputs: `bfpilot.elf`, `bfpilot-launcher-installer.elf`, `bfpilot-archive-worker.elf`
+Output: `bfpilot.elf`
 
-Slim build without archives: `make bfpilot-lite`
-
-`inspect-imports` makes sure the main ELF stays free of AppInstUtil/launcher imports.
+`inspect-imports` verifies the one-ELF PS5 ABI, requires both AppInstUtil and its
+IPMI dependency, and rejects obsolete helper artifacts.
 
 ## Logs on the PS5
 
@@ -123,7 +120,6 @@ Slim build without archives: `make bfpilot-lite`
 /data/BFpilot/shortcuts.txt
 /data/BFpilot/archive-integrated/archive-worker.log
 /data/BFpilot/archive-integrated/status.json
-/data/BFpilot/launcher-installer.log
 ```
 
 ## Dev tests (optional)
@@ -137,7 +133,12 @@ BF_ALLOW_PS5_WRITE=1 PS5_IP=<PS5_IP> make ps5-transfer-perf
 
 ## Compatibility
 
-Main ELF is launcher-free on purpose — no AppInstUtil / UserService / SystemService / `kernel_sys` installer imports that break before `main()` on some FW + loaders. Tile installer is a separate ELF so a bad install path doesn't take down the file manager.
+BFpilot follows the established one-payload installer pattern: AppInstUtil and
+SceIpmi are linked for the direct Media-tile path. Full-content PKG installation
+uses a fresh loopback-only worker embedded inside the same `bfpilot.elf`; there
+is still no second file to install or inject. The HTTP listener is brought up
+before tile work, AppInst initialization is bounded, and clean reinjection stops
+the private worker before handing over port 5905.
 
 See [docs/COMPATIBILITY_STRATEGY.md](docs/COMPATIBILITY_STRATEGY.md). Archives: [docs/ARCHIVE_EXTRACTION.md](docs/ARCHIVE_EXTRACTION.md). Changelog: [CHANGELOG.md](CHANGELOG.md).
 
