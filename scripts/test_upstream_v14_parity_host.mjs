@@ -32,6 +32,13 @@ assert(html.includes("api('/api/fs/job/status')") &&
   html.includes("api('/api/fs/pkg/status')") &&
   html.includes('refreshSearchStatus(true)'),
   'browser reopen recovers every active task surface')
+assert(html.includes("fetch('/api/fs/job/cancel')") &&
+  html.includes("toast('Cancelling archive...')") &&
+  !html.includes('Archive extraction cannot be cancelled yet'),
+  'active archive extraction can be cancelled from the browser')
+assert(worker.includes('atomic_store_explicit(&g_init_done') &&
+  worker.includes('atomic_load_explicit(&g_init_done'),
+  'AppInst initialization state is synchronized across worker threads')
 assert(transfer.includes('apply_fchmod_0777') && transfer.includes('bfpilot_path_chmod'),
   'created/copied files and explicit chmod are supported')
 assert(html.includes('@media') && html.includes('virtual-scroller'),

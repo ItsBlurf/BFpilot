@@ -5,10 +5,15 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#define BFPILOT_PKG_FORMAT_UNKNOWN 0U
+#define BFPILOT_PKG_FORMAT_CNT 1U
+#define BFPILOT_PKG_FORMAT_FIH 2U
+
 typedef struct bfpilot_pkg_file_info {
   uint64_t size;
   uint32_t content_type;
   uint32_t content_flags;
+  uint32_t format;
   char content_id[49];
   char title_id[16];
 } bfpilot_pkg_file_info_t;
@@ -22,8 +27,9 @@ int bfpilot_pkg_header_validate(const unsigned char *header,
 int bfpilot_pkg_file_is_system(const bfpilot_pkg_file_info_t *info);
 
 /*
- * Validates the container header, declared package size, regular-file
- * identity and printable content ID. Returns 0 or -errno.
+ * Validates a known CNT or FIH package header and regular-file identity.
+ * CNT additionally validates its declared size and printable content ID;
+ * FIH metadata is opaque and is returned by Sony after submission.
  */
 int bfpilot_pkg_file_validate(const char *path,
                               bfpilot_pkg_file_info_t *info,

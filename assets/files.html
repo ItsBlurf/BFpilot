@@ -1859,7 +1859,7 @@
           fill.style.width = pct.toFixed(1) + '%';
           verb.textContent = 'extract';
           text.textContent = archiveProgressText(job);
-          cancel.disabled = true;
+          cancel.disabled = !['prepared', 'running', 'finalizing'].includes(job.state);
 
           if (job.state === 'idle') {
             clearInterval(state.archiveTimer);
@@ -3605,9 +3605,18 @@
           if (target) openPath(target);
         }
       });
-      el('job-cancel').addEventListener('click', () => {
+      el('job-cancel').addEventListener('click', async () => {
         if (state.archiveTimer) {
-          toast('Archive extraction cannot be cancelled yet', 'err');
+          const cancel = el('job-cancel');
+          cancel.disabled = true;
+          try {
+            const response = await fetch('/api/fs/job/cancel');
+            if (!response.ok) throw new Error('HTTP ' + response.status);
+            toast('Cancelling archive...');
+          } catch (err) {
+            cancel.disabled = false;
+            toast('cancel: ' + err.message, 'err');
+          }
           return;
         }
         if (state.uploadBusy) {

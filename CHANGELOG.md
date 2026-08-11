@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.4.4 Alpha 2 (2026-08-11)
+
+* Added PS5-native `7F FIH` PKG support while retaining strict `7F CNT` validation
+* Corrected the FW 11+ AppInst identity boundary and bounded direct tile initialization
+* Added archive cancellation with cleanup and tuned RAR/7z automatic threading to four
+* Hardened reinjection, diagnostics, and server worker synchronization
+* Made clean Windows builds byte-for-byte reproducible
+* Verified on FW 11.60 with the Internet Browser PKG, ZIP/RAR/7z extraction, and sustained 512 MiB transfers
+
 ## v0.4.4 Alpha 1 (2026-08-11)
 
 * Replaced separate release helpers with one all-in-one `bfpilot.elf`

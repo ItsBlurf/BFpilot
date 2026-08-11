@@ -6,6 +6,7 @@
 #include <errno.h>
 #include <pthread.h>
 #include <signal.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -18,6 +19,7 @@
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 
 #include "asset.h"
 #include "appinst_direct.h"
@@ -56,7 +58,7 @@ static __thread int g_tls_keep_alive = 0;
 
 static int             g_websrv_srvfd = -1;
 static pthread_mutex_t g_websrv_lock = PTHREAD_MUTEX_INITIALIZER;
-static volatile sig_atomic_t g_websrv_exit_requested = 0;
+static atomic_int g_websrv_exit_requested;
 static unsigned short  g_websrv_port = BFPILOT_WEB_PORT;
 static pthread_mutex_t g_launcher_lock = PTHREAD_MUTEX_INITIALIZER;
 static bfpilot_launcher_diag_t g_launcher_diag = {
@@ -236,7 +238,7 @@ websrv_send_text(int fd, int status, const char *mime, const char *body) {
 void
 websrv_request_exit(void) {
   pthread_mutex_lock(&g_websrv_lock);
-  g_websrv_exit_requested = 1;
+  atomic_store(&g_websrv_exit_requested, 1);
   int srvfd = g_websrv_srvfd;
   g_websrv_srvfd = -1;
   unsigned short port = g_websrv_port;
@@ -266,7 +268,7 @@ websrv_request_exit(void) {
 
 int
 websrv_exit_requested(void) {
-  return g_websrv_exit_requested ? 1 : 0;
+  return atomic_load(&g_websrv_exit_requested) ? 1 : 0;
 }
 
 
@@ -522,6 +524,8 @@ static int
 diag_request(const http_request_t *req) {
   char body[6144];
   char cwd[256];
+  char launcher_status[64];
+  char checkpoint[128];
   char cwd_json[512];
   char launcher_status_json[128];
   char launcher_final_json[64];
@@ -543,14 +547,16 @@ diag_request(const http_request_t *req) {
   pthread_mutex_unlock(&g_launcher_lock);
 
   bfpilot_diag_get_cwd(cwd, sizeof(cwd));
+  bfpilot_diag_get_launcher_status(launcher_status,
+                                   sizeof(launcher_status));
+  bfpilot_diag_get_checkpoint(checkpoint, sizeof(checkpoint));
   int last_errno = bfpilot_diag_last_errno();
   json_error_escape(cwd_json, sizeof(cwd_json), cwd);
   json_error_escape(launcher_status_json, sizeof(launcher_status_json),
-                    bfpilot_diag_launcher_status());
+                    launcher_status);
   json_error_escape(launcher_final_json, sizeof(launcher_final_json),
                     launcher_diag.launcher_final_state);
-  json_error_escape(checkpoint_json, sizeof(checkpoint_json),
-                    bfpilot_diag_checkpoint());
+  json_error_escape(checkpoint_json, sizeof(checkpoint_json), checkpoint);
 
   int n = snprintf(body, sizeof(body),
                    "{\"ok\":true,"
@@ -830,7 +836,8 @@ client_thread(void *arg) {
    * session (saves handshake + slow-start per file). Cap request count so
    * a sticky client cannot pin a worker forever.
    */
-  while(!g_websrv_exit_requested && req_count < BFPILOT_HTTP_KEEPALIVE_MAX) {
+  while(!atomic_load(&g_websrv_exit_requested) &&
+        req_count < BFPILOT_HTTP_KEEPALIVE_MAX) {
     int header_end = -1;
 
     while(used < HEADER_MAX) {
@@ -1031,12 +1038,12 @@ websrv_listen(unsigned short port, websrv_ready_cb_t ready_cb,
 
   if(ready_cb) ready_cb(port, ready_arg);
 
-  while(!g_websrv_exit_requested) {
+  while(!atomic_load(&g_websrv_exit_requested)) {
     struct sockaddr_in client_addr;
     socklen_t client_len = sizeof(client_addr);
     int connfd = accept(srvfd, (struct sockaddr *)&client_addr, &client_len);
     if(connfd < 0) {
-      if(g_websrv_exit_requested) {
+      if(atomic_load(&g_websrv_exit_requested)) {
         return -ECANCELED;
       }
       if(errno == EINTR || errno == ECONNABORTED || errno == ECONNRESET) {
@@ -1070,8 +1077,13 @@ websrv_listen(unsigned short port, websrv_ready_cb_t ready_cb,
       static int logged_effective_buffers = 0;
       int rcvbuf = BFPILOT_LISTEN_RCVBUF;
       int sndbuf = BFPILOT_CONN_SNDBUF;
+      struct timeval io_timeout = {.tv_sec = 120, .tv_usec = 0};
       (void)setsockopt(connfd, SOL_SOCKET, SO_RCVBUF, &rcvbuf, sizeof(rcvbuf));
       (void)setsockopt(connfd, SOL_SOCKET, SO_SNDBUF, &sndbuf, sizeof(sndbuf));
+      (void)setsockopt(connfd, SOL_SOCKET, SO_RCVTIMEO, &io_timeout,
+                       sizeof(io_timeout));
+      (void)setsockopt(connfd, SOL_SOCKET, SO_SNDTIMEO, &io_timeout,
+                       sizeof(io_timeout));
       if(!logged_effective_buffers) {
         int actual_rcv = 0, actual_snd = 0;
         socklen_t rlen = sizeof(actual_rcv), slen = sizeof(actual_snd);
@@ -1100,6 +1112,7 @@ websrv_listen(unsigned short port, websrv_ready_cb_t ready_cb,
     pthread_attr_t attr;
     pthread_attr_init(&attr);
     pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+    (void)pthread_attr_setstacksize(&attr, 512U * 1024U);
     if(pthread_create(&thread, &attr, client_thread, client) != 0) {
       close(connfd);
       free(client);

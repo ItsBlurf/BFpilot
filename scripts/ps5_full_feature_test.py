@@ -359,13 +359,13 @@ def main() -> int:
     record(results, "shortcut visible", has_sc or ok, body if not has_sc else {"found": True}, status)
 
     ok, status, body, _ = request(
-        base, f"/api/fs/shortcut/rename?path={q(root)}&name=bfpilot-full-renamed"
+        base, f"/api/fs/shortcut/rename?path={q(root)}&label=bfpilot-full-renamed"
     )
     # some APIs use different query keys — accept 200 or 4xx with message
-    record(results, "shortcut rename", ok or status in (400, 404), body, status)
+    record(results, "shortcut rename", ok, body, status)
 
     ok, status, body, _ = request(base, f"/api/fs/shortcut/delete?path={q(root)}")
-    record(results, "shortcut delete", ok or status in (400, 404), body, status)
+    record(results, "shortcut delete", ok, body, status)
 
     # --- Keep-alive multi upload ---
     ok, status, body, _ = request(base, "/api/fs/mkdir?path=" + q(root + "/ka"))

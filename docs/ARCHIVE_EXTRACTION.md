@@ -2,11 +2,9 @@
 
 Extraction runs inside `bfpilot.elf`; no standalone archive payload is built or distributed.
 
-## Paths
+## Path
 
-| Integrated | Standalone worker |
-|------------|-------------------|
-| `/data/BFpilot/archive-integrated/` | `/data/BFpilot/archive/` |
+Runtime state is stored under `/data/BFpilot/archive-integrated/`.
 
 Job/status/log: `job.ini`, `status.json`, `archive-worker.log`, `daemon.lock`.
 
@@ -15,8 +13,10 @@ Job/status/log: `job.ini`, `status.json`, `archive-worker.log`, `daemon.lock`.
 From `/api/fs/archive/support`:
 
 * **RAR** — RAR4/5, passwords, multipart (`.partN.rar` / `.rNN`). Decoder
-  threads are bounded at eight and reported in archive telemetry.
-* **7z** — LZMA/LZMA2, passwords, `.7z.001` splits
+  threads default to the hardware-tested automatic cap of four, can be set
+  manually up to eight, and are reported in archive telemetry.
+* **7z** — LZMA/LZMA2, passwords, `.7z.001` splits; the same four-thread auto
+  cap and eight-thread manual limit apply
 * **ZIP** — stored/deflate/ZIP64, ZipCrypto only (AES zip is rejected). Split zip not enabled.
 
 ZIP extraction uses page-aligned 16 MiB input and 64 MiB output buffers,
@@ -30,7 +30,8 @@ existing bounded decoder thread selection and output buffering.
 * Stages to a temp name, renames on success
 * Free-space check with a margin
 * Partial cleanup on failure when enabled
-* Cancel from the browser after extract starts is not supported yet
+* Browser cancellation is supported while an extraction is prepared, running,
+  or finalizing; staged partial output is removed when cleanup is enabled
 
 ## UI
 

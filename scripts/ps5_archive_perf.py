@@ -385,8 +385,6 @@ def main() -> int:
     except ValueError as exc:
         print(f"FAIL {exc}", file=sys.stderr, flush=True)
         return 2
-    if any(value > 2 for value in threads):
-        print("WARN manual thread counts above 2 can destabilize some PS5 setups", flush=True)
     if any(value < 0 for value in nice_values):
         print("WARN negative nice values raise archive priority; test them only after stable baseline runs",
               flush=True)

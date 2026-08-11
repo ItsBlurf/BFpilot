@@ -14,6 +14,7 @@
 #include <netinet/in.h>
 #include <pthread.h>
 #include <signal.h>
+#include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -65,26 +66,28 @@ int sceAppInstUtilInstallByPackage(const appinst_metadata_t *,
                                    appinst_pkg_info_t *,
                                    appinst_playgo_info_t *);
 
-static volatile int g_init_done;
-static volatile int g_init_rc = INIT_TIMEOUT_SENTINEL;
+static atomic_int g_init_done;
+static atomic_int g_init_rc = INIT_TIMEOUT_SENTINEL;
 
 static void *
 initialize_appinst(void *unused) {
   (void)unused;
-  g_init_rc = sceAppInstUtilInitialize();
-  g_init_done = 1;
+  atomic_store_explicit(&g_init_rc, sceAppInstUtilInitialize(),
+                        memory_order_relaxed);
+  atomic_store_explicit(&g_init_done, 1, memory_order_release);
   return NULL;
 }
 
 static int
 start_appinst_initialize(void) {
   pthread_t thread;
-  g_init_done = 0;
-  g_init_rc = INIT_TIMEOUT_SENTINEL;
+  atomic_store_explicit(&g_init_done, 0, memory_order_relaxed);
+  atomic_store_explicit(&g_init_rc, INIT_TIMEOUT_SENTINEL,
+                        memory_order_relaxed);
   int rc = pthread_create(&thread, NULL, initialize_appinst, NULL);
   if(rc != 0) {
-    g_init_rc = -rc;
-    g_init_done = 1;
+    atomic_store_explicit(&g_init_rc, -rc, memory_order_relaxed);
+    atomic_store_explicit(&g_init_done, 1, memory_order_release);
     return -rc;
   }
   (void)pthread_detach(thread);
@@ -93,14 +96,19 @@ start_appinst_initialize(void) {
 
 static int
 appinst_init_status(void) {
-  return g_init_done ? g_init_rc : INIT_TIMEOUT_SENTINEL;
+  if(!atomic_load_explicit(&g_init_done, memory_order_acquire)) {
+    return INIT_TIMEOUT_SENTINEL;
+  }
+  return atomic_load_explicit(&g_init_rc, memory_order_relaxed);
 }
 
 static int
 wait_for_appinst_initialize(unsigned int seconds) {
   const unsigned int attempts = seconds * 10;
   for(unsigned int attempt = 0; attempt < attempts; attempt++) {
-    if(g_init_done) return g_init_rc;
+    if(atomic_load_explicit(&g_init_done, memory_order_acquire)) {
+      return atomic_load_explicit(&g_init_rc, memory_order_relaxed);
+    }
     usleep(100000);
   }
   return appinst_init_status();
@@ -174,7 +182,7 @@ acquire_install_identity(int major) {
   if(!root || kernel_set_proc_rootdir(pid, root) != 0 ||
      kernel_set_proc_jaildir(pid, root) != 0) rc = -1;
 
-  uint64_t target = major >= 10 ? PS5_SYSTEM_INSTALL_AUTHID
+  uint64_t target = major >= 11 ? PS5_SYSTEM_INSTALL_AUTHID
                                 : PS5_SHELLCORE_AUTHID;
   if(kernel_set_ucred_authid(pid, target) != 0 ||
      kernel_get_ucred_authid(pid) != target) rc = -1;
@@ -261,8 +269,8 @@ main(void) {
   if(identity_rc == 0) {
     (void)start_appinst_initialize();
   } else {
-    g_init_rc = -ENOTSUP;
-    g_init_done = 1;
+    atomic_store_explicit(&g_init_rc, -ENOTSUP, memory_order_relaxed);
+    atomic_store_explicit(&g_init_done, 1, memory_order_release);
   }
   int server = socket(AF_INET, SOCK_STREAM, 0);
   if(server < 0) {

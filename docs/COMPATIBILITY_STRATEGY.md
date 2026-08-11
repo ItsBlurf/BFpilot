@@ -19,9 +19,9 @@ RAR/7z/ZIP extraction, local PKG submission, and Media-tile registration.
 - A fresh process is necessary because Sony binds the AppInst IPMI peer during
   initialization; changing a long-running web process after that point can be
   rejected even when the credential values look correct.
-- AppInst initialization runs on a detached worker thread with a ten-second
-  bound, so a delayed Sony service cannot prevent the private server from
-  responding or permanently wedge later reinjection.
+- AppInst initialization is bounded: ten seconds in the private PKG worker and
+  fifteen seconds in the direct Media-tile path. A delayed Sony service cannot
+  permanently wedge either installation path or later reinjection.
 - Starts the HTTP listener before the asynchronous tile check, so file-manager
   startup is observable even if AppInst returns an error.
 - Compares embedded tile assets byte-for-byte and also requires a marker written
@@ -35,13 +35,20 @@ The tile is `BFPL00001`, category `65536` (**Media**), and opens
 
 ## PKG installation
 
-PKG files are validated again immediately before submission. `/data/...` paths
+PKG files are validated again immediately before submission. BFpilot accepts
+both standard `7F CNT` packages and PS5-native fake-package `7F FIH` files.
+FIH metadata is intentionally left to Sony's installer because that header does
+not expose the CNT content-ID fields; the worker reports Sony's returned ID
+after submission. `/data/...` paths
 are translated to AppInst's `/user/data/...` view; other absolute local paths
 are passed unchanged. NPXS system packages are rejected. The AppInst PlayGo
 structure is fixed at the verified 9,984-byte ABI.
 The firmware major is read through the safe `kern.version` sysctl; BFpilot does
-not carry firmware-specific offsets. Firmware 10 and newer use the SYSTEM
-installer identity; older or unknown versions use ShellCore. Identity is set
+not carry firmware-specific offsets. Firmware 11 and newer use the SYSTEM
+installer identity; older or unknown versions use ShellCore. This follows the
+hardware-observed AppInst authority boundary: using SYSTEM too early breaks
+the older URL/path preflight, while using ShellCore on firmware 11+ can create
+a title record without copying its content. Identity is set
 before `sceAppInstUtilInitialize` in the fresh worker. The worker submits a bare
 absolute path through `InstallByPackage`; it never falls back to
 `AppInstallPkg`, which was hardware-observed to create metadata without the
@@ -53,9 +60,11 @@ the long-running BFpilot process and exits as a whole when retired. Unsupported
 loader/kernel capability states fail with diagnostics instead of using guessed
 offsets or continuing after a failed credential operation.
 
-Hardware verification on FW 11.60 installed a 186,122,240-byte PKG through the
-normal BFpilot API, produced the matching `/user/app/.../app.pkg`, and survived
-a clean reinjection that stopped the worker before handoff.
+Hardware verification on FW 11.60 installed the 37,633,547-byte PS5-native FIH
+Internet Browser package through the normal BFpilot API. Sony returned content
+ID `IV9999-MOUU12023_00-XXXXXXXXXXXXXXXX`, and the resulting
+`/user/app/MOUU12023/app.pkg` contained 37,617,664 bytes. The test title was
+then uninstalled successfully.
 
 ## Data directory
 

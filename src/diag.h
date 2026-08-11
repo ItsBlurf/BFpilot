@@ -30,9 +30,9 @@ int bfpilot_diag_user_service_rc(void);
 int bfpilot_diag_notification_rc(void);
 int bfpilot_diag_bind_rc(void);
 int bfpilot_diag_listen_rc(void);
-const char *bfpilot_diag_launcher_status(void);
+void bfpilot_diag_get_launcher_status(char *out, size_t out_size);
 int bfpilot_diag_launcher_rc(void);
-const char *bfpilot_diag_checkpoint(void);
+void bfpilot_diag_get_checkpoint(char *out, size_t out_size);
 
 void bfpilot_diag_get_cwd(char *out, size_t out_size);
 int bfpilot_diag_can_stat_root(void);

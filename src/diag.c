@@ -37,6 +37,7 @@ static int             g_first_http_seen = 0;
 static char            g_checkpoint[128] = "not-started";
 static char            g_launcher_status[64] = "unknown";
 static volatile sig_atomic_t g_handling_signal = 0;
+static int             g_crash_fd = -1;
 static int             g_log_udp_fd = -1;
 static struct sockaddr_in g_log_udp_addr;
 
@@ -56,58 +57,42 @@ ensure_diag_dir(void) {
 
 
 static const char *
-signal_name(int sig) {
+signal_message(int sig, size_t *size) {
   switch(sig) {
-  case SIGSEGV: return "SIGSEGV";
-  case SIGABRT: return "SIGABRT";
-  case SIGBUS:  return "SIGBUS";
-  case SIGILL:  return "SIGILL";
+  case SIGSEGV: *size = sizeof("BFpilot fatal SIGSEGV\n") - 1;
+                return "BFpilot fatal SIGSEGV\n";
+  case SIGABRT: *size = sizeof("BFpilot fatal SIGABRT\n") - 1;
+                return "BFpilot fatal SIGABRT\n";
+  case SIGBUS:  *size = sizeof("BFpilot fatal SIGBUS\n") - 1;
+                return "BFpilot fatal SIGBUS\n";
+  case SIGILL:  *size = sizeof("BFpilot fatal SIGILL\n") - 1;
+                return "BFpilot fatal SIGILL\n";
 #ifdef SIGTRAP
-  case SIGTRAP: return "SIGTRAP";
+  case SIGTRAP: *size = sizeof("BFpilot fatal SIGTRAP\n") - 1;
+                return "BFpilot fatal SIGTRAP\n";
 #endif
 #ifdef SIGSYS
-  case SIGSYS:  return "SIGSYS";
+  case SIGSYS:  *size = sizeof("BFpilot fatal SIGSYS\n") - 1;
+                return "BFpilot fatal SIGSYS\n";
 #endif
-  case SIGFPE:  return "SIGFPE";
-  default:      return "UNKNOWN";
+  case SIGFPE:  *size = sizeof("BFpilot fatal SIGFPE\n") - 1;
+                return "BFpilot fatal SIGFPE\n";
+  default:      *size = sizeof("BFpilot fatal signal\n") - 1;
+                return "BFpilot fatal signal\n";
   }
 }
 
 
 static void
 fatal_signal_handler(int sig) {
-  char line[512];
-  int saved_errno = errno;
-
   if(g_handling_signal) {
     _exit(128 + sig);
   }
   g_handling_signal = 1;
-
-  int n = snprintf(line, sizeof(line),
-                   "%ld fatal signal=%s(%d) checkpoint=%s errno=%d\n",
-                   (long)time(NULL), signal_name(sig), sig,
-                   g_checkpoint, saved_errno);
-  if(n < 0) {
-    n = snprintf(line, sizeof(line),
-                 "fatal signal=%d checkpoint=%s errno=%d\n",
-                 sig, g_checkpoint, saved_errno);
-  }
-  if(n < 0) {
-    _exit(128 + sig);
-  }
-  if((size_t)n >= sizeof(line)) n = (int)sizeof(line) - 1;
-
-  write(STDOUT_FILENO, line, (size_t)n);
-
-  ensure_diag_dir();
-  int fd = open(BFPILOT_CRASH_LOG_PATH,
-                O_WRONLY | O_CREAT | O_APPEND, 0600);
-  if(fd >= 0) {
-    write(fd, line, (size_t)n);
-    close(fd);
-  }
-
+  size_t size = 0;
+  const char *message = signal_message(sig, &size);
+  (void)write(STDOUT_FILENO, message, size);
+  if(g_crash_fd >= 0) (void)write(g_crash_fd, message, size);
   _exit(128 + sig);
 }
 
@@ -121,6 +106,10 @@ bfpilot_diag_init(void) {
   pthread_mutex_unlock(&g_diag_lock);
 
   ensure_diag_dir();
+  if(g_crash_fd < 0) {
+    g_crash_fd = open(BFPILOT_CRASH_LOG_PATH,
+                      O_WRONLY | O_CREAT | O_APPEND, 0600);
+  }
 }
 
 
@@ -344,9 +333,12 @@ bfpilot_diag_listen_rc(void) {
 }
 
 
-const char *
-bfpilot_diag_launcher_status(void) {
-  return g_launcher_status;
+void
+bfpilot_diag_get_launcher_status(char *out, size_t out_size) {
+  if(!out || out_size == 0) return;
+  pthread_mutex_lock(&g_diag_lock);
+  snprintf(out, out_size, "%s", g_launcher_status);
+  pthread_mutex_unlock(&g_diag_lock);
 }
 
 
@@ -360,9 +352,12 @@ bfpilot_diag_launcher_rc(void) {
 }
 
 
-const char *
-bfpilot_diag_checkpoint(void) {
-  return g_checkpoint;
+void
+bfpilot_diag_get_checkpoint(char *out, size_t out_size) {
+  if(!out || out_size == 0) return;
+  pthread_mutex_lock(&g_diag_lock);
+  snprintf(out, out_size, "%s", g_checkpoint);
+  pthread_mutex_unlock(&g_diag_lock);
 }
 
 

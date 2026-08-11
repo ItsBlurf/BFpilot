@@ -23,6 +23,7 @@
 #include <unistd.h>
 
 #include "diag.h"
+#include "archive_worker.h"
 #include "fs.h"
 #include "path_ops.h"
 #include "paths.h"
@@ -88,7 +89,6 @@ static void
 apply_chmod_0777(const char *path) {
   (void)chmod(path, 0777);
 }
-#define BFPILOT_ARCHIVE_MAX_THREADS 8U
 #define BFPILOT_ARCHIVE_DEFAULT_NICE 4
 #define BFPILOT_ARCHIVE_MIN_NICE -20
 #define BFPILOT_ARCHIVE_MAX_NICE 20
@@ -4385,7 +4385,8 @@ archive_status_handler(const http_request_t *req) {
 
 static int
 archive_support_handler(const http_request_t *req) {
-  const char body[] =
+  char body[2048];
+  int length = snprintf(body, sizeof(body),
       "{\"ok\":true,\"worker\":\"bfpilot-integrated-archive\","
       "\"requiresInjection\":false,"
       "\"jobPath\":\"" BFPILOT_ARCHIVE_JOB "\","
@@ -4395,12 +4396,10 @@ archive_support_handler(const http_request_t *req) {
       "\"zip\":\"ZipCrypto only; AES zip reports unsupported\"},"
       "\"multipart\":{\"rar\":true,\"7z.001\":true,"
       "\"zip\":false},"
-      "\"threading\":{\"default\":\"auto\",\"autoMax\":2,"
-      "\"manualMax\":8,\"statusField\":\"effectiveThreads\","
-      "\"formats\":{\"rar\":{\"autoMax\":1,\"manualMax\":1,"
-      "\"reason\":\"RAR multi-threaded extraction is disabled pending "
-      "large-archive PS5 stability validation\"},"
-      "\"7z\":{\"autoMax\":2,\"manualMax\":8},"
+      "\"threading\":{\"default\":\"auto\",\"autoMax\":%u,"
+      "\"manualMax\":%u,\"statusField\":\"effectiveThreads\","
+      "\"formats\":{\"rar\":{\"autoMax\":%u,\"manualMax\":%u},"
+      "\"7z\":{\"autoMax\":%u,\"manualMax\":%u},"
       "\"zip\":{\"autoMax\":1,\"manualMax\":1}}},"
       "\"scheduling\":{\"defaultNice\":4,\"minNice\":-20,"
       "\"maxNice\":20,\"bestEffort\":true},"
@@ -4408,9 +4407,13 @@ archive_support_handler(const http_request_t *req) {
       "\"telemetry\":[\"inputWaitMBps\",\"outputWaitMBps\","
       "\"cpuUtilPercent\",\"rarMtThreadedBlocks\","
       "\"rarMtLargeBlocks\"],"
-      "\"allowedRoots\":[\"/data\",\"/mnt/usb0-7\",\"/mnt/ext0-7\"]}";
+      "\"allowedRoots\":[\"/data\",\"/mnt/usb0-7\",\"/mnt/ext0-7\"]}",
+      BFPILOT_ARCHIVE_AUTO_MAX_THREADS, BFPILOT_ARCHIVE_MAX_THREADS,
+      BFPILOT_ARCHIVE_AUTO_MAX_THREADS, BFPILOT_ARCHIVE_RAR_MAX_THREADS,
+      BFPILOT_ARCHIVE_AUTO_MAX_THREADS, BFPILOT_ARCHIVE_MAX_THREADS);
+  if(length < 0 || (size_t)length >= sizeof(body)) return -1;
   return websrv_send(req->fd, 200, "application/json",
-                     body, sizeof(body) - 1);
+                     body, (size_t)length);
 }
 
 

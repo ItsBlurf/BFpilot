@@ -867,7 +867,6 @@ finish_build(search_index_t *idx, int rc, const char *error, int saved_errno,
     if(error && error[0]) snprintf(g_search.error, sizeof(g_search.error), "%s", error);
     if(idx) {
       search_index_free(idx);
-      idx = NULL;
     }
   }
   log_entries = g_search.entries_seen;

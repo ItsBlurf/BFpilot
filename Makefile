@@ -24,8 +24,8 @@ PYTHON ?= python3
 # Ship / daily use must stay 5905.
 WEB_PORT ?= 5905
 
-VERSION_TAG := bfpilot-v0.4.4-alpha.1
-BUILD_VERSION ?= v0.4.4-alpha.1
+VERSION_TAG := bfpilot-v0.4.4-alpha.2
+BUILD_VERSION ?= v0.4.4-alpha.2
 
 LLVM_CONFIG ?= $(if $(wildcard $(PS5_PAYLOAD_SDK)/bin/prospero-llvm-config),$(PS5_PAYLOAD_SDK)/bin/prospero-llvm-config,$(CURDIR)/build-tools/llvm-config)
 LLVM_BINDIR ?= $(shell "$(LLVM_CONFIG)" --bindir 2>/dev/null || dirname "$$(command -v clang 2>/dev/null || command -v clang.exe 2>/dev/null || command -v llvm-strip 2>/dev/null || command -v llvm-strip.exe 2>/dev/null || echo clang)" 2>/dev/null || echo .)
@@ -182,7 +182,7 @@ RUN_ENV := cd "$(CURDIR_POSIX)" && export LLVM_CONFIG="$(LLVM_CONFIG_SHELL)" && 
 STRIP_CMD := "$(LLVM_BINDIR_SHELL)/llvm-strip"
 WINDOWS_CXX_LD_CMD := "$(PS5_PAYLOAD_SDK_SHELL)/win/prospero-lld.exe"
 WINDOWS_CXX_LINK_PREFIX := -m elf_x86_64_fbsd --sysroot="$(PS5_PAYLOAD_SDK_SHELL)"
-WINDOWS_CXX_LINK_PREFIX += -pie --eh-frame-hdr --hash-style=sysv --build-id=uuid
+WINDOWS_CXX_LINK_PREFIX += -pie --eh-frame-hdr --hash-style=sysv --build-id=sha1
 WINDOWS_CXX_LINK_PREFIX += --unresolved-symbols=report-all -z now
 WINDOWS_CXX_LINK_PREFIX += -z start-stop-visibility=hidden -z rodynamic
 WINDOWS_CXX_LINK_PREFIX += -z common-page-size=0x4000 -z max-page-size=0x4000

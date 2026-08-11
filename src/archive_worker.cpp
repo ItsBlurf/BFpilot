@@ -59,9 +59,6 @@ extern "C" int posix_fallocate(int fd, off_t offset, off_t len);
 #define ZIP_SIG_END 0x06054b50U
 #define ZIP_SIG_ZIP64_END 0x06064b50U
 #define ZIP_SIG_ZIP64_LOCATOR 0x07064b50U
-#define BFPILOT_ARCHIVE_MAX_THREADS 8U
-#define BFPILOT_ARCHIVE_AUTO_MAX_THREADS 8U
-#define BFPILOT_ARCHIVE_RAR_MAX_THREADS 8U
 #define BFPILOT_ARCHIVE_NICE 4
 #define BFPILOT_ARCHIVE_MIN_NICE -20
 #define BFPILOT_ARCHIVE_MAX_NICE 20
@@ -81,9 +78,9 @@ struct ArchiveConfig {
   std::string source;
   std::string destination;
   std::string password;
-  unsigned threads;
-  int priority_nice;
-  bool cleanup_partial;
+  unsigned threads = 0;
+  int priority_nice = 0;
+  bool cleanup_partial = false;
 };
 
 struct WorkerStatus {
@@ -94,35 +91,35 @@ struct WorkerStatus {
   std::string stage;
   std::string current;
   std::string error;
-  unsigned long long total_bytes;
-  unsigned long long bytes_written;
-  unsigned long long files_done;
-  unsigned long long total_files;
-  unsigned threads;
-  unsigned effective_threads;
-  int percent;
-  int errno_code;
-  int archive_exit_code;
-  int priority_nice;
-  int priority_rc;
-  int priority_errno;
-  long started_ms;
+  unsigned long long total_bytes = 0;
+  unsigned long long bytes_written = 0;
+  unsigned long long files_done = 0;
+  unsigned long long total_files = 0;
+  unsigned threads = 0;
+  unsigned effective_threads = 0;
+  int percent = 0;
+  int errno_code = 0;
+  int archive_exit_code = 0;
+  int priority_nice = 0;
+  int priority_rc = 0;
+  int priority_errno = 0;
+  long started_ms = 0;
 };
 
 static WorkerStatus g_status;
 static long g_last_status_ms = 0;
 static int g_last_progress = -1;
-static std::atomic<unsigned long long> g_io_input_bytes;
-static std::atomic<unsigned long long> g_io_output_bytes;
-static std::atomic<unsigned long long> g_io_input_ops;
-static std::atomic<unsigned long long> g_io_output_ops;
-static std::atomic<unsigned long long> g_io_input_usec;
-static std::atomic<unsigned long long> g_io_output_usec;
-static std::atomic<unsigned long long> g_rar_mt_batches;
-static std::atomic<unsigned long long> g_rar_mt_threaded_batches;
-static std::atomic<unsigned long long> g_rar_mt_blocks;
-static std::atomic<unsigned long long> g_rar_mt_threaded_blocks;
-static std::atomic<unsigned long long> g_rar_mt_large_blocks;
+static std::atomic<unsigned long long> g_io_input_bytes(0);
+static std::atomic<unsigned long long> g_io_output_bytes(0);
+static std::atomic<unsigned long long> g_io_input_ops(0);
+static std::atomic<unsigned long long> g_io_output_ops(0);
+static std::atomic<unsigned long long> g_io_input_usec(0);
+static std::atomic<unsigned long long> g_io_output_usec(0);
+static std::atomic<unsigned long long> g_rar_mt_batches(0);
+static std::atomic<unsigned long long> g_rar_mt_threaded_batches(0);
+static std::atomic<unsigned long long> g_rar_mt_blocks(0);
+static std::atomic<unsigned long long> g_rar_mt_threaded_blocks(0);
+static std::atomic<unsigned long long> g_rar_mt_large_blocks(0);
 static struct rusage g_usage_start;
 static int g_usage_started = 0;
 
@@ -1169,23 +1166,23 @@ public:
 
 struct ZipEntry {
   std::string name;
-  unsigned short flags;
-  unsigned short method;
-  unsigned short mod_time;
-  unsigned int crc32;
-  unsigned long long compressed_size;
-  unsigned long long uncompressed_size;
-  unsigned long long local_offset;
-  unsigned int disk_number;
-  bool is_dir;
-  bool encrypted;
-  bool aes_encrypted;
+  unsigned short flags = 0;
+  unsigned short method = 0;
+  unsigned short mod_time = 0;
+  unsigned int crc32 = 0;
+  unsigned long long compressed_size = 0;
+  unsigned long long uncompressed_size = 0;
+  unsigned long long local_offset = 0;
+  unsigned int disk_number = 0;
+  bool is_dir = false;
+  bool encrypted = false;
+  bool aes_encrypted = false;
 };
 
 struct ZipVolumeInfo {
   std::string path;
-  unsigned long long size;
-  unsigned long long start_offset;
+  unsigned long long size = 0;
+  unsigned long long start_offset = 0;
 };
 
 class ZipMultiVolume {
@@ -1371,6 +1368,8 @@ struct ZipIoBuffers {
   unsigned char *out;
 
   ZipIoBuffers() : in(NULL), out(NULL) {}
+  ZipIoBuffers(const ZipIoBuffers &) = delete;
+  ZipIoBuffers &operator=(const ZipIoBuffers &) = delete;
   ~ZipIoBuffers() {
     free(in);
     free(out);
@@ -2328,8 +2327,8 @@ MarkInterruptedArchiveStatus(const std::string &old_status) {
   LogLine("archive interrupted status recovered old_status=%s", sample.c_str());
 }
 
-static volatile int g_archive_daemon_exit = 0;
-static volatile int g_archive_daemon_running = 0;
+static std::atomic<int> g_archive_daemon_exit(0);
+static std::atomic<int> g_archive_daemon_running(0);
 
 static void *
 ArchiveDaemonMain(void *arg) {
@@ -2337,13 +2336,13 @@ ArchiveDaemonMain(void *arg) {
   g_archive_daemon_exit = 0;
   if(!MkdirAll(BFPILOT_ARCHIVE_DIR)) {
     LogLine("archive daemon mkdir failed errno=%d", errno);
-    return (void*)2;
+    return (void *)(intptr_t)2;
   }
 
   int lock_fd = open(BFPILOT_ARCHIVE_DAEMON_LOCK, O_RDWR | O_CREAT, 0666);
   if(lock_fd < 0) {
     LogLine("archive daemon lock open failed errno=%d", errno);
-    return (void*)3;
+    return (void *)(intptr_t)3;
   }
   int lock_rc = -1;
   for(int attempt = 0; attempt < 40; attempt++) {
@@ -2353,7 +2352,7 @@ ArchiveDaemonMain(void *arg) {
     if(saved_errno != EWOULDBLOCK && saved_errno != EAGAIN) {
       LogLine("archive daemon lock failed errno=%d", saved_errno);
       close(lock_fd);
-      return (void*)4;
+      return (void *)(intptr_t)4;
     }
     if(attempt == 0) {
       LogLine("archive daemon lock busy; waiting for old daemon");
@@ -2363,7 +2362,7 @@ ArchiveDaemonMain(void *arg) {
   if(lock_rc != 0) {
     LogLine("archive daemon lock still busy errno=%d", errno);
     close(lock_fd);
-    return (void*)4;
+    return (void *)(intptr_t)4;
   }
 
   char pid_buf[64];

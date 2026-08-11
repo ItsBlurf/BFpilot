@@ -28,6 +28,7 @@
 
 #define PS5_SHELLCORE_AUTHID UINT64_C(0x3800000000000010)
 #define PS5_SYSTEM_INSTALL_AUTHID UINT64_C(0x4801000000000013)
+#define BFPILOT_APPINST_INIT_TIMEOUT_TENTHS 150
 
 #define INCASSET(name, file)                                                   \
   __asm__(".section .rodata\n"                                                 \
@@ -53,7 +54,9 @@ int sceAppInstUtilAppInstallAll(void *);
 
 static pthread_mutex_t g_appinst_lock = PTHREAD_MUTEX_INITIALIZER;
 static atomic_int g_appinst_busy;
-static int g_appinst_initialized;
+static atomic_int g_appinst_init_done;
+static atomic_int g_appinst_init_rc;
+static int g_appinst_init_started;
 
 typedef struct authid_window {
   uint64_t saved;
@@ -119,7 +122,7 @@ bfpilot_appinst_firmware_major(void) {
 
 static uint64_t
 firmware_install_authid(int firmware_major) {
-  return firmware_major >= 10 ? PS5_SYSTEM_INSTALL_AUTHID
+  return firmware_major >= 11 ? PS5_SYSTEM_INSTALL_AUTHID
                               : PS5_SHELLCORE_AUTHID;
 }
 
@@ -207,15 +210,45 @@ result_init(bfpilot_appinst_result_t *result) {
   result->restore_authid_result = BFPILOT_DIAG_SKIPPED;
 }
 
+static void *
+initialize_thread(void *unused) {
+  (void)unused;
+  int rc = sceAppInstUtilInitialize();
+  atomic_store_explicit(&g_appinst_init_rc, rc, memory_order_relaxed);
+  atomic_store_explicit(&g_appinst_init_done, 1, memory_order_release);
+  return NULL;
+}
+
 static int
 initialize_locked(bfpilot_appinst_result_t *result) {
-  if(g_appinst_initialized) {
-    result->init_result = 0;
-    return 0;
+  if(!g_appinst_init_started) {
+    atomic_store_explicit(&g_appinst_init_done, 0, memory_order_relaxed);
+    atomic_store_explicit(&g_appinst_init_rc, -EINPROGRESS,
+                          memory_order_relaxed);
+    pthread_t thread;
+    int thread_rc = pthread_create(&thread, NULL, initialize_thread, NULL);
+    if(thread_rc != 0) {
+      result->init_result = -thread_rc;
+      bfpilot_log("AppInst initialize thread failed rc=%d", thread_rc);
+      return result->init_result;
+    }
+    (void)pthread_detach(thread);
+    g_appinst_init_started = 1;
   }
-  result->init_result = sceAppInstUtilInitialize();
-  bfpilot_log("AppInst initialize rc=0x%08x", result->init_result);
-  if(result->init_result == 0) g_appinst_initialized = 1;
+
+  for(int attempt = 0; attempt < BFPILOT_APPINST_INIT_TIMEOUT_TENTHS;
+      attempt++) {
+    if(atomic_load_explicit(&g_appinst_init_done, memory_order_acquire)) {
+      result->init_result = atomic_load_explicit(&g_appinst_init_rc,
+                                                 memory_order_relaxed);
+      bfpilot_log("AppInst initialize rc=0x%08x", result->init_result);
+      return result->init_result;
+    }
+    usleep(100000);
+  }
+  result->init_result = -ETIMEDOUT;
+  bfpilot_log("AppInst initialize timed out after %d ms",
+              BFPILOT_APPINST_INIT_TIMEOUT_TENTHS * 100);
   return result->init_result;
 }
 

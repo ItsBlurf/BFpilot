@@ -156,6 +156,24 @@ base_name(const char *path) {
   return slash && slash[1] ? slash + 1 : path;
 }
 
+static void
+title_id_from_content_id(const char *content_id, char *title_id,
+                         size_t title_id_size) {
+  if(!title_id || title_id_size == 0) return;
+  title_id[0] = 0;
+  const char *dash = content_id ? strchr(content_id, '-') : NULL;
+  const char *underscore = dash ? strchr(dash + 1, '_') : NULL;
+  if(!dash || !underscore || underscore <= dash + 1) return;
+  size_t length = (size_t)(underscore - (dash + 1));
+  if(length < 5 || length >= title_id_size) return;
+  for(size_t i = 0; i < length; i++) {
+    unsigned char c = (unsigned char)dash[1 + i];
+    if(!((c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9'))) return;
+  }
+  memcpy(title_id, dash + 1, length);
+  title_id[length] = 0;
+}
+
 static void *
 pkg_worker(void *argument) {
   pkg_job_t *job = argument;
@@ -190,7 +208,7 @@ pkg_worker(void *argument) {
           job->items[i].path, base_name(job->items[i].path), &last_submit);
       if(last_result == 0) {
         submitted_count++;
-        if(last_submit.content_id[0] &&
+        if(job->items[i].info.content_id[0] && last_submit.content_id[0] &&
            strcmp(last_submit.content_id, job->items[i].info.content_id) != 0) {
           pkg_log("warning output content-id mismatch expected=%s actual=%s",
                   job->items[i].info.content_id, last_submit.content_id);
@@ -208,12 +226,20 @@ pkg_worker(void *argument) {
               last_submit.primary_result, last_submit.fallback_result);
     }
 
+    const char *reported_content_id = job->items[i].info.content_id[0]
+        ? job->items[i].info.content_id : last_submit.content_id;
+    char reported_title_id[sizeof(job->items[i].info.title_id)];
+    snprintf(reported_title_id, sizeof(reported_title_id), "%s",
+             job->items[i].info.title_id);
+    if(!reported_title_id[0]) {
+      title_id_from_content_id(reported_content_id, reported_title_id,
+                               sizeof(reported_title_id));
+    }
     unsigned int percent = (unsigned int)(((i + 1) * 100U) / job->count);
     (void)write_status("submitting", job->items[i].path,
                        last_result == 0 ? "AppInst accepted this package"
                                         : "AppInst rejected this package",
-                       job->items[i].info.content_id,
-                       job->items[i].info.title_id, job->count,
+                       reported_content_id, reported_title_id, job->count,
                        submitted_count, failed_count, job->total_bytes,
                        percent, &last_submit, last_result);
   }
@@ -227,9 +253,18 @@ pkg_worker(void *argument) {
       : submitted_count == 0
           ? "AppInst rejected the package queue"
           : "some packages were accepted and some were rejected";
-  (void)write_status(state, job->items[job->count - 1].path, message,
-                     job->items[job->count - 1].info.content_id,
-                     job->items[job->count - 1].info.title_id, job->count,
+  size_t last = job->count - 1;
+  const char *reported_content_id = job->items[last].info.content_id[0]
+      ? job->items[last].info.content_id : last_submit.content_id;
+  char reported_title_id[sizeof(job->items[last].info.title_id)];
+  snprintf(reported_title_id, sizeof(reported_title_id), "%s",
+           job->items[last].info.title_id);
+  if(!reported_title_id[0]) {
+    title_id_from_content_id(reported_content_id, reported_title_id,
+                             sizeof(reported_title_id));
+  }
+  (void)write_status(state, job->items[last].path, message,
+                     reported_content_id, reported_title_id, job->count,
                      submitted_count, failed_count, job->total_bytes, 100,
                      &last_submit, last_result);
   bfpilot_notify("BFpilot PKG installer",

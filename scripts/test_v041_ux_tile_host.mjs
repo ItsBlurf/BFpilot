@@ -73,6 +73,10 @@ assert(!appinst.includes('dlclose(') && !appinst.includes('AppInstUtilTerminate'
 assert(appinst.includes('sceAppInstUtilInitialize()') &&
        pkgWorker.includes('sceAppInstUtilInstallByPackage('),
        'tile and full-content PKG AppInst calls are built into one payload')
+assert(appinst.includes('BFPILOT_APPINST_INIT_TIMEOUT_TENTHS') &&
+       appinst.includes('atomic_load_explicit(&g_appinst_init_done') &&
+       appinst.includes('result->init_result = -ETIMEDOUT'),
+       'direct tile AppInst initialization is synchronized and time-bounded')
 assert(appinst.includes('sysctlbyname("kern.version"') &&
        appinst.includes('PS5_SHELLCORE_AUTHID') &&
        appinst.includes('PS5_SYSTEM_INSTALL_AUTHID'),
@@ -105,8 +109,8 @@ assert(pkgWorker.includes('languages[30][8]') &&
        'correct AppInst PlayGo ABI')
 assert(pkgWorker.includes('htonl(INADDR_LOOPBACK)') &&
        pkgWorker.includes('PS5_SYSTEM_INSTALL_AUTHID') &&
-       pkgWorker.includes('major >= 10'),
-       'private worker is loopback-only and uses the FW10+ SYSTEM gate')
+       pkgWorker.includes('major >= 11'),
+       'private worker is loopback-only and uses the FW11+ SYSTEM gate')
 assert(pkgWorker.includes('INIT_TIMEOUT_SENTINEL') &&
        pkgWorker.includes('start_appinst_initialize') &&
        pkgClient.includes('bfpilot_pkg_worker_stop') &&
@@ -124,7 +128,7 @@ assert(html.includes("endsWith('.7z')"), '#9')
 assert(transfer.includes('chmod_request') || transfer.includes('/api/fs/chmod'), '#10')
 assert(html.includes('chmodSelected') || html.includes('id="chmod"'), '#10 ui')
 assert(html.includes('row-checkbox') && html.includes('select-all-checkbox'), '#11')
-assert(versionH.includes('v0.4.4-alpha.1') && makefile.includes('v0.4.4-alpha.1'),
+assert(versionH.includes('v0.4.4-alpha.2') && makefile.includes('v0.4.4-alpha.2'),
        'current release version')
 
-console.log('v0.4.4-alpha.1 all-in-one + UX host checks passed')
+console.log('v0.4.4-alpha.2 all-in-one + UX host checks passed')

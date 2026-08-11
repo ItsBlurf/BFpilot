@@ -95,11 +95,11 @@ assert(actionsBlock.indexOf('id="delete"') < actionsBlock.indexOf('<details clas
   'Delete is a direct toolbar action')
 assert(!morePanel.includes('id="new-text"') && !morePanel.includes('id="delete"'),
   'New Text File and Delete are not hidden in More')
-assert(version.includes('v0.4.4-alpha.1') && makefile.includes('v0.4.4-alpha.1'),
+assert(version.includes('v0.4.4-alpha.2') && makefile.includes('v0.4.4-alpha.2'),
   'release version is consistent')
 
 const scriptMatch = html.match(/<script>([\s\S]*)<\/script>/)
 assert(scriptMatch, 'inline application script found')
 new Function(scriptMatch[1])
 
-console.log('v0.4.4-alpha.1 UI checks passed')
+console.log('v0.4.4-alpha.2 UI checks passed')

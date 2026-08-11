@@ -8,7 +8,7 @@ http://<PS5_IP>:5905/
 
 Works from the PS5 browser or any PC/phone on the same network.
 
-Current development version **v0.4.4-alpha.1**. The v0.4.1 baseline was tested on FW **11.60**.
+Current development version **v0.4.4-alpha.2**. The v0.4.1 baseline and this alpha were tested on FW **11.60**.
 
 ## Payloads
 
@@ -53,7 +53,8 @@ Current development version **v0.4.4-alpha.1**. The v0.4.1 baseline was tested o
 - RAR4/RAR5 + passwords + multipart
 - 7z + passwords + `.7z.001` splits
 - Extract only under `/data` and USB/ext mounts
-- Password prompt, progress/ETA, cleans up partial output on failure
+- Password prompt, progress/ETA, cancellation with partial-output cleanup
+- RAR/7z use an automatic four-thread cap proven fastest on PS5; manual tuning remains available up to eight threads
 
 **Viewers**
 - Images: png/jpg/gif/bmp/webp/ico/svg — pan, zoom, rotate
@@ -62,6 +63,7 @@ Current development version **v0.4.4-alpha.1**. The v0.4.1 baseline was tested o
 
 **Other**
 - Shortcuts saved to `/data/BFpilot/shortcuts.txt`
+- Installs standard `7F CNT` packages and PS5-native `7F FIH` fake packages through the embedded private worker
 - Exit button shuts down cleanly and frees port 5905 (loader on 9021 stays up)
 - New files/dirs get mode `0777`
 

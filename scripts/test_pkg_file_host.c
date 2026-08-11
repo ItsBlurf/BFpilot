@@ -45,6 +45,7 @@ main(void) {
   assert(!strcmp(info.content_id,
                  "EP4433-CUSA00265_00-MINECRAFTPS40000"));
   assert(!strcmp(info.title_id, "CUSA00265"));
+  assert(info.format == BFPILOT_PKG_FORMAT_CNT);
   assert(!bfpilot_pkg_file_is_system(&info));
 
   memcpy(header + 0x40, "UP9000-NPXS40000_00-SYSTEMPACKAGE000", 37);
@@ -55,6 +56,17 @@ main(void) {
   assert(info.size == HEADER_SIZE);
   assert(info.content_type == 0x1a);
   assert(info.content_flags == 0x80000000U);
+
+  memset(header, 0xa5, sizeof(header));
+  memcpy(header, "\x7f" "FIH", 4);
+  assert(bfpilot_pkg_header_validate(header, sizeof(header), 37633547,
+                                     &info) == 0);
+  assert(info.format == BFPILOT_PKG_FORMAT_FIH);
+  assert(info.size == 37633547);
+  assert(info.content_id[0] == 0 && info.title_id[0] == 0);
+  assert(!bfpilot_pkg_file_is_system(&info));
+  assert(bfpilot_pkg_header_validate(header, sizeof(header), HEADER_SIZE - 1,
+                                     &info) != 0);
 
   header[0] = 0;
   assert(bfpilot_pkg_header_validate(header, sizeof(header), HEADER_SIZE,

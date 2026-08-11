@@ -25,6 +25,8 @@
 #define PKG_CONTENT_TYPE_OFFSET 0x74U
 #define PKG_CONTENT_FLAGS_OFFSET 0x78U
 #define PKG_DECLARED_SIZE_OFFSET 0x430U
+#define PKG_MAGIC_CNT 0x7f434e54U
+#define PKG_MAGIC_FIH 0x7f464948U
 
 static uint32_t
 read_be32(const unsigned char *p) {
@@ -95,8 +97,14 @@ bfpilot_pkg_header_validate(const unsigned char *header, size_t header_size,
                             bfpilot_pkg_file_info_t *info) {
   if(!header || header_size < PKG_PROBE_SIZE || !info) return -EINVAL;
   memset(info, 0, sizeof(*info));
-  if(header[0] != 0x7f || header[1] != 'C' || header[2] != 'N' ||
-     header[3] != 'T') return -EBADMSG;
+  uint32_t magic = read_be32(header);
+  if(magic == PKG_MAGIC_FIH) {
+    if(file_size < PKG_PROBE_SIZE) return -EBADMSG;
+    info->size = file_size;
+    info->format = BFPILOT_PKG_FORMAT_FIH;
+    return 0;
+  }
+  if(magic != PKG_MAGIC_CNT) return -EBADMSG;
   uint64_t declared_size = read_be64(header + PKG_DECLARED_SIZE_OFFSET);
   if(declared_size != file_size || declared_size < PKG_PROBE_SIZE) {
     return -EBADMSG;
@@ -114,6 +122,7 @@ bfpilot_pkg_header_validate(const unsigned char *header, size_t header_size,
      extract_title_id(info->content_id, info->title_id,
                       sizeof(info->title_id)) != 0) return -EBADMSG;
   info->size = declared_size;
+  info->format = BFPILOT_PKG_FORMAT_CNT;
   info->content_type = read_be32(header + PKG_CONTENT_TYPE_OFFSET);
   info->content_flags = read_be32(header + PKG_CONTENT_FLAGS_OFFSET);
   return 0;
