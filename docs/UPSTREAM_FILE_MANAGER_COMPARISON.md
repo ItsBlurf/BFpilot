@@ -6,7 +6,7 @@ Research updated: 2026-08-11
 
 | Source | Revision checked | Notes |
 | --- | --- | --- |
-| BFpilot | v0.4.4-alpha.2 working tree | MIT; implementation target |
+| BFpilot | v0.4.4 working tree | MIT; implementation target |
 | `owendswang/ps5-web-file-manager` | every tag from v0.1 through `48d669b848c3eaeb72ee743bd54b193d1d29eccb` (v1.4) | GPL-3.0 |
 | local `projects/elf-arsenal` | complete local snapshot, including `assets/files.html`, `src/transfer.c`, and bundled ShadowMountPlus | no top-level license file in this snapshot; embedded components have their own licenses |
 | `phantomptr/ps5upload` | local `9a8ace8de36fd13fb076f46e8a41643493b7d6d1`, especially its AppInst and transfer paths | reference only |

@@ -8,7 +8,7 @@ http://<PS5_IP>:5905/
 
 Works from the PS5 browser or any PC/phone on the same network.
 
-Current development version **v0.4.4-alpha.2**. The v0.4.1 baseline and this alpha were tested on FW **11.60**.
+Current version **v0.4.4**. Tested on PS5 FW **11.60**.
 
 ## Payloads
 
@@ -146,7 +146,6 @@ See [docs/COMPATIBILITY_STRATEGY.md](docs/COMPATIBILITY_STRATEGY.md). Archives: 
 
 ## Credits
 
-- [owendswang/ps5-web-file-manager](https://github.com/owendswang/ps5-web-file-manager) — file-manager UX and safety research
 - [Elf Arsenal](https://git.etawen.dev/soniciso/elf-arsenal) — recursive drag-and-drop upload concept
 - [ps5upload](https://github.com/phantomptr/ps5upload) — PS5 transfer/traversal reference
 - [ps5-payload-dev](https://github.com/ps5-payload-dev) — SDK / websrv
@@ -157,6 +156,9 @@ See [docs/COMPATIBILITY_STRATEGY.md](docs/COMPATIBILITY_STRATEGY.md). Archives: 
 Third-party code under `third_party/` keeps its own licenses.
 The upstream audit and adopt/reject rationale are documented in
 [docs/UPSTREAM_FILE_MANAGER_COMPARISON.md](docs/UPSTREAM_FILE_MANAGER_COMPARISON.md).
+
+The controller-friendly layout and PKG installation implementation were inspired by
+[owendswang/ps5-web-file-manager](https://github.com/owendswang/ps5-web-file-manager).
 
 ## License
 

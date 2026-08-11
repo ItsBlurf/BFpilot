@@ -1,5 +1,25 @@
 # Changelog
 
+## v0.4.4 (2026-08-11)
+
+* Combined the server, Media tile installer, archive support, and private PKG
+  worker into one `bfpilot.elf`
+* Added direct, idempotent Media-tile installation and clean reinjection without
+  leaving duplicate services or helper processes behind
+* Added PS5-native `7F FIH` PKG support alongside strict `7F CNT` validation,
+  NPXS rejection, correct `/data` path mapping, and the FW 11+ AppInst identity
+* Added bounded AppInst startup and clean private-worker shutdown
+* Added archive cancellation and partial-output cleanup; automatic RAR/7z
+  extraction uses four threads, with up to eight available manually
+* Added persistent path and sort state, guarded Circle/back navigation,
+  parent-folder reveal, and right-biased display for long paths
+* Made the file toolbar selection-aware so only valid actions are shown while
+  the selection count stays visible
+* Hardened transfer, archive, reinjection, diagnostics, and worker concurrency
+* Made clean Windows builds byte-for-byte reproducible
+* Verified on PS5 FW 11.60 with a native FIH PKG, ZIP/RAR/7z extraction,
+  archive cancellation, and sustained 512 MiB transfers
+
 ## v0.4.4 Alpha 2 (2026-08-11)
 
 * Added PS5-native `7F FIH` PKG support while retaining strict `7F CNT` validation

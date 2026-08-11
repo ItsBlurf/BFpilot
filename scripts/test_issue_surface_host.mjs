@@ -39,8 +39,8 @@ assert(html.includes('select-all-checkbox'), '#11 select all')
 assert(html.includes('selectedEntries'), '#11 selection helper')
 
 // #12 version
-assert(versionH.includes('v0.4.4-alpha.2'), 'version.h v0.4.4-alpha.2')
-assert(makefile.includes('v0.4.4-alpha.2'), 'Makefile v0.4.4-alpha.2')
+assert(versionH.includes('v0.4.4') && !versionH.includes('alpha'), 'version.h v0.4.4')
+assert(makefile.includes('v0.4.4') && !makefile.includes('alpha'), 'Makefile v0.4.4')
 assert(makefile.includes('--build-id=sha1') &&
        !makefile.includes('--build-id=uuid'),
        'release builds use a deterministic content-derived build ID')

@@ -128,7 +128,8 @@ assert(html.includes("endsWith('.7z')"), '#9')
 assert(transfer.includes('chmod_request') || transfer.includes('/api/fs/chmod'), '#10')
 assert(html.includes('chmodSelected') || html.includes('id="chmod"'), '#10 ui')
 assert(html.includes('row-checkbox') && html.includes('select-all-checkbox'), '#11')
-assert(versionH.includes('v0.4.4-alpha.2') && makefile.includes('v0.4.4-alpha.2'),
+assert(versionH.includes('v0.4.4') && makefile.includes('v0.4.4') &&
+       !versionH.includes('alpha') && !makefile.includes('alpha'),
        'current release version')
 
-console.log('v0.4.4-alpha.2 all-in-one + UX host checks passed')
+console.log('v0.4.4 all-in-one + UX host checks passed')

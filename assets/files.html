@@ -355,6 +355,10 @@
       padding-right: 0;
     }
 
+    .context-actions[hidden] {
+      display: none;
+    }
+
     .action-menu {
       position: relative;
       flex: 0 0 auto;
@@ -431,15 +435,19 @@
     }
 
     .count {
-      margin-left: auto;
+      min-width: 78px;
       min-height: 32px;
       display: inline-flex;
       align-items: center;
+      justify-content: center;
+      padding: 0 8px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #0d141c;
       color: var(--muted);
       font-size: 12px;
       white-space: nowrap;
-      flex: 1 1 auto;
-      justify-content: flex-end;
+      flex: 0 0 auto;
     }
 
     .file-head,
@@ -991,6 +999,9 @@
           <button id="new-folder">New Folder</button>
           <button id="new-text">New Text File</button>
           <button id="upload-files" class="warn">Upload Files</button>
+        </span>
+        <span id="selection" class="count" aria-live="polite">No selection</span>
+        <span id="context-actions" class="action-group context-actions" hidden>
           <button id="open-folder" title="Open the selected folder">Open</button>
           <button id="rename">Rename</button>
           <button id="download">Download</button>
@@ -998,8 +1009,8 @@
           <button id="load-payload" class="primary" title="Send selected .elf/.bin/.js to elfldr on port 9021">Load payload</button>
           <button id="install-pkg" class="warn" title="Install selected PS4/PS5 PKG files">Install PKG</button>
           <button id="extract" class="primary">Extract</button>
+          <button id="delete" class="danger">Delete</button>
         </span>
-        <button id="delete" class="danger">Delete</button>
         <details class="action-menu">
           <summary>More</summary>
           <div class="action-menu-panel">
@@ -1007,7 +1018,6 @@
             <button id="chmod" title="Set permissions on selected paths">Change Permissions</button>
           </div>
         </details>
-        <span id="selection" class="count">0 selected</span>
       </div>
 
       <div id="upload-drop" class="upload-drop">
@@ -2044,21 +2054,30 @@
       updateClipboard();
     }
 
+    function setContextAction(id, visible) {
+      const button = el(id);
+      button.hidden = !visible;
+      button.disabled = !visible;
+    }
+
     function updateSelection() {
       const token = ++state.detailToken;
       const entries = selectedEntries();
       const one = entries.length === 1 ? entries[0] : null;
-      el('selection').textContent = entries.length + ' selected';
-      el('open-folder').disabled = !(one && one.dir);
-      el('rename').disabled = !one;
-      el('download').disabled = entries.length === 0;
-      el('load-payload').disabled = !(one && canLaunchPayload(one));
+      const hasSelection = entries.length > 0;
+      el('selection').textContent = hasSelection
+        ? entries.length + ' selected' : 'No selection';
+      setContextAction('open-folder', !!(one && one.dir));
+      setContextAction('rename', !!one);
+      setContextAction('download', hasSelection);
+      setContextAction('load-payload', !!(one && canLaunchPayload(one)));
       const pkgCount = entries.filter((entry) => !entry.dir && isPkgName(entry.name)).length;
-      el('install-pkg').disabled = pkgCount === 0;
+      const allPackages = hasSelection && pkgCount === entries.length;
+      setContextAction('install-pkg', allPackages);
       el('install-pkg').textContent = pkgCount > 1 ? 'Install ' + pkgCount + ' PKGs' : 'Install PKG';
       el('chmod').disabled = entries.length === 0;
-      el('extract').disabled = !(one && !one.dir && isArchiveName(one.name));
-      el('delete').disabled = entries.length === 0;
+      setContextAction('extract', !!(one && !one.dir && isArchiveName(one.name)));
+      setContextAction('delete', hasSelection);
       el('copy').disabled = entries.length === 0;
       el('move').disabled = entries.length === 0;
       el('copy-target').disabled = entries.length === 0;
@@ -2067,9 +2086,12 @@
         const hasSelection = entries.length === 1;
         const isEditable = hasSelection && canEdit(entries[0]);
         const isViewable = hasSelection && canViewImage(entries[0]);
-        el('edit-file').disabled = !(isEditable || isViewable);
+        setContextAction('edit-file', isEditable || isViewable);
         el('edit-file').textContent = isViewable ? 'View' : 'Edit';
       }
+      el('context-actions').hidden = !Array.from(
+        el('context-actions').querySelectorAll('button')
+      ).some((button) => !button.hidden);
       updateClipboard();
 
       const detail = el('detail');

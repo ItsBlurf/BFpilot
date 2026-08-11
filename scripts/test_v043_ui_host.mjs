@@ -75,8 +75,13 @@ assert(
   'direct transfer shares recursion checks and the existing transfer engine'
 )
 
-assert(html.includes("el('open-folder').disabled"), 'Open disabled-state is selection-aware')
-assert(html.includes("el('extract').disabled"), 'Extract disabled-state is selection-aware')
+assert(html.includes("setContextAction('open-folder'") &&
+  html.includes("setContextAction('extract'"),
+  'Open and Extract visibility is selection-aware')
+assert(html.includes("setContextAction('load-payload'") &&
+  html.includes("setContextAction('install-pkg'") &&
+  html.includes('const allPackages = hasSelection && pkgCount === entries.length'),
+  'mutually exclusive payload and PKG actions only appear when applicable')
 assert(html.includes("browser.addEventListener('dragenter'"), 'whole browser reveals drag state')
 assert(html.includes("browser.addEventListener('drop'"), 'whole browser accepts dropped files')
 assert(html.includes('Select items, choose a destination, then copy or move directly.'),
@@ -95,11 +100,17 @@ assert(actionsBlock.indexOf('id="delete"') < actionsBlock.indexOf('<details clas
   'Delete is a direct toolbar action')
 assert(!morePanel.includes('id="new-text"') && !morePanel.includes('id="delete"'),
   'New Text File and Delete are not hidden in More')
-assert(version.includes('v0.4.4-alpha.2') && makefile.includes('v0.4.4-alpha.2'),
+assert(actionsBlock.indexOf('id="selection"') < actionsBlock.indexOf('id="context-actions"') &&
+  actionsBlock.includes('class="action-group context-actions" hidden'),
+  'selection count stays visible before the dynamic contextual action group')
+assert(/\.context-actions\[hidden\]\s*\{[^}]*display:\s*none/s.test(html),
+  'hidden contextual actions consume no toolbar space')
+assert(version.includes('v0.4.4') && makefile.includes('v0.4.4') &&
+  !version.includes('alpha') && !makefile.includes('alpha'),
   'release version is consistent')
 
 const scriptMatch = html.match(/<script>([\s\S]*)<\/script>/)
 assert(scriptMatch, 'inline application script found')
 new Function(scriptMatch[1])
 
-console.log('v0.4.4-alpha.2 UI checks passed')
+console.log('v0.4.4 UI checks passed')
