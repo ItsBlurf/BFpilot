@@ -2031,7 +2031,9 @@ RunArchive(const ArchiveConfig &cfg, ArchiveType type, std::string &error) {
     int code = RunUnrarExtract(cfg.source, g_status.stage, cfg.password,
                                g_status.effective_threads);
     if(code != RARX_SUCCESS && code != RARX_WARNING) {
-      error = RarExitDiagnostic((RAR_EXIT)code, !cfg.password.empty());
+      error = code == RARX_USERBREAK
+                  ? "archive: cancelled"
+                  : RarExitDiagnostic((RAR_EXIT)code, !cfg.password.empty());
       return code;
     }
     g_status.percent = 100;
