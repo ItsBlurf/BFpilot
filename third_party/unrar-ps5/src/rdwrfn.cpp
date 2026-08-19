@@ -61,6 +61,14 @@ extern "C" bool Ps5UnrarFlushBufferedOutput(File *DestFile)
   return Ok;
 }
 
+
+static void Ps5UnrarDiscardBufferedOutput()
+{
+  Ps5UnrarOutputUsed=0;
+  Ps5UnrarOutputFile=NULL;
+  Ps5UnrarOutputFlushing=false;
+}
+
 static bool Ps5UnrarWriteOutput(File *DestFile,byte *Addr,size_t Count)
 {
   if (Count==0)
@@ -277,6 +285,15 @@ int ComprDataIO::UnpRead(byte *Addr,size_t Count)
 
 void ComprDataIO::UnpWrite(byte *Addr,size_t Count)
 {
+#ifdef PS5_PAYLOAD
+  extern int g_archive_cancel;
+  if (g_archive_cancel)
+  {
+    Ps5UnrarDiscardBufferedOutput();
+    ErrHandler.SetErrorCode(RARX_USERBREAK);
+    throw RARX_USERBREAK;
+  }
+#endif
 
 #ifdef RARDLL
   CommandData *Cmd=((Archive *)SrcFile)->GetCommandData();
