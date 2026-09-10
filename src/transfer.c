@@ -17,6 +17,7 @@
 #include <strings.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/mman.h>
 #include <sys/statvfs.h>
 #include <sys/types.h>
 #include <time.h>
@@ -35,7 +36,7 @@
 #include "websrv.h"
 
 #ifndef BFPILOT_TRANSFER_BUF_SIZE
-#define BFPILOT_TRANSFER_BUF_SIZE (8 * 1024 * 1024)
+#define BFPILOT_TRANSFER_BUF_SIZE (4 * 1024 * 1024)
 #endif
 
 /*
@@ -53,7 +54,7 @@
 #define COPY_BUF_SIZE   BFPILOT_TRANSFER_BUF_SIZE
 #define UPLOAD_BUF_SIZE BFPILOT_UPLOAD_BUF_SIZE
 #define BFPILOT_IO_ALIGNMENT 0x4000U
-#define BFPILOT_COPY_PIPELINE_MIN_SIZE (64ULL * 1024ULL * 1024ULL)
+#define BFPILOT_COPY_PIPELINE_MIN_SIZE (2ULL * 1024ULL * 1024ULL)
 #define BFPILOT_WRITEBACK_SYNC_BYTES (256ULL * 1024ULL * 1024ULL)
 #define BFPILOT_SPACE_MARGIN_BYTES (256ULL * 1024ULL * 1024ULL)
 #define BFPILOT_TEXT_MAX_SIZE (5U * 1024U * 1024U)
@@ -379,6 +380,9 @@ struct job_state {
   time_t          started_at;
   time_t          ended_at;
   long            started_ms;
+  long            window_sample_ms;
+  long            window_sample_bytes;
+  double          last_instant_bps;
 };
 
 
@@ -513,6 +517,9 @@ job_begin(const char *verb) {
   g_job.started_at = time(NULL);
   g_job.ended_at = 0;
   g_job.started_ms = monotonic_ms();
+  g_job.window_sample_ms = g_job.started_ms;
+  g_job.window_sample_bytes = 0;
+  g_job.last_instant_bps = 0.0;
   pthread_mutex_unlock(&g_job.lock);
   return 1;
 }
@@ -647,13 +654,21 @@ size_walker(const char *path, dev_t root_dev, long *items, long *bytes,
 
 static void *
 alloc_aligned_io_buffer(size_t size, int *aligned_out) {
-  void *buffer = NULL;
   if(aligned_out) *aligned_out = 0;
+  if(!size) return NULL;
+  void *buffer = NULL;
   if(posix_memalign(&buffer, BFPILOT_IO_ALIGNMENT, size) == 0) {
     if(aligned_out) *aligned_out = 1;
     return buffer;
   }
   return malloc(size);
+}
+
+static void
+free_aligned_io_buffer(void *ptr, size_t size, int aligned) {
+  (void)size;
+  (void)aligned;
+  free(ptr);
 }
 
 
@@ -669,6 +684,7 @@ struct copy_pipeline {
   int             eof[2];
   int             shutdown;
   int             writer_errno;
+  int             is_mmap[2];
 };
 
 
@@ -690,7 +706,6 @@ copy_pipeline_fail(struct copy_pipeline *pipe, int slot, int error_code,
 static void *
 copy_pipeline_writer(void *arg) {
   struct copy_pipeline *pipe = arg;
-  unsigned long long since_sync = 0;
   int slot = 0;
 
   for(;;) {
@@ -722,16 +737,6 @@ copy_pipeline_writer(void *arg) {
       written += (size_t)n;
       atomic_fetch_add(&g_job.copied_bytes, (long)n);
       atomic_fetch_add(&g_job.written_bytes, (long)n);
-    }
-
-    since_sync += (unsigned long long)written;
-    if(since_sync >= BFPILOT_WRITEBACK_SYNC_BYTES) {
-      if(fsync(pipe->out) != 0) {
-        copy_pipeline_fail(pipe, slot, errno, "fsync");
-        return NULL;
-      }
-      since_sync = 0;
-      atomic_fetch_add(&g_job.writeback_syncs, 1);
     }
 
     pthread_mutex_lock(&pipe->lock);
@@ -768,12 +773,11 @@ copy_file_pipelined(int in, int out, const char *src, const char *dst,
     return 1;
   }
 
-  int aligned0 = 0, aligned1 = 0;
-  pipe.buffers[0] = alloc_aligned_io_buffer(COPY_BUF_SIZE, &aligned0);
-  pipe.buffers[1] = alloc_aligned_io_buffer(COPY_BUF_SIZE, &aligned1);
+  pipe.buffers[0] = alloc_aligned_io_buffer(COPY_BUF_SIZE, &pipe.is_mmap[0]);
+  pipe.buffers[1] = alloc_aligned_io_buffer(COPY_BUF_SIZE, &pipe.is_mmap[1]);
   if(!pipe.buffers[0] || !pipe.buffers[1]) {
-    free(pipe.buffers[0]);
-    free(pipe.buffers[1]);
+    free_aligned_io_buffer(pipe.buffers[0], COPY_BUF_SIZE, pipe.is_mmap[0]);
+    free_aligned_io_buffer(pipe.buffers[1], COPY_BUF_SIZE, pipe.is_mmap[1]);
     pthread_cond_destroy(&pipe.empty);
     pthread_cond_destroy(&pipe.ready);
     pthread_mutex_destroy(&pipe.lock);
@@ -782,17 +786,17 @@ copy_file_pipelined(int in, int out, const char *src, const char *dst,
 
   pthread_t writer;
   if(pthread_create(&writer, NULL, copy_pipeline_writer, &pipe) != 0) {
-    free(pipe.buffers[0]);
-    free(pipe.buffers[1]);
+    free_aligned_io_buffer(pipe.buffers[0], COPY_BUF_SIZE, pipe.is_mmap[0]);
+    free_aligned_io_buffer(pipe.buffers[1], COPY_BUF_SIZE, pipe.is_mmap[1]);
     pthread_cond_destroy(&pipe.empty);
     pthread_cond_destroy(&pipe.ready);
     pthread_mutex_destroy(&pipe.lock);
     return 1;
   }
   atomic_fetch_add(&g_job.pipeline_files, 1);
-  bfpilot_log("copy pipeline start src=%s dst=%s size=%llu slot=%u aligned=%d",
+  bfpilot_log("copy pipeline start src=%s dst=%s size=%llu slot=%u mmap=%d",
               src, dst, expected_size, (unsigned int)COPY_BUF_SIZE,
-              aligned0 && aligned1);
+              pipe.is_mmap[0] && pipe.is_mmap[1]);
 
   int rc = 0;
   int saved_errno = 0;
@@ -878,8 +882,8 @@ copy_file_pipelined(int in, int out, const char *src, const char *dst,
     rc = -1;
   }
 
-  free(pipe.buffers[0]);
-  free(pipe.buffers[1]);
+  free_aligned_io_buffer(pipe.buffers[0], COPY_BUF_SIZE, pipe.is_mmap[0]);
+  free_aligned_io_buffer(pipe.buffers[1], COPY_BUF_SIZE, pipe.is_mmap[1]);
   pthread_cond_destroy(&pipe.empty);
   pthread_cond_destroy(&pipe.ready);
   pthread_mutex_destroy(&pipe.lock);
@@ -895,22 +899,23 @@ copy_file_serial(int in, int out, const char *src, const char *dst,
     atomic_fetch_add(&g_job.serial_files, 1);
     return 0;
   }
-  int aligned = 0;
-  void *buffer = alloc_aligned_io_buffer(COPY_BUF_SIZE, &aligned);
+  size_t buf_size = expected_size < COPY_BUF_SIZE ? (size_t)expected_size : COPY_BUF_SIZE;
+  if(buf_size < 64 * 1024) buf_size = 64 * 1024;
+  int is_mmap = 0;
+  void *buffer = alloc_aligned_io_buffer(buf_size, &is_mmap);
   if(!buffer) {
     errno = ENOMEM;
     return -1;
   }
   atomic_fetch_add(&g_job.serial_files, 1);
-  bfpilot_log("copy serial start src=%s dst=%s size=%llu buf=%u aligned=%d",
-              src, dst, expected_size, (unsigned int)COPY_BUF_SIZE, aligned);
+  bfpilot_log("copy serial start src=%s dst=%s size=%llu buf=%u mmap=%d",
+              src, dst, expected_size, (unsigned int)buf_size, is_mmap);
 
   int rc = 0;
   int saved_errno = 0;
   unsigned long long remaining = expected_size;
-  unsigned long long since_sync = 0;
   while(remaining > 0 && !job_cancelled()) {
-    size_t want = remaining < COPY_BUF_SIZE ? (size_t)remaining : COPY_BUF_SIZE;
+    size_t want = remaining < buf_size ? (size_t)remaining : buf_size;
     ssize_t n = read(in, buffer, want);
     if(n < 0) {
       if(errno == EINTR) continue;
@@ -947,27 +952,16 @@ copy_file_serial(int in, int out, const char *src, const char *dst,
       }
       cursor += written;
       left -= (size_t)written;
-      since_sync += (unsigned long long)written;
       atomic_fetch_add(&g_job.copied_bytes, (long)written);
       atomic_fetch_add(&g_job.written_bytes, (long)written);
     }
     if(rc != 0) break;
-    if(since_sync >= BFPILOT_WRITEBACK_SYNC_BYTES) {
-      if(fsync(out) != 0) {
-        saved_errno = errno;
-        job_set_error("fsync(%s): %s", dst, strerror(saved_errno));
-        rc = -1;
-        break;
-      }
-      since_sync = 0;
-      atomic_fetch_add(&g_job.writeback_syncs, 1);
-    }
   }
   if(job_cancelled() && rc == 0) {
     saved_errno = ECANCELED;
     rc = -1;
   }
-  free(buffer);
+  free_aligned_io_buffer(buffer, buf_size, is_mmap);
   if(rc != 0) errno = saved_errno ? saved_errno : EIO;
   return rc;
 }
@@ -1004,8 +998,14 @@ copy_file(const char *src, const char *dst, const struct stat *expected) {
   }
   apply_fchmod_0777(out);
 
+#ifdef F_RDAHEAD
+  (void)fcntl(in, F_RDAHEAD, 1);
+#endif
 #ifdef POSIX_FADV_SEQUENTIAL
   (void)posix_fadvise(in, 0, 0, POSIX_FADV_SEQUENTIAL);
+#endif
+#ifdef POSIX_FADV_NOREUSE
+  (void)posix_fadvise(in, 0, 0, POSIX_FADV_NOREUSE);
 #endif
 
   job_set_current(src);
@@ -1031,6 +1031,9 @@ copy_file(const char *src, const char *dst, const struct stat *expected) {
       rc = -1;
     }
   }
+#ifdef POSIX_FADV_DONTNEED
+  (void)posix_fadvise(in, 0, 0, POSIX_FADV_DONTNEED);
+#endif
   if(close(in) != 0 && rc == 0) {
     saved_errno = errno;
     job_set_error("close(%s): %s", src, strerror(errno));
@@ -2560,9 +2563,34 @@ status_handler(const http_request_t *req) {
                          : 0.0;
   long speed = speed_bps > 0.0 ? (long)speed_bps : 0;
   double avg_mbps = speed_bps / (1024.0 * 1024.0);
-  long eta = busy && speed > 0 && tb > cb
-                 ? (long)(((double)(tb - cb) / speed_bps) + 0.999)
-                 : 0;
+
+  double instant_bps = 0.0;
+  if(busy) {
+    long now_ms = monotonic_ms();
+    pthread_mutex_lock(&g_job.lock);
+    long w_dt = now_ms - g_job.window_sample_ms;
+    long w_db = cb - g_job.window_sample_bytes;
+    if(w_dt >= 600 && w_db >= 0) {
+      instant_bps = ((double)w_db * 1000.0) / (double)w_dt;
+      g_job.last_instant_bps = instant_bps;
+      g_job.window_sample_ms = now_ms;
+      g_job.window_sample_bytes = cb;
+    } else {
+      instant_bps = g_job.last_instant_bps;
+    }
+    pthread_mutex_unlock(&g_job.lock);
+  }
+  if(instant_bps <= 0.0 && speed_bps > 0.0) {
+    instant_bps = speed_bps;
+  }
+  long instant_speed = instant_bps > 0.0 ? (long)instant_bps : 0;
+  double instant_mbps = instant_bps / (1024.0 * 1024.0);
+
+  long eta = busy && instant_bps > 0.0 && tb > cb
+                 ? (long)(((double)(tb - cb) / instant_bps) + 0.999)
+                 : (busy && speed > 0 && tb > cb
+                        ? (long)(((double)(tb - cb) / speed_bps) + 0.999)
+                        : 0);
 
   json_buf_t b = {0};
   if(json_appendf(&b,
@@ -2587,11 +2615,12 @@ status_handler(const http_request_t *req) {
       "\"writebackSyncs\":%d,\"copyBufferSize\":%u,"
       "\"sourceDev\":%lu,\"destinationDev\":%lu,\"errno\":%d,"
       "\"speedBytesPerSec\":%ld,\"averageMBps\":%.2f,"
+      "\"instantSpeedBytesPerSec\":%ld,\"instantMBps\":%.2f,"
       "\"etaSeconds\":%ld}",
       tb, cb, tf, df, ff, (long)started_at, (long)ended_at,
       elapsed, elapsed_ms, read_bytes, written_bytes, pipeline_files,
       serial_files, writeback_syncs, (unsigned int)COPY_BUF_SIZE, source_dev,
-      destination_dev, last_errno, speed, avg_mbps, eta) != 0) {
+      destination_dev, last_errno, speed, avg_mbps, instant_speed, instant_mbps, eta) != 0) {
     free(b.data);
     return -1;
   }
@@ -4957,6 +4986,11 @@ transfer_upload_request(const http_request_t *req, const char *initial_data,
    * (zftpd: double-buffer + small RCVBUF stalls; single-buffer after each
    * write reopens the window within one write cycle).
    */
+  struct timeval tv;
+  tv.tv_sec = 8;
+  tv.tv_usec = 0;
+  (void)setsockopt(req->fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
   while(!failed && remaining > 0) {
     if(job_cancelled()) {
       failed = 1;
@@ -4971,6 +5005,15 @@ transfer_upload_request(const http_request_t *req, const char *initial_data,
     long r1 = monotonic_ms();
     if(n < 0) {
       if(recv_errno == EINTR) continue;
+      if((recv_errno == EAGAIN || recv_errno == EWOULDBLOCK)) {
+        if(job_cancelled()) {
+          failed = 1;
+          failure_errno = ECANCELED;
+          snprintf(err, sizeof(err), "upload cancelled");
+          break;
+        }
+        continue;
+      }
       failed = 1;
       failure_errno = recv_errno;
       snprintf(err, sizeof(err), "recv: %s", strerror(recv_errno));

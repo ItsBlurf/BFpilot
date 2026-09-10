@@ -717,15 +717,17 @@ shutdown_request(const http_request_t *req) {
      strcmp(token, CONTROL_TOKEN) != 0) {
     return websrv_send_error_json(req->fd, 403, "forbidden");
   }
-  if(transfer_job_busy()) {
+  char force[8] = {0};
+  int is_force = websrv_get_query_arg(req, "force", force, sizeof(force)) && strcmp(force, "1") == 0;
+  if(!is_force && transfer_job_busy()) {
     return websrv_send_error_json(req->fd, 409,
                                   "file-manager job is still running");
   }
-  if(bfpilot_tile_bootstrap_busy()) {
+  if(!is_force && bfpilot_tile_bootstrap_busy()) {
     return websrv_send_error_json(req->fd, 409,
                                   "Media tile installation is still running");
   }
-  if(bfpilot_pkg_is_busy()) {
+  if(!is_force && bfpilot_pkg_is_busy()) {
     return websrv_send_error_json(req->fd, 409,
                                   "PKG submission is still running");
   }
