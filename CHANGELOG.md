@@ -1,7 +1,21 @@
 # Changelog
 
-## v0.4.4 (2026-08-11)
+## v0.4.4 (2026-09-10)
 
+* Converted BFpilot to a Fullscreen Native PS5 WebApp (Category 66048 / Web Based Media App)
+  with 1080p/4K GPU WebKit hardware acceleration, eliminating the ShellUI webcard constraint
+* Hardened Universal Tile Installer across all PS5 firmwares (3.xx–11.xx) with non-fatal authid
+  acquisition, 0755/0644 inode permissions, and automatic fallback to sceAppInstUtilAppInstallAll
+* Implemented in-memory PKG metadata and icon extraction engine (CNT/FIH/LIH container parsing)
+  with live single-pass PNG streaming (/api/fs/pkg/icon) without intermediate disk staging
+* Added interactive PKG Inspector dialog with embedded game icon preview, Title ID, Content ID,
+  App Version, Min FW, raw SFO table, and 1-click Install/Download
+* Added interactive 3x3 CHMOD permission matrix (Owner/Group/Others) with live octal sync,
+  presets (0755, 0777, 0644, 0444), direct column-click activation, and panic-safe directory recursion
+* Added interactive navigation buttons for storage summaries (Data, USB0, USB1, M.2)
+* Upgraded transfer buffer pipeline to 8 MiB for maximum sustained SSD/USB throughput
+* Clean exit flow returning smoothly to PS5 Home screen via psbase:shell?c=play_go_resume
+* Surpassed owendswang/ps5-web-file-manager v1.8 across all display, performance, and ergonomic metrics
 * Combined the server, Media tile installer, archive support, and private PKG
   worker into one `bfpilot.elf`
 * Added direct, idempotent Media-tile installation and clean reinjection without
