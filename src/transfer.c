@@ -29,6 +29,7 @@
 #include "path_ops.h"
 #include "paths.h"
 #include "payload_launch.h"
+#include "pkg_file.h"
 #include "pkg_install.h"
 #include "search.h"
 #include "text_format.h"
@@ -36,7 +37,7 @@
 #include "websrv.h"
 
 #ifndef BFPILOT_TRANSFER_BUF_SIZE
-#define BFPILOT_TRANSFER_BUF_SIZE (4 * 1024 * 1024)
+#define BFPILOT_TRANSFER_BUF_SIZE (8 * 1024 * 1024)
 #endif
 
 /*
@@ -1759,9 +1760,32 @@ delete_worker(void *arg) {
 
 
 static int
+chmod_recursive_dir(const char *dir_path, mode_t mode) {
+  DIR *d = opendir(dir_path);
+  if(!d) return -errno;
+  struct dirent *de;
+  while((de = readdir(d)) != NULL) {
+    if(!strcmp(de->d_name, ".") || !strcmp(de->d_name, "..")) continue;
+    char subpath[PATH_MAX];
+    int n = snprintf(subpath, sizeof(subpath), "%s/%s", dir_path, de->d_name);
+    if(n < 0 || (size_t)n >= sizeof(subpath)) continue;
+    struct stat st;
+    if(lstat(subpath, &st) != 0) continue;
+    if(S_ISLNK(st.st_mode)) continue;
+    if(S_ISDIR(st.st_mode)) {
+      chmod_recursive_dir(subpath, mode);
+    }
+    (void)bfpilot_path_chmod(subpath, mode);
+  }
+  closedir(d);
+  return bfpilot_path_chmod(dir_path, mode);
+}
+
+static int
 chmod_request(const http_request_t *req) {
   char path[1024];
   char mode_s[16];
+  char recursive_s[16];
   char resolved[1024];
   mode_t mode = 0;
   int rc;
@@ -1778,7 +1802,17 @@ chmod_request(const http_request_t *req) {
   if(path_for_list(path, resolved, sizeof(resolved)) != 0) {
     return serve_error(req, 404, "path not found");
   }
-  rc = bfpilot_path_chmod(resolved, mode);
+  if(lstat(resolved, &st) != 0) {
+    return serve_error(req, 404, "path not found");
+  }
+  int recursive = websrv_get_query_arg(req, "recursive", recursive_s, sizeof(recursive_s)) &&
+                  (strcmp(recursive_s, "0") != 0 && strcasecmp(recursive_s, "false") != 0);
+
+  if(recursive && S_ISDIR(st.st_mode)) {
+    rc = chmod_recursive_dir(resolved, mode);
+  } else {
+    rc = bfpilot_path_chmod(resolved, mode);
+  }
   if(rc != 0) {
     snprintf(body, sizeof(body),
              "{\"ok\":false,\"error\":\"chmod failed\",\"errno\":%d}", -rc);
@@ -1791,6 +1825,96 @@ chmod_request(const http_request_t *req) {
            "{\"ok\":true,\"path_ok\":true,\"mode\":%o,\"mode_bits\":%u}",
            (unsigned)(st.st_mode & 07777), (unsigned)(st.st_mode & 07777));
   return websrv_send_text(req->fd, 200, "application/json", body);
+}
+
+static int
+pkg_info_request(const http_request_t *req) {
+  char path_in[1024];
+  char resolved[1024];
+
+  if(!websrv_get_query_arg(req, "path", path_in, sizeof(path_in)) ||
+     !path_is_safe(path_in)) {
+    return serve_error(req, 400, "missing or unsafe path");
+  }
+  if(path_for_list(path_in, resolved, sizeof(resolved)) != 0) {
+    return serve_error(req, 404, "path not found");
+  }
+
+  bfpilot_pkg_details_t details;
+  int rc = bfpilot_pkg_parse_details(resolved, &details);
+  if(rc != 0) {
+    return serve_error(req, 400, "could not read package information");
+  }
+
+  json_buf_t b = {0};
+  if(json_grow(&b, 16384) != 0 ||
+     json_append(&b, "{\"ok\":true") != 0 ||
+     json_appendf(&b, ",\"size\":%llu", (unsigned long long)details.size) != 0 ||
+     json_append(&b, ",\"content_id\":") != 0 ||
+     json_string(&b, details.content_id) != 0 ||
+     json_append(&b, ",\"title_id\":") != 0 ||
+     json_string(&b, details.title_id) != 0 ||
+     json_append(&b, ",\"title_name\":") != 0 ||
+     json_string(&b, details.title_name) != 0 ||
+     json_append(&b, ",\"app_ver\":") != 0 ||
+     json_string(&b, details.app_ver) != 0 ||
+     json_append(&b, ",\"min_fw\":") != 0 ||
+     json_string(&b, details.min_fw) != 0 ||
+     json_append(&b, ",\"category\":") != 0 ||
+     json_string(&b, details.category) != 0 ||
+     json_append(&b, ",\"platform\":") != 0 ||
+     json_string(&b, details.platform) != 0 ||
+     json_appendf(&b, ",\"content_type\":%u,\"content_flags\":%u,\"has_icon\":%s",
+                  details.content_type, details.content_flags,
+                  details.has_icon ? "true" : "false") != 0 ||
+     json_append(&b, ",\"fields\":[") != 0) {
+    free(b.data);
+    return serve_error(req, 500, "out of memory");
+  }
+
+  for(size_t i = 0; i < details.field_count; i++) {
+    if(i > 0 && json_append(&b, ",") != 0) break;
+    if(json_append(&b, "{\"name\":") != 0 ||
+       json_string(&b, details.fields[i].name) != 0 ||
+       json_append(&b, ",\"value\":") != 0 ||
+       json_string(&b, details.fields[i].value) != 0 ||
+       json_append(&b, "}") != 0) break;
+  }
+  if(json_append(&b, "]}") != 0) {
+    free(b.data);
+    return serve_error(req, 500, "out of memory");
+  }
+
+  return serve_owned(req, 200, b.data, b.len);
+}
+
+static int
+pkg_icon_request(const http_request_t *req) {
+  char path_in[1024];
+  char resolved[1024];
+
+  if(!websrv_get_query_arg(req, "path", path_in, sizeof(path_in)) ||
+     !path_is_safe(path_in)) {
+    return serve_error(req, 400, "missing or unsafe path");
+  }
+  if(path_for_list(path_in, resolved, sizeof(resolved)) != 0) {
+    return serve_error(req, 404, "path not found");
+  }
+
+  void *icon_buf = NULL;
+  size_t icon_size = 0;
+  int rc = bfpilot_pkg_read_icon(resolved, &icon_buf, &icon_size);
+  if(rc != 0 || !icon_buf || icon_size == 0) {
+    return serve_error(req, 404, "package icon not found");
+  }
+
+  int send_rc = websrv_send_headers(req->fd, 200, "image/png", icon_size,
+                                    "Cache-Control: public, max-age=86400\r\n");
+  if(send_rc == 0) {
+    send_rc = websrv_write_all(req->fd, icon_buf, icon_size);
+  }
+  free(icon_buf);
+  return send_rc;
 }
 
 static int
@@ -3787,6 +3911,43 @@ transfer_action_post_request(const http_request_t *req, const char *url,
                                  sizeof(recursive_text)) &&
                     strcmp(recursive_text, "0");
     rc = delete_handler_values(req, path, recursive);
+  } else if(!strcmp(url, "/api/fs/chmod")) {
+    char path[1024], mode_s[16], recursive_text[16];
+    if(!form_get_arg(body, "path", path, sizeof(path)) ||
+       !form_get_arg(body, "mode", mode_s, sizeof(mode_s))) {
+      free(body);
+      return serve_error(req, 400, "missing path or mode");
+    }
+    mode_t mode = 0;
+    if(bfpilot_parse_mode_octal(mode_s, &mode) != 0) {
+      free(body);
+      return serve_error(req, 400, "bad mode (use octal like 444 or 755)");
+    }
+    char resolved[1024];
+    if(path_for_list(path, resolved, sizeof(resolved)) != 0) {
+      free(body);
+      return serve_error(req, 404, "path not found");
+    }
+    int recursive = form_get_arg(body, "recursive", recursive_text, sizeof(recursive_text)) &&
+                    strcmp(recursive_text, "0") != 0;
+    struct stat st;
+    if(lstat(resolved, &st) != 0) {
+      free(body);
+      return serve_error(req, 404, "path not found");
+    }
+    if(recursive && S_ISDIR(st.st_mode)) {
+      rc = chmod_recursive_dir(resolved, mode);
+    } else {
+      rc = bfpilot_path_chmod(resolved, mode);
+    }
+    if(rc != 0) {
+      char resp[256];
+      snprintf(resp, sizeof(resp), "{\"ok\":false,\"error\":\"chmod failed\",\"errno\":%d}", -rc);
+      free(body);
+      return websrv_send_text(req->fd, 500, "application/json", resp);
+    }
+    free(body);
+    return websrv_send_text(req->fd, 200, "application/json", "{\"ok\":true}");
   } else {
     rc = serve_error(req, 404, "no such action endpoint");
   }
@@ -4710,6 +4871,8 @@ transfer_request(const http_request_t *req, const char *url) {
   if(!strcmp(url, "/api/fs/job/cancel")) return cancel_handler(req);
   if(!strcmp(url, "/api/fs/launch")) return bfpilot_launch_request(req);
   if(!strcmp(url, "/api/fs/chmod")) return chmod_request(req);
+  if(!strcmp(url, "/api/fs/pkg/info")) return pkg_info_request(req);
+  if(!strcmp(url, "/api/fs/pkg/icon")) return pkg_icon_request(req);
   return serve_error(req, 404, "no such endpoint");
 }
 

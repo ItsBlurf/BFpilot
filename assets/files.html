@@ -966,6 +966,48 @@
       box-sizing: border-box;
       flex-direction: column;
     }
+
+    .mode-clickable {
+      cursor: pointer;
+      text-decoration: underline;
+      text-underline-offset: 3px;
+    }
+    .mode-clickable:hover {
+      color: #5ee0aa !important;
+    }
+    .storage-summary .storage-item-btn {
+      display: inline-flex;
+      align-items: center;
+      min-height: 22px;
+      padding: 1px 7px;
+      margin: 0;
+      border: 1px solid #232e39;
+      border-radius: 4px;
+      background: #0d141d;
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.3;
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+    .storage-summary .storage-item-btn:hover {
+      background: #172231;
+      border-color: #3b4d60;
+      color: var(--ink);
+    }
+    .storage-summary .storage-item-btn.active {
+      background: #142820;
+      border-color: #32674e;
+      color: #73ad8f;
+    }
+    .storage-summary .storage-item-btn strong {
+      color: var(--ink);
+      margin-right: 3px;
+    }
+    .storage-summary .storage-item-btn.active strong {
+      color: #9ee6c4;
+    }
+
   </style>
 </head>
 <body>
@@ -1027,6 +1069,7 @@
           <button id="download">Download</button>
           <button id="edit-file" class="primary">Edit</button>
           <button id="load-payload" class="primary" title="Send selected .elf/.bin/.js to elfldr on port 9021">Load payload</button>
+          <button id="pkg-info" class="primary" title="View PKG metadata and icon" hidden>PKG Info</button>
           <button id="install-pkg" class="warn" title="Install selected PS4/PS5 PKG files">Install PKG</button>
           <button id="extract" class="primary">Extract</button>
           <button id="delete" class="danger">Delete</button>
@@ -1153,6 +1196,132 @@
     </div>
   </div>
 
+
+  <!-- PKG Inspection Dialog -->
+  <div id="pkg-overlay" class="modal-overlay" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.85); z-index: 9998; align-items: center; justify-content: center; padding: 20px; box-sizing: border-box;">
+    <div class="modal-card" style="background: #0d131a; border: 1px solid #293645; border-radius: 10px; width: 100%; max-width: 680px; max-height: 90vh; display: flex; flex-direction: column; overflow: hidden; box-shadow: 0 16px 40px rgba(0,0,0,0.7);">
+      <div style="display: flex; justify-content: space-between; align-items: center; background: #111822; padding: 14px 18px; border-bottom: 1px solid #232e39;">
+        <h3 style="margin: 0; font-size: 16px; font-weight: 600; color: #fff; display: flex; align-items: center; gap: 8px;">
+          <span>Package Information</span>
+          <span id="pkg-badge-platform" class="badge-pill" style="font-size: 11px; padding: 2px 8px; border-radius: 4px; background: #183126; color: #5ee0aa; border: 1px solid #32674e;">PS4</span>
+          <span id="pkg-badge-cat" class="badge-pill" style="font-size: 11px; padding: 2px 8px; border-radius: 4px; background: #16202c; color: #8593a1; border: 1px solid #293645;">Game</span>
+        </h3>
+        <button id="pkg-modal-close" class="button danger" style="padding: 4px 10px; min-height: 28px;">Close</button>
+      </div>
+      <div style="padding: 18px; overflow-y: auto; display: flex; flex-direction: column; gap: 16px;">
+        <div style="display: flex; gap: 16px; align-items: center;">
+          <img id="pkg-modal-icon" src="" alt="Icon" style="width: 110px; height: 110px; border-radius: 8px; border: 1px solid #293645; background: #06090d; object-fit: contain; flex-shrink: 0; box-shadow: 0 4px 12px rgba(0,0,0,0.4);">
+          <div style="flex: 1; min-width: 0;">
+            <div id="pkg-modal-title" style="font-size: 18px; font-weight: 600; color: #f0f4f8; margin-bottom: 6px; word-break: break-word;">Loading...</div>
+            <div id="pkg-modal-subtitle" style="font-size: 13px; color: #8593a1; font-family: Consolas, monospace;">--</div>
+          </div>
+        </div>
+
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; background: #101720; padding: 12px; border-radius: 8px; border: 1px solid #1f2a36;">
+          <div>
+            <span style="display: block; font-size: 11px; color: #6b7a8a; text-transform: uppercase; letter-spacing: 0.5px;">Title ID</span>
+            <strong id="pkg-modal-tid" style="font-family: Consolas, monospace; font-size: 14px; color: #e3e8ed;">--</strong>
+          </div>
+          <div>
+            <span style="display: block; font-size: 11px; color: #6b7a8a; text-transform: uppercase; letter-spacing: 0.5px;">App Version</span>
+            <strong id="pkg-modal-ver" style="font-family: Consolas, monospace; font-size: 14px; color: #e3e8ed;">--</strong>
+          </div>
+          <div>
+            <span style="display: block; font-size: 11px; color: #6b7a8a; text-transform: uppercase; letter-spacing: 0.5px;">Min Firmware</span>
+            <strong id="pkg-modal-minfw" style="font-family: Consolas, monospace; font-size: 14px; color: #e3e8ed;">--</strong>
+          </div>
+          <div>
+            <span style="display: block; font-size: 11px; color: #6b7a8a; text-transform: uppercase; letter-spacing: 0.5px;">Size</span>
+            <strong id="pkg-modal-size" style="font-size: 14px; color: #e3e8ed;">--</strong>
+          </div>
+        </div>
+
+        <div style="background: #101720; padding: 10px 12px; border-radius: 8px; border: 1px solid #1f2a36;">
+          <span style="display: block; font-size: 11px; color: #6b7a8a; text-transform: uppercase; margin-bottom: 2px;">Content ID</span>
+          <code id="pkg-modal-cid" style="font-family: Consolas, monospace; font-size: 12px; color: #8593a1; word-break: break-all;">--</code>
+        </div>
+
+        <details style="background: #090d12; border: 1px solid #1f2a36; border-radius: 6px; padding: 8px 12px;">
+          <summary style="cursor: pointer; color: #8593a1; font-size: 12px; font-weight: 600;">Show All Package Headers / SFO Fields</summary>
+          <div id="pkg-modal-fields" style="margin-top: 10px; max-height: 180px; overflow-y: auto; font-family: Consolas, monospace; font-size: 12px;"></div>
+        </details>
+      </div>
+
+      <div style="display: flex; justify-content: flex-end; gap: 10px; padding: 14px 18px; background: #111822; border-top: 1px solid #232e39;">
+        <button id="pkg-modal-download" class="button" style="min-height: 36px;">Download PKG</button>
+        <button id="pkg-modal-install" class="button primary" style="min-height: 36px;">Install to PS5</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- CHMOD Permissions Dialog -->
+  <div id="chmod-overlay" class="modal-overlay" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.85); z-index: 9998; align-items: center; justify-content: center; padding: 20px; box-sizing: border-box;">
+    <div class="modal-card" style="background: #0d131a; border: 1px solid #293645; border-radius: 10px; width: 100%; max-width: 480px; display: flex; flex-direction: column; overflow: hidden; box-shadow: 0 16px 40px rgba(0,0,0,0.7);">
+      <div style="display: flex; justify-content: space-between; align-items: center; background: #111822; padding: 14px 18px; border-bottom: 1px solid #232e39;">
+        <h3 style="margin: 0; font-size: 16px; font-weight: 600; color: #fff;">File Permissions (chmod)</h3>
+        <button id="chmod-modal-close" class="button danger" style="padding: 4px 10px; min-height: 28px;">Close</button>
+      </div>
+      <div style="padding: 18px; display: flex; flex-direction: column; gap: 16px;">
+        <div id="chmod-modal-target" style="font-size: 13px; color: #8593a1; font-family: Consolas, monospace; word-break: break-all; background: #101720; padding: 8px 12px; border-radius: 6px; border: 1px solid #1f2a36;">--</div>
+
+        <table style="width: 100%; border-collapse: collapse; text-align: center; font-size: 13px;">
+          <thead>
+            <tr style="color: #6b7a8a; font-size: 11px; text-transform: uppercase;">
+              <th style="text-align: left; padding-bottom: 8px;">Scope</th>
+              <th style="padding-bottom: 8px;">Read (4)</th>
+              <th style="padding-bottom: 8px;">Write (2)</th>
+              <th style="padding-bottom: 8px;">Exec (1)</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr style="border-top: 1px solid #1f2a36;">
+              <td style="text-align: left; padding: 8px 0; font-weight: 600; color: #e3e8ed;">Owner</td>
+              <td><input type="checkbox" id="chmod-ur" style="transform: scale(1.2); cursor: pointer;"></td>
+              <td><input type="checkbox" id="chmod-uw" style="transform: scale(1.2); cursor: pointer;"></td>
+              <td><input type="checkbox" id="chmod-ux" style="transform: scale(1.2); cursor: pointer;"></td>
+            </tr>
+            <tr style="border-top: 1px solid #1f2a36;">
+              <td style="text-align: left; padding: 8px 0; font-weight: 600; color: #e3e8ed;">Group</td>
+              <td><input type="checkbox" id="chmod-gr" style="transform: scale(1.2); cursor: pointer;"></td>
+              <td><input type="checkbox" id="chmod-gw" style="transform: scale(1.2); cursor: pointer;"></td>
+              <td><input type="checkbox" id="chmod-gx" style="transform: scale(1.2); cursor: pointer;"></td>
+            </tr>
+            <tr style="border-top: 1px solid #1f2a36;">
+              <td style="text-align: left; padding: 8px 0; font-weight: 600; color: #e3e8ed;">Others</td>
+              <td><input type="checkbox" id="chmod-or" style="transform: scale(1.2); cursor: pointer;"></td>
+              <td><input type="checkbox" id="chmod-ow" style="transform: scale(1.2); cursor: pointer;"></td>
+              <td><input type="checkbox" id="chmod-ox" style="transform: scale(1.2); cursor: pointer;"></td>
+            </tr>
+          </tbody>
+        </table>
+
+        <div style="display: flex; align-items: center; justify-content: space-between; background: #101720; padding: 10px 14px; border-radius: 6px; border: 1px solid #1f2a36;">
+          <span style="font-weight: 600; color: #e3e8ed; font-size: 13px;">Octal Mode:</span>
+          <div style="display: flex; gap: 8px; align-items: center;">
+            <input type="text" id="chmod-octal" value="0755" maxlength="4" style="width: 70px; font-family: Consolas, monospace; font-size: 16px; font-weight: bold; text-align: center; background: #090d12; border: 1px solid #3b4d60; border-radius: 4px; color: #5ee0aa; padding: 4px;">
+          </div>
+        </div>
+
+        <div style="display: flex; gap: 6px; flex-wrap: wrap;">
+          <button type="button" class="button chmod-preset" data-mode="0777" style="flex: 1; font-size: 12px; min-height: 28px;">0777 Full</button>
+          <button type="button" class="button chmod-preset" data-mode="0755" style="flex: 1; font-size: 12px; min-height: 28px;">0755 Exec</button>
+          <button type="button" class="button chmod-preset" data-mode="0644" style="flex: 1; font-size: 12px; min-height: 28px;">0644 File</button>
+          <button type="button" class="button chmod-preset" data-mode="0444" style="flex: 1; font-size: 12px; min-height: 28px;">0444 R/O</button>
+        </div>
+
+        <label id="chmod-recursive-wrap" style="display: flex; align-items: center; gap: 8px; font-size: 13px; color: #8593a1; cursor: pointer;">
+          <input type="checkbox" id="chmod-recursive" style="cursor: pointer;">
+          <span>Apply recursively to all subdirectories & files</span>
+        </label>
+      </div>
+
+      <div style="display: flex; justify-content: flex-end; gap: 10px; padding: 14px 18px; background: #111822; border-top: 1px solid #232e39;">
+        <button id="chmod-modal-cancel" class="button" style="min-height: 36px;">Cancel</button>
+        <button id="chmod-modal-apply" class="button primary" style="min-height: 36px;">Apply Permissions</button>
+      </div>
+    </div>
+  </div>
+
   <script>
     const state = {
       path: '/data',
@@ -1274,7 +1443,9 @@
         state.archiveTimer || state.pkgTimer || state.searchTimer ||
         el('image-overlay').style.display === 'flex' ||
         el('editor-overlay').style.display === 'flex' ||
-        el('log-overlay').style.display === 'flex');
+        el('log-overlay').style.display === 'flex' ||
+        (el('pkg-overlay') && el('pkg-overlay').style.display === 'flex') ||
+        (el('chmod-overlay') && el('chmod-overlay').style.display === 'flex'));
     }
 
     function setPathInput(path) {
@@ -1550,14 +1721,19 @@
         return;
       }
       for (const place of items) {
-        const item = document.createElement('span');
+        const item = document.createElement('button');
+        item.type = 'button';
+        item.className = 'storage-item-btn' + (cleanPath(place.path) === state.path ? ' active' : '');
         const title = document.createElement('strong');
         title.textContent = place.kind === 'internal'
           ? 'Data'
           : cleanPath(place.path);
         item.appendChild(title);
         item.appendChild(document.createTextNode(': ' + (storageSummary(place) || 'unknown')));
-        item.title = cleanPath(place.path);
+        item.title = 'Go to ' + cleanPath(place.path);
+        item.addEventListener('click', () => {
+          openPath(cleanPath(place.path));
+        });
         box.appendChild(item);
       }
     }
@@ -2102,6 +2278,8 @@
       const allPackages = hasSelection && pkgCount === entries.length;
       setContextAction('install-pkg', allPackages);
       el('install-pkg').textContent = pkgCount > 1 ? 'Install ' + pkgCount + ' PKGs' : 'Install PKG';
+      const onePkg = one && !one.dir && isPkgName(one.name);
+      setContextAction('pkg-info', !!onePkg);
       el('chmod').disabled = entries.length === 0;
       setContextAction('extract', !!(one && !one.dir && isArchiveName(one.name)));
       setContextAction('delete', hasSelection);
@@ -2213,13 +2391,23 @@
       row.querySelector('.type-kind').textContent = parent ? '' : fileType(entry);
       row.querySelector('.size').textContent = parent || entry.dir ? '' : shortSize(entry.size || 0);
       row.querySelector('.mtime').textContent = entry.mtime ? new Date(entry.mtime * 1000).toLocaleDateString() : '';
-      row.querySelector('.mode').textContent = parent ? '' : formatMode(entry.mode);
+      const modeCol = row.querySelector('.mode');
+      modeCol.textContent = parent ? '' : formatMode(entry.mode);
+      if (!parent && entry.mode !== undefined) {
+        modeCol.classList.add('mode-clickable');
+        modeCol.title = 'Click to edit permissions';
+      }
 
       if (!parent && state.selected.has(key)) {
         row.classList.add('selected');
       }
 
       row.addEventListener('click', (event) => {
+        if (event.target.closest('.mode-clickable')) {
+          event.stopPropagation();
+          openChmodModal([entry]);
+          return;
+        }
         if (itemIndex !== undefined) {
           state.focusedIndex = itemIndex;
           document.querySelectorAll('.file-row.gamepad-focus').forEach(el => el.classList.remove('gamepad-focus'));
@@ -2254,7 +2442,7 @@
         } else if (canLaunchPayload(entry)) {
           launchPayloadPath(next);
         } else if (isPkgName(entry.name)) {
-          installSelectedPkgs([entry]);
+          openPkgModal(entryPath(entry));
         } else if (canEdit(entry)) {
           openEditor(next);
         } else if (canViewImage(entry)) {
@@ -3309,40 +3497,183 @@
       toast('Select one folder to open', 'err');
     }
 
-    async function chmodSelected() {
-      const entries = selectedEntries();
-      if (!entries.length) {
+    /* =========================================================================
+     * PKG Inspection Modal
+     * ========================================================================= */
+    let pkgModalCurrentPath = null;
+
+    function openPkgModal(path) {
+      if (!path) return;
+      pkgModalCurrentPath = path;
+      el('pkg-modal-icon').src = '/icon.png';
+      el('pkg-modal-title').textContent = 'Loading ' + baseName(path) + '...';
+      el('pkg-modal-subtitle').textContent = path;
+      el('pkg-badge-platform').textContent = 'PKG';
+      el('pkg-badge-cat').textContent = 'Package';
+      el('pkg-modal-tid').textContent = '--';
+      el('pkg-modal-ver').textContent = '--';
+      el('pkg-modal-minfw').textContent = '--';
+      el('pkg-modal-size').textContent = '--';
+      el('pkg-modal-cid').textContent = '--';
+      el('pkg-modal-fields').textContent = 'Loading fields...';
+      el('pkg-overlay').style.display = 'flex';
+
+      api('/api/fs/pkg/info?path=' + encodeURIComponent(path))
+        .then(data => {
+          if (!data || !data.ok) throw new Error(data && data.error ? data.error : 'Invalid package');
+          el('pkg-modal-title').textContent = data.title_name || baseName(path);
+          el('pkg-modal-subtitle').textContent = (data.title_id ? data.title_id + ' · ' : '') + (data.platform || '');
+          el('pkg-badge-platform').textContent = data.platform || 'PS4';
+          el('pkg-badge-cat').textContent = data.category || 'Game';
+          el('pkg-modal-tid').textContent = data.title_id || '--';
+          el('pkg-modal-ver').textContent = data.app_ver || '--';
+          el('pkg-modal-minfw').textContent = data.min_fw || '--';
+          el('pkg-modal-size').textContent = (typeof shortSize === 'function' ? shortSize(data.size) : data.size) || '--';
+          el('pkg-modal-cid').textContent = data.content_id || '--';
+
+          if (data.has_icon) {
+            el('pkg-modal-icon').src = '/api/fs/pkg/icon?path=' + encodeURIComponent(path);
+          } else {
+            el('pkg-modal-icon').src = '/icon.png';
+          }
+
+          const fieldsBox = el('pkg-modal-fields');
+          fieldsBox.textContent = '';
+          if (data.fields && data.fields.length) {
+            const table = document.createElement('table');
+            table.style.width = '100%';
+            table.style.borderCollapse = 'collapse';
+            data.fields.forEach(f => {
+              const tr = document.createElement('tr');
+              tr.style.borderBottom = '1px solid #1a222c';
+              const tdK = document.createElement('td');
+              tdK.style.padding = '3px 8px 3px 0';
+              tdK.style.color = '#73ad8f';
+              tdK.textContent = f.name;
+              const tdV = document.createElement('td');
+              tdV.style.padding = '3px 0';
+              tdV.style.color = '#c6d1db';
+              tdV.textContent = f.value;
+              tr.appendChild(tdK);
+              tr.appendChild(tdV);
+              table.appendChild(tr);
+            });
+            fieldsBox.appendChild(table);
+          } else {
+            fieldsBox.textContent = 'No extra fields';
+          }
+        })
+        .catch(err => {
+          toast('PKG Info: ' + err.message, 'err');
+          el('pkg-modal-title').textContent = baseName(path);
+          el('pkg-modal-fields').textContent = 'Could not load package details: ' + err.message;
+        });
+    }
+
+    function closePkgModal() {
+      el('pkg-overlay').style.display = 'none';
+      pkgModalCurrentPath = null;
+    }
+
+    /* =========================================================================
+     * CHMOD Permissions Modal
+     * ========================================================================= */
+    let chmodCurrentEntries = [];
+
+    function parseOctalDigits(oct) {
+      let s = String(oct || '').trim();
+      if (s.length === 3) s = '0' + s;
+      if (s.length !== 4) s = '0755';
+      const u = parseInt(s[1], 8) || 0;
+      const g = parseInt(s[2], 8) || 0;
+      const o = parseInt(s[3], 8) || 0;
+      return { u, g, o, full: s };
+    }
+
+    function updateChmodCheckboxes(oct) {
+      const { u, g, o, full } = parseOctalDigits(oct);
+      el('chmod-octal').value = full;
+      el('chmod-ur').checked = !!(u & 4);
+      el('chmod-uw').checked = !!(u & 2);
+      el('chmod-ux').checked = !!(u & 1);
+      el('chmod-gr').checked = !!(g & 4);
+      el('chmod-gw').checked = !!(g & 2);
+      el('chmod-gx').checked = !!(g & 1);
+      el('chmod-or').checked = !!(o & 4);
+      el('chmod-ow').checked = !!(o & 2);
+      el('chmod-ox').checked = !!(o & 1);
+    }
+
+    function calculateChmodOctal() {
+      let u = (el('chmod-ur').checked ? 4 : 0) | (el('chmod-uw').checked ? 2 : 0) | (el('chmod-ux').checked ? 1 : 0);
+      let g = (el('chmod-gr').checked ? 4 : 0) | (el('chmod-gw').checked ? 2 : 0) | (el('chmod-gx').checked ? 1 : 0);
+      let o = (el('chmod-or').checked ? 4 : 0) | (el('chmod-ow').checked ? 2 : 0) | (el('chmod-ox').checked ? 1 : 0);
+      return '0' + u.toString(8) + g.toString(8) + o.toString(8);
+    }
+
+    function openChmodModal(entries) {
+      if (!entries || !entries.length) {
         toast('Select files or folders first', 'err');
         return;
       }
-      const choice = prompt(
-        'Set mode for ' + entries.length + ' item(s).\n' +
-        'Presets: 444 (read-only, appmeta icons), 644, 755, 777\n' +
-        'Enter octal mode:',
-        '444'
-      );
-      if (choice == null) return;
-      const mode = String(choice).trim();
+      chmodCurrentEntries = entries;
+      const targetEl = el('chmod-modal-target');
+      if (entries.length === 1) {
+        targetEl.textContent = displayFsText(entryPath(entries[0]));
+        let mode = entries[0].mode !== undefined ? (entries[0].mode & 0777) : 0755;
+        let modeStr = '0' + mode.toString(8);
+        updateChmodCheckboxes(modeStr);
+      } else {
+        targetEl.textContent = entries.length + ' items selected';
+        updateChmodCheckboxes('0755');
+      }
+
+      const hasDir = entries.some(e => e.dir);
+      el('chmod-recursive-wrap').style.display = hasDir ? 'flex' : 'none';
+      el('chmod-recursive').checked = false;
+      el('chmod-overlay').style.display = 'flex';
+    }
+
+    function closeChmodModal() {
+      el('chmod-overlay').style.display = 'none';
+      chmodCurrentEntries = [];
+    }
+
+    async function applyChmodModal() {
+      const mode = el('chmod-octal').value.trim();
       if (!/^[0-7]{3,4}$/.test(mode)) {
-        toast('Bad mode (use 444, 644, 755, 777, ...)', 'err');
+        toast('Bad mode (use 0755, 0777, 0644, 0444...)', 'err');
         return;
       }
+      const recursive = el('chmod-recursive').checked ? '1' : '0';
+      const applyBtn = el('chmod-modal-apply');
+      applyBtn.disabled = true;
+      applyBtn.textContent = 'Applying...';
+
       let ok = 0;
       let fail = 0;
-      for (const entry of entries) {
+      for (const entry of chmodCurrentEntries) {
         try {
-          const data = await api(
+          const res = await api(
             '/api/fs/chmod?path=' + encodeURIComponent(entryPath(entry)) +
-            '&mode=' + encodeURIComponent(mode)
+            '&mode=' + encodeURIComponent(mode) +
+            '&recursive=' + recursive
           );
-          if (data && data.ok) ok++;
+          if (res && res.ok) ok++;
           else fail++;
         } catch (err) {
           fail++;
         }
       }
+      applyBtn.disabled = false;
+      applyBtn.textContent = 'Apply Permissions';
+      closeChmodModal();
       toast('chmod ' + mode + ': ' + ok + ' ok' + (fail ? (', ' + fail + ' failed') : ''));
       await refreshCurrentView();
+    }
+
+    function chmodSelected() {
+      openChmodModal(selectedEntries());
     }
 
     function openEditor(path) {
@@ -3479,7 +3810,7 @@
       } else if (canLaunchPayload(item)) {
         launchPayloadPath(next);
       } else if (isPkgName(item.name)) {
-        installSelectedPkgs([item]);
+        openPkgModal(entryPath(item));
       } else if (canEdit(item)) {
         openEditor(next);
       } else if (canViewImage(item)) {
@@ -3574,6 +3905,8 @@
           if (el('image-overlay').style.display === 'flex') closeImageViewer();
           else if (el('editor-overlay').style.display === 'flex') closeEditor();
           else if (el('log-overlay') && el('log-overlay').style.display === 'flex') el('log-overlay').style.display = 'none';
+          else if (el('pkg-overlay') && el('pkg-overlay').style.display === 'flex') closePkgModal();
+          else if (el('chmod-overlay') && el('chmod-overlay').style.display === 'flex') closeChmodModal();
           else navigateParent();
         }
         // Square (button 2): toggle multi-select checkbox (Issue #11)
@@ -3775,6 +4108,12 @@
             closeImageViewer();
           } else if (el('editor-overlay').style.display === 'flex') {
             closeEditor();
+          } else if (el('log-overlay') && el('log-overlay').style.display === 'flex') {
+            el('log-overlay').style.display = 'none';
+          } else if (el('pkg-overlay') && el('pkg-overlay').style.display === 'flex') {
+            closePkgModal();
+          } else if (el('chmod-overlay') && el('chmod-overlay').style.display === 'flex') {
+            closeChmodModal();
           }
         }
       });
@@ -3813,6 +4152,37 @@
       el('download').addEventListener('click', downloadSelected);
       el('load-payload').addEventListener('click', loadPayloadSelected);
       el('install-pkg').addEventListener('click', () => installSelectedPkgs());
+      if (el('pkg-info')) el('pkg-info').addEventListener('click', () => {
+        const pkgs = selectedEntries().filter(e => !e.dir && isPkgName(e.name));
+        if (pkgs.length) openPkgModal(entryPath(pkgs[0]));
+      });
+      el('pkg-modal-close').addEventListener('click', closePkgModal);
+      el('pkg-modal-install').addEventListener('click', () => {
+        if (pkgModalCurrentPath) {
+          installSelectedPkgs([{ path: pkgModalCurrentPath, name: baseName(pkgModalCurrentPath), dir: false }]);
+          closePkgModal();
+        }
+      });
+      el('pkg-modal-download').addEventListener('click', () => {
+        if (pkgModalCurrentPath) window.open(fileUrl(pkgModalCurrentPath), '_blank');
+      });
+
+      el('chmod-modal-close').addEventListener('click', closeChmodModal);
+      el('chmod-modal-cancel').addEventListener('click', closeChmodModal);
+      el('chmod-modal-apply').addEventListener('click', applyChmodModal);
+      ['chmod-ur','chmod-uw','chmod-ux','chmod-gr','chmod-gw','chmod-gx','chmod-or','chmod-ow','chmod-ox'].forEach(id => {
+        el(id).addEventListener('change', () => {
+          el('chmod-octal').value = calculateChmodOctal();
+        });
+      });
+      el('chmod-octal').addEventListener('input', () => {
+        updateChmodCheckboxes(el('chmod-octal').value);
+      });
+      document.querySelectorAll('.chmod-preset').forEach(btn => {
+        btn.addEventListener('click', () => {
+          updateChmodCheckboxes(btn.dataset.mode);
+        });
+      });
       el('open-folder').addEventListener('click', openSelectedFolder);
       el('chmod').addEventListener('click', chmodSelected);
       el('extract').addEventListener('click', extractSelected);
@@ -4014,7 +4384,7 @@
 
     async function requestShutdown() {
       const btn = el('terminate-top');
-      if (!confirm('Terminate BFpilot now?\n\nThis will safely abort any running SSD indexes and fully exit the payload from memory.')) {
+      if (!confirm('Terminate BFpilot now?\n\nThis will safely exit the payload and return to the PS5 home screen.')) {
         return;
       }
       if (btn) {
@@ -4023,11 +4393,17 @@
       }
 
       try {
-        await fetch('/api/control/shutdown?token=bs5fm-local-reload', { method: 'POST' });
-      } catch(e) {
-      }
+        await fetch('/api/control/shutdown?token=bs5fm-local-reload&force=1', { method: 'POST' });
+      } catch (e) {}
 
-      document.body.innerHTML = '<div style="padding: 40px; text-align: center; font-size: 18px;">BFpilot terminated. You may now close this window.</div>';
+      try {
+        window.location.href = 'psbase:shell?c=play_go_resume';
+      } catch (e) {}
+
+      document.body.innerHTML = '<div style="padding: 40px; text-align: center; font-size: 18px; color: #8593a1;">BFpilot terminated. Returning to home screen...</div>';
+      setTimeout(() => {
+        try { window.location.href = 'psbase:shell?c=play_go_resume'; } catch(e) {}
+      }, 300);
     }
 
     if(el('terminate-top')) {

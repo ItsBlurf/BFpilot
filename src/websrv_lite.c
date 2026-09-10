@@ -151,6 +151,17 @@ websrv_send_headers(int fd, int status, const char *mime, size_t size,
                     const char *extra) {
   char header[1024];
   const char *conn = g_tls_keep_alive ? "keep-alive" : "close";
+  char clean_extra[512] = {0};
+  if(extra && *extra) {
+    size_t elen = strlen(extra);
+    if(elen >= sizeof(clean_extra) - 2) elen = sizeof(clean_extra) - 3;
+    memcpy(clean_extra, extra, elen);
+    if(clean_extra[elen - 1] != '\n') {
+      clean_extra[elen++] = '\r';
+      clean_extra[elen++] = '\n';
+    }
+    clean_extra[elen] = '\0';
+  }
   int n = snprintf(header, sizeof(header),
                    "HTTP/1.1 %d %s\r\n"
                    "Connection: %s\r\n"
@@ -166,7 +177,7 @@ websrv_send_headers(int fd, int status, const char *mime, size_t size,
                    conn,
                    mime ? mime : "application/octet-stream",
                    (unsigned long)size,
-                   extra ? extra : "");
+                   clean_extra);
   if(n < 0 || (size_t)n >= sizeof(header)) return -1;
   return websrv_write_all(fd, header, (size_t)n);
 }
@@ -177,6 +188,17 @@ websrv_send_chunked_headers(int fd, int status, const char *mime,
                             const char *extra) {
   char header[4096];
   const char *conn = g_tls_keep_alive ? "keep-alive" : "close";
+  char clean_extra[512] = {0};
+  if(extra && *extra) {
+    size_t elen = strlen(extra);
+    if(elen >= sizeof(clean_extra) - 2) elen = sizeof(clean_extra) - 3;
+    memcpy(clean_extra, extra, elen);
+    if(clean_extra[elen - 1] != '\n') {
+      clean_extra[elen++] = '\r';
+      clean_extra[elen++] = '\n';
+    }
+    clean_extra[elen] = '\0';
+  }
   int n = snprintf(header, sizeof(header),
                    "HTTP/1.1 %d %s\r\n"
                    "Connection: %s\r\n"
@@ -190,7 +212,7 @@ websrv_send_chunked_headers(int fd, int status, const char *mime,
                    "\r\n",
                    status, status_text(status), conn,
                    mime ? mime : "application/octet-stream",
-                   extra ? extra : "");
+                   clean_extra);
   if(n < 0 || (size_t)n >= sizeof(header)) return -1;
   return websrv_write_all(fd, header, (size_t)n);
 }
@@ -632,7 +654,9 @@ diag_request(const http_request_t *req) {
                    "\"/api/fs/pkg/install\","
                    "\"/api/fs/pkg/status\","
                    "\"/api/fs/launch\","
-                   "\"/api/fs/chmod\"]}",
+                   "\"/api/fs/chmod\","
+                   "\"/api/fs/pkg/info\","
+                   "\"/api/fs/pkg/icon\"]}",
                    VERSION_TAG, BUILD_VERSION, BFPILOT_BUILD_MODE,
                    (long)getpid(), (long)now,
                    bfpilot_diag_uptime(),
@@ -787,7 +811,8 @@ dispatch_request(const http_request_t *req, const char *initial_body,
     }
     if(!strcmp(req->path, "/api/fs/copy") ||
        !strcmp(req->path, "/api/fs/move") ||
-       !strcmp(req->path, "/api/fs/delete")) {
+       !strcmp(req->path, "/api/fs/delete") ||
+       !strcmp(req->path, "/api/fs/chmod")) {
       return transfer_action_post_request(req, req->path, initial_body,
                                           initial_size, content_size);
     }

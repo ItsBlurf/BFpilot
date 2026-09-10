@@ -5,6 +5,7 @@
 #include <fcntl.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -202,3 +203,395 @@ fail:
   }
   return -saved_errno;
 }
+
+#define PKG_HEADER_SIZE 0xa0U
+#define PKG_ENTRY_SIZE 0x20U
+#define PKG_ENTRY_PARAM_SFO 0x1000U
+#define PKG_ENTRY_ICON0_PNG 0x1200U
+#define PKG_ENTRY_PARAM_JSON 0x2000U
+#define PKG_ENTRY_MAX 65536U
+#define PKG_PARAM_MAX (4U * 1024U * 1024U)
+#define PKG_ICON_MAX (32U * 1024U * 1024U)
+#define SFO_MAGIC 0x46535000U
+#define SFO_ENTRY_SIZE 0x10U
+#define SFO_ENTRY_MAX 256U
+#define PKG_MAGIC_LIH 0x7f4c4948U
+
+static inline uint16_t
+read_le16(const unsigned char *p) {
+  return (uint16_t)p[0] | ((uint16_t)p[1] << 8);
+}
+
+static inline uint32_t
+read_le32(const unsigned char *p) {
+  return (uint32_t)p[0] | ((uint32_t)p[1] << 8) |
+         ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+}
+
+static inline uint64_t
+read_le64(const unsigned char *p) {
+  return (uint64_t)read_le32(p) | ((uint64_t)read_le32(p + 4) << 32);
+}
+
+static inline int
+range_valid(uint64_t offset, uint64_t size, uint64_t total_size) {
+  return offset <= total_size && size <= (total_size - offset);
+}
+
+static int
+read_at(int fd, void *buffer, size_t size, uint64_t offset) {
+  unsigned char *p = (unsigned char *)buffer;
+  size_t done = 0;
+  while(done < size) {
+#if defined(_WIN32)
+    if(_lseeki64(fd, (int64_t)(offset + done), SEEK_SET) == -1) return -1;
+    int n = read(fd, p + done, (unsigned int)(size - done));
+#else
+    ssize_t n = pread(fd, p + done, size - done, (off_t)(offset + done));
+#endif
+    if(n <= 0) {
+      if(n < 0 && errno == EINTR) continue;
+      return -1;
+    }
+    done += (size_t)n;
+  }
+  return 0;
+}
+
+static void
+add_field(bfpilot_pkg_details_t *details, const char *name, const char *value) {
+  if(!details || !name || !value || details->field_count >= BFPILOT_PKG_MAX_FIELDS) return;
+  size_t idx = details->field_count++;
+  strncpy(details->fields[idx].name, name, sizeof(details->fields[idx].name) - 1);
+  details->fields[idx].name[sizeof(details->fields[idx].name) - 1] = 0;
+  strncpy(details->fields[idx].value, value, sizeof(details->fields[idx].value) - 1);
+  details->fields[idx].value[sizeof(details->fields[idx].value) - 1] = 0;
+}
+
+static void
+parse_sfo(const unsigned char *sfo, size_t size, bfpilot_pkg_details_t *details) {
+  if(!sfo || size < 20 || read_le32(sfo) != SFO_MAGIC) return;
+  uint32_t key_offset = read_le32(sfo + 8);
+  uint32_t value_offset = read_le32(sfo + 12);
+  uint32_t count = read_le32(sfo + 16);
+  if(count > SFO_ENTRY_MAX || (uint64_t)20 + (uint64_t)count * SFO_ENTRY_SIZE > size ||
+     key_offset >= size || value_offset >= size) return;
+
+  for(uint32_t i = 0; i < count; i++) {
+    const unsigned char *entry = sfo + 20 + (size_t)i * SFO_ENTRY_SIZE;
+    uint16_t name_offset = read_le16(entry);
+    unsigned int type = entry[3];
+    uint32_t val_size = read_le32(entry + 4);
+    uint32_t data_offset = read_le32(entry + 12);
+    uint64_t key_pos = (uint64_t)key_offset + name_offset;
+    uint64_t val_pos = (uint64_t)value_offset + data_offset;
+    if(key_pos >= size || val_pos > size) continue;
+
+    const unsigned char *key_end = memchr(sfo + key_pos, 0, size - (size_t)key_pos);
+    if(!key_end) continue;
+    const char *key_name = (const char *)sfo + key_pos;
+
+    char val_buf[256];
+    val_buf[0] = 0;
+
+    if(type == 2) {
+      if(val_size && range_valid(val_pos, val_size, size)) {
+        size_t len = strnlen((const char *)sfo + val_pos, val_size);
+        if(len >= sizeof(val_buf)) len = sizeof(val_buf) - 1;
+        memcpy(val_buf, sfo + val_pos, len);
+        val_buf[len] = 0;
+      }
+    } else if(type == 4 && range_valid(val_pos, 4, size)) {
+      uint32_t num = read_le32(sfo + val_pos);
+      if(!strcmp(key_name, "SYSTEM_VER")) {
+        snprintf(val_buf, sizeof(val_buf), "%x.%02x",
+                 (unsigned)(num >> 24) & 0xff, (unsigned)(num >> 16) & 0xff);
+      } else {
+        snprintf(val_buf, sizeof(val_buf), "%u", (unsigned)num);
+      }
+    }
+    if(!val_buf[0]) continue;
+
+    add_field(details, key_name, val_buf);
+
+    if(!strcmp(key_name, "TITLE") && !details->title_name[0]) {
+      strncpy(details->title_name, val_buf, sizeof(details->title_name) - 1);
+    } else if(!strcmp(key_name, "TITLE_ID") && !details->title_id[0]) {
+      strncpy(details->title_id, val_buf, sizeof(details->title_id) - 1);
+    } else if(!strcmp(key_name, "APP_VER") && !details->app_ver[0]) {
+      strncpy(details->app_ver, val_buf, sizeof(details->app_ver) - 1);
+    } else if(!strcmp(key_name, "SYSTEM_VER") && !details->min_fw[0]) {
+      strncpy(details->min_fw, val_buf, sizeof(details->min_fw) - 1);
+    } else if(!strcmp(key_name, "CATEGORY") && !details->category[0]) {
+      strncpy(details->category, val_buf, sizeof(details->category) - 1);
+    } else if(!strcmp(key_name, "CONTENT_ID") && !details->content_id[0]) {
+      strncpy(details->content_id, val_buf, sizeof(details->content_id) - 1);
+    }
+  }
+}
+
+static void
+json_extract_val(const char *json, size_t json_len, const char *key, char *out, size_t out_size) {
+  out[0] = 0;
+  if(!json || !key || !out_size) return;
+  size_t klen = strlen(key);
+  const char *p = json;
+  const char *end = json + json_len;
+
+  while(p + klen + 2 < end) {
+    const char *found = strstr(p, key);
+    if(!found || found + klen >= end) break;
+    if(found > json && *(found - 1) == '"' && *(found + klen) == '"') {
+      const char *colon = found + klen + 1;
+      while(colon < end && (*colon == ' ' || *colon == '\t' || *colon == '\r' || *colon == '\n')) colon++;
+      if(colon < end && *colon == ':') {
+        const char *val = colon + 1;
+        while(val < end && (*val == ' ' || *val == '\t' || *val == '\r' || *val == '\n')) val++;
+        if(val < end) {
+          if(*val == '"') {
+            val++;
+            size_t o = 0;
+            while(val < end && *val != '"' && o + 1 < out_size) {
+              if(*val == '\\' && val + 1 < end) val++;
+              out[o++] = *val++;
+            }
+            out[o] = 0;
+            return;
+          } else {
+            size_t o = 0;
+            while(val < end && *val != ',' && *val != '}' && *val != ']' &&
+                  *val != ' ' && *val != '\r' && *val != '\n' && o + 1 < out_size) {
+              out[o++] = *val++;
+            }
+            out[o] = 0;
+            return;
+          }
+        }
+      }
+    }
+    p = found + klen;
+  }
+}
+
+static void
+parse_param_json(const char *json, size_t size, bfpilot_pkg_details_t *details) {
+  if(!json || !size) return;
+  char buf[256];
+
+  json_extract_val(json, size, "titleId", buf, sizeof(buf));
+  if(buf[0]) {
+    strncpy(details->title_id, buf, sizeof(details->title_id) - 1);
+    add_field(details, "titleId", buf);
+  }
+
+  json_extract_val(json, size, "contentId", buf, sizeof(buf));
+  if(buf[0]) {
+    strncpy(details->content_id, buf, sizeof(details->content_id) - 1);
+    add_field(details, "contentId", buf);
+  }
+
+  json_extract_val(json, size, "contentVersion", buf, sizeof(buf));
+  if(buf[0]) {
+    strncpy(details->app_ver, buf, sizeof(details->app_ver) - 1);
+    add_field(details, "contentVersion", buf);
+  }
+
+  json_extract_val(json, size, "titleName", buf, sizeof(buf));
+  if(buf[0]) {
+    strncpy(details->title_name, buf, sizeof(details->title_name) - 1);
+    add_field(details, "titleName", buf);
+  }
+
+  json_extract_val(json, size, "requiredSystemSoftwareVersion", buf, sizeof(buf));
+  if(buf[0]) {
+    unsigned long long num = strtoull(buf, NULL, 0);
+    if(num > 0) {
+      snprintf(details->min_fw, sizeof(details->min_fw), "%llx.%02llx",
+               (num >> 24) & 0xff, (num >> 16) & 0xff);
+    } else {
+      strncpy(details->min_fw, buf, sizeof(details->min_fw) - 1);
+    }
+    add_field(details, "requiredSystemSoftwareVersion", buf);
+  }
+
+  json_extract_val(json, size, "applicationCategoryType", buf, sizeof(buf));
+  if(buf[0]) {
+    unsigned int cat = (unsigned int)strtoul(buf, NULL, 0);
+    if(cat == 66048) strncpy(details->category, "Web App (Fullscreen)", sizeof(details->category) - 1);
+    else if(cat == 65536) strncpy(details->category, "Web Shortcut", sizeof(details->category) - 1);
+    else if(cat == 0) strncpy(details->category, "Game / App", sizeof(details->category) - 1);
+    else snprintf(details->category, sizeof(details->category), "%u", cat);
+    add_field(details, "applicationCategoryType", buf);
+  }
+}
+
+static int
+pkg_parse_fd(int fd, uint64_t file_size, bfpilot_pkg_details_t *details) {
+  unsigned char header[PKG_HEADER_SIZE];
+  if(file_size < PKG_HEADER_SIZE || read_at(fd, header, sizeof(header), 0) != 0) {
+    return -EINVAL;
+  }
+
+  details->size = file_size;
+  uint32_t magic = read_be32(header);
+  uint64_t container_offset = 0;
+
+  if(magic == PKG_MAGIC_FIH) {
+    container_offset = read_le64(header + 0x58);
+  } else if(magic == PKG_MAGIC_LIH) {
+    container_offset = read_le64(header + 0x30);
+  } else if(magic != PKG_MAGIC_CNT) {
+    return -EINVAL;
+  }
+
+  if(container_offset > 0) {
+    if(!range_valid(container_offset, sizeof(header), file_size) ||
+       read_at(fd, header, sizeof(header), container_offset) != 0 ||
+       read_be32(header) != PKG_MAGIC_CNT) {
+      return -EINVAL;
+    }
+  }
+  uint64_t container_size = file_size - container_offset;
+
+  memcpy(details->content_id, header + 0x40, 36);
+  details->content_id[36] = 0;
+  details->content_type = read_be32(header + 0x74);
+  details->content_flags = read_be32(header + 0x78);
+  extract_title_id(details->content_id, details->title_id, sizeof(details->title_id));
+
+  uint32_t entry_count = read_be32(header + 0x10);
+  uint32_t table_offset = read_be32(header + 0x18);
+  if(!entry_count || entry_count > PKG_ENTRY_MAX) return -EINVAL;
+  size_t table_size = (size_t)entry_count * PKG_ENTRY_SIZE;
+  if(!range_valid(table_offset, table_size, container_size)) return -EINVAL;
+
+  unsigned char *table = malloc(table_size);
+  if(!table) return -ENOMEM;
+  if(read_at(fd, table, table_size, container_offset + table_offset) != 0) {
+    free(table);
+    return -EIO;
+  }
+
+  uint64_t param_offset = 0;
+  uint32_t param_size = 0;
+  int is_param_json = 0;
+
+  for(uint32_t i = 0; i < entry_count; i++) {
+    const unsigned char *entry = table + (size_t)i * PKG_ENTRY_SIZE;
+    uint32_t id = read_be32(entry);
+    uint32_t offset = read_be32(entry + 0x10);
+    uint32_t size = read_be32(entry + 0x14);
+
+    if(!range_valid(offset, size, container_size)) continue;
+    if(id == PKG_ENTRY_PARAM_SFO && size && size <= PKG_PARAM_MAX) {
+      param_offset = container_offset + offset;
+      param_size = size;
+      is_param_json = 0;
+    } else if(id == PKG_ENTRY_PARAM_JSON && size && size <= PKG_PARAM_MAX) {
+      param_offset = container_offset + offset;
+      param_size = size;
+      is_param_json = 1;
+    } else if(id == PKG_ENTRY_ICON0_PNG && size && size <= PKG_ICON_MAX) {
+      details->icon_offset = container_offset + offset;
+      details->icon_size = size;
+    }
+  }
+  free(table);
+
+  if(details->icon_size >= 8) {
+    unsigned char png_magic[8];
+    if(read_at(fd, png_magic, sizeof(png_magic), details->icon_offset) == 0 &&
+       memcmp(png_magic, "\x89PNG\r\n\x1a\n", 8) == 0) {
+      details->has_icon = 1;
+    }
+  }
+
+  if(param_size > 0) {
+    unsigned char *param_buf = malloc(param_size + 1);
+    if(param_buf) {
+      if(read_at(fd, param_buf, param_size, param_offset) == 0) {
+        param_buf[param_size] = 0;
+        if(is_param_json) {
+          strncpy(details->platform, "PS5", sizeof(details->platform) - 1);
+          parse_param_json((const char *)param_buf, param_size, details);
+        } else {
+          strncpy(details->platform, "PS4", sizeof(details->platform) - 1);
+          parse_sfo(param_buf, param_size, details);
+        }
+      }
+      free(param_buf);
+    }
+  }
+
+  if(!details->platform[0]) {
+    strncpy(details->platform, magic == PKG_MAGIC_CNT ? "PS4" : "PS5", sizeof(details->platform) - 1);
+  }
+  return 0;
+}
+
+int
+bfpilot_pkg_parse_details(const char *path, bfpilot_pkg_details_t *details) {
+  if(!path || !details || !bfpilot_path_is_safe(path)) return -EINVAL;
+  memset(details, 0, sizeof(*details));
+
+  struct stat st;
+  if(lstat(path, &st) != 0 || !S_ISREG(st.st_mode) || st.st_size < (off_t)PKG_HEADER_SIZE) {
+    return -EINVAL;
+  }
+
+  int flags = O_RDONLY;
+#ifdef O_NOFOLLOW
+  flags |= O_NOFOLLOW;
+#endif
+  int fd = open(path, flags);
+  if(fd < 0) return -errno;
+
+  int rc = pkg_parse_fd(fd, (uint64_t)st.st_size, details);
+  close(fd);
+  return rc;
+}
+
+int
+bfpilot_pkg_read_icon(const char *path, void **icon_buf, size_t *icon_size) {
+  if(!path || !icon_buf || !icon_size || !bfpilot_path_is_safe(path)) return -EINVAL;
+  *icon_buf = NULL;
+  *icon_size = 0;
+
+  struct stat st;
+  if(lstat(path, &st) != 0 || !S_ISREG(st.st_mode) || st.st_size < (off_t)PKG_HEADER_SIZE) {
+    return -EINVAL;
+  }
+
+  int flags = O_RDONLY;
+#ifdef O_NOFOLLOW
+  flags |= O_NOFOLLOW;
+#endif
+  int fd = open(path, flags);
+  if(fd < 0) return -errno;
+
+  bfpilot_pkg_details_t details;
+  memset(&details, 0, sizeof(details));
+  int rc = pkg_parse_fd(fd, (uint64_t)st.st_size, &details);
+  if(rc != 0 || !details.has_icon || details.icon_size < 8 || details.icon_size > PKG_ICON_MAX) {
+    close(fd);
+    return rc != 0 ? rc : -ENOENT;
+  }
+
+  void *buf = malloc(details.icon_size);
+  if(!buf) {
+    close(fd);
+    return -ENOMEM;
+  }
+
+  if(read_at(fd, buf, details.icon_size, details.icon_offset) != 0) {
+    free(buf);
+    close(fd);
+    return -EIO;
+  }
+  close(fd);
+
+  *icon_buf = buf;
+  *icon_size = details.icon_size;
+  return 0;
+}
+

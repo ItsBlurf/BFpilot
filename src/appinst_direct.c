@@ -353,6 +353,10 @@ install_tile_locked(bfpilot_appinst_result_t *result) {
   if(rc == 0) rc = write_atomic(icon_tmp, icon_path, bfpilot_icon0_png,
                                 bfpilot_icon0_png_size);
   if(rc != 0) return rc;
+  chmod(app_dir, 0755);
+  chmod(sce_sys_dir, 0755);
+  chmod(param_path, 0644);
+  chmod(icon_path, 0644);
   result->user_app_writable = 1;
 
   uint32_t handle = 0;
@@ -363,11 +367,14 @@ install_tile_locked(bfpilot_appinst_result_t *result) {
       : NULL;
   result->title_dir_resolved = title_dir != NULL;
   result->install_all_resolved = 1;
-  result->primary_result = title_dir
-      ? title_dir(BFPILOT_APP_TITLE_ID, BFPILOT_APP_PARENT, NULL)
-      : -ENOSYS;
   if(title_dir) {
+    result->primary_result = title_dir(BFPILOT_APP_TITLE_ID, BFPILOT_APP_PARENT, NULL);
     rc = result->primary_result;
+    if(rc != 0) {
+      bfpilot_log("AppInst install title dir returned 0x%08x, attempting install_all fallback", rc);
+      result->fallback_result = sceAppInstUtilAppInstallAll(NULL);
+      rc = result->fallback_result;
+    }
   } else {
     result->fallback_result = sceAppInstUtilAppInstallAll(NULL);
     rc = result->fallback_result;
