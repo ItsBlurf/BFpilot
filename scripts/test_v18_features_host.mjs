@@ -18,9 +18,13 @@ const html = read('assets/files.html')
 // 1. Fullscreen WebApp
 assert.strictEqual(param.applicationCategoryType, 66048, 'applicationCategoryType must be 66048 (Web Based Media App)')
 assert.ok(param.webAppUri && param.webAppUri.includes('5905'), 'webAppUri must point to BFpilot port 5905')
-assert.ok(param.deeplinkUri && param.deeplinkUri.includes('5905'), 'deeplinkUri must point to BFpilot port 5905')
+assert.strictEqual(param.deeplinkUri, undefined, 'deeplinkUri must be absent to prevent WebCard side-sheet launch')
+assert.ok(fs.existsSync(path.join(root, 'assets-app/pic1.png')), 'pic1.png must exist for 1080p backdrop')
 
-// 2. Universal tile installation fallback
+// 2. Universal tile installation fallback & svtplay-model staging
+assert.ok(appinst.includes('remount_system_ex'), 'appinst_direct must implement remount_system_ex')
+assert.ok(appinst.includes('/system_ex/app/'), 'appinst_direct must stage /system_ex/app for WebApp runner')
+assert.ok(appinst.includes('Sx4TTyrQccE'), 'appinst_direct must resolve app_uninstall to purge stale app.db entries')
 assert.ok(appinst.includes('sceAppInstUtilAppInstallAll(NULL)'), 'appinst_direct must have fallback to sceAppInstUtilAppInstallAll')
 assert.ok(appinst.includes('chmod(app_dir, 0755)'), 'appinst_direct must set directory permissions to 0755')
 assert.ok(appinst.includes('chmod(param_path, 0644)'), 'appinst_direct must set asset permissions to 0644')
@@ -45,6 +49,15 @@ assert.ok(html.includes('id="chmod-overlay"'), 'files.html contains #chmod-overl
 assert.ok(html.includes('id="chmod-octal"'), 'files.html contains #chmod-octal input')
 assert.ok(html.includes('mode-clickable'), 'files.html supports clickable mode column')
 assert.ok(html.includes('storage-item-btn'), 'files.html implements clickable storage buttons')
-assert.ok(html.includes('psbase:shell?c=play_go_resume'), 'files.html navigates to home screen on exit')
+// 6. DualSense TV Living Room Engine
+assert.ok(html.includes('id="tv-legend-bar"'), 'files.html contains #tv-legend-bar HUD')
+assert.ok(html.includes('activateFocusedItem'), 'files.html defines activateFocusedItem')
+assert.ok(html.includes('setFocusedIndex'), 'files.html defines setFocusedIndex')
+assert.ok(html.includes('toggleFocusedSelection'), 'files.html defines toggleFocusedSelection')
+assert.ok(html.includes('pollGamepad'), 'files.html defines pollGamepad')
+assert.ok(html.includes('btn-ps5'), 'files.html contains PlayStation controller glyphs')
+assert.ok(!html.includes('toggle-fullscreen'), 'files.html must NOT contain broken toggle-fullscreen button')
+assert.ok(appinst.includes('registration v3'), 'appinst_direct marker must be updated to v3')
 
-console.log('All v1.8 superiority, fullscreen webapp, and universal tile installer checks passed!')
+console.log('All v1.8 superiority, fullscreen webapp, DualSense TV engine, and universal tile installer checks passed!')
+

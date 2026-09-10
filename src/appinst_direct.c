@@ -16,8 +16,10 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/mount.h>
 #include <sys/stat.h>
 #include <sys/sysctl.h>
+#include <sys/uio.h>
 #include <unistd.h>
 
 #include <ps5/kernel.h>
@@ -29,6 +31,24 @@
 #define PS5_SHELLCORE_AUTHID UINT64_C(0x3800000000000010)
 #define PS5_SYSTEM_INSTALL_AUTHID UINT64_C(0x4801000000000013)
 #define BFPILOT_APPINST_INIT_TIMEOUT_TENTHS 150
+
+#define IOVEC_SIZE(x) (sizeof(x) / sizeof(struct iovec))
+#define IOVEC_ENTRY(x) { (void*)(x ? x : 0), (size_t)(x ? strlen(x) + 1 : 0) }
+
+static int
+remount_system_ex(void) {
+  struct iovec iov[] = {
+    IOVEC_ENTRY("from"),      IOVEC_ENTRY("/dev/ssd0.system_ex"),
+    IOVEC_ENTRY("fspath"),    IOVEC_ENTRY("/system_ex"),
+    IOVEC_ENTRY("fstype"),    IOVEC_ENTRY("exfatfs"),
+    IOVEC_ENTRY("large"),     IOVEC_ENTRY("yes"),
+    IOVEC_ENTRY("timezone"),  IOVEC_ENTRY("static"),
+    IOVEC_ENTRY("async"),     IOVEC_ENTRY(NULL),
+    IOVEC_ENTRY("ignoreacl"), IOVEC_ENTRY(NULL),
+  };
+
+  return nmount(iov, IOVEC_SIZE(iov), MNT_UPDATE);
+}
 
 #define INCASSET(name, file)                                                   \
   __asm__(".section .rodata\n"                                                 \
@@ -44,11 +64,13 @@
 
 INCASSET(bfpilot_param_json, "assets-app/param.json");
 INCASSET(bfpilot_icon0_png, "assets-app/icon0.png");
+INCASSET(bfpilot_pic1_png, "assets-app/pic1.png");
 
 static const unsigned char g_tile_registration_marker[] =
-    "BFpilot tile registration completed\n";
+    "BFpilot fullscreen webapp registration v3\n";
 
 typedef int (*app_install_title_dir_fn)(const char *, const char *, void *);
+typedef int (*app_uninstall_fn)(const char *);
 int sceAppInstUtilInitialize(void);
 int sceAppInstUtilAppInstallAll(void *);
 
@@ -331,33 +353,23 @@ install_tile_locked(bfpilot_appinst_result_t *result) {
   char sce_sys_dir[256];
   char param_path[320];
   char icon_path[320];
+  char pic1_path[320];
   char marker_path[320];
   char param_tmp[352];
   char icon_tmp[352];
+  char pic1_tmp[352];
   char marker_tmp[352];
   snprintf(app_dir, sizeof(app_dir), BFPILOT_APP_ROOT "/%s",
            BFPILOT_APP_TITLE_ID);
   snprintf(sce_sys_dir, sizeof(sce_sys_dir), "%s/sce_sys", app_dir);
   snprintf(param_path, sizeof(param_path), "%s/param.json", sce_sys_dir);
   snprintf(icon_path, sizeof(icon_path), "%s/icon0.png", sce_sys_dir);
+  snprintf(pic1_path, sizeof(pic1_path), "%s/pic1.png", sce_sys_dir);
   snprintf(marker_path, sizeof(marker_path), "%s/.bfpilot-registered", app_dir);
   snprintf(param_tmp, sizeof(param_tmp), "%s.bfpilot-tmp", param_path);
   snprintf(icon_tmp, sizeof(icon_tmp), "%s.bfpilot-tmp", icon_path);
+  snprintf(pic1_tmp, sizeof(pic1_tmp), "%s.bfpilot-tmp", pic1_path);
   snprintf(marker_tmp, sizeof(marker_tmp), "%s.bfpilot-tmp", marker_path);
-
-  int rc = mkdir_checked(BFPILOT_APP_ROOT);
-  if(rc == 0) rc = mkdir_checked(app_dir);
-  if(rc == 0) rc = mkdir_checked(sce_sys_dir);
-  if(rc == 0) rc = write_atomic(param_tmp, param_path, bfpilot_param_json,
-                                bfpilot_param_json_size);
-  if(rc == 0) rc = write_atomic(icon_tmp, icon_path, bfpilot_icon0_png,
-                                bfpilot_icon0_png_size);
-  if(rc != 0) return rc;
-  chmod(app_dir, 0755);
-  chmod(sce_sys_dir, 0755);
-  chmod(param_path, 0644);
-  chmod(icon_path, 0644);
-  result->user_app_writable = 1;
 
   uint32_t handle = 0;
   int handle_rc = kernel_dynlib_handle(-1, "libSceAppInstUtil.sprx", &handle);
@@ -365,6 +377,72 @@ install_tile_locked(bfpilot_appinst_result_t *result) {
       ? (app_install_title_dir_fn)kernel_dynlib_resolve(
             -1, handle, "Wudg3Xe3heE")
       : NULL;
+  app_uninstall_fn app_uninstall = handle_rc == 0
+      ? (app_uninstall_fn)kernel_dynlib_resolve(
+            -1, handle, "Sx4TTyrQccE")
+      : NULL;
+
+  /* 1. Purge any stale tile registration from Sony's internal app.db */
+  if(app_uninstall) {
+    int uninst_rc = app_uninstall(BFPILOT_APP_TITLE_ID);
+    bfpilot_log("AppInst purge stale title rc=0x%08x", uninst_rc);
+    usleep(400000); /* 400ms for ShellUI / MMS app.db to flush */
+  }
+
+  /* 2. Remount /system_ex and stage system counterpart for WebApp runner */
+  int remount_rc = remount_system_ex();
+  bfpilot_log("AppInst remount_system_ex rc=%d", remount_rc);
+  char sys_ex_app_dir[256];
+  char sys_ex_sce_sys_dir[256];
+  char sys_ex_eboot_path[320];
+  char sys_ex_param_path[320];
+  char sys_ex_eboot_tmp[352];
+  char sys_ex_param_tmp[352];
+  snprintf(sys_ex_app_dir, sizeof(sys_ex_app_dir), "/system_ex/app/%s",
+           BFPILOT_APP_TITLE_ID);
+  snprintf(sys_ex_sce_sys_dir, sizeof(sys_ex_sce_sys_dir), "%s/sce_sys",
+           sys_ex_app_dir);
+  snprintf(sys_ex_eboot_path, sizeof(sys_ex_eboot_path), "%s/eboot.bin",
+           sys_ex_app_dir);
+  snprintf(sys_ex_param_path, sizeof(sys_ex_param_path), "%s/param.json",
+           sys_ex_sce_sys_dir);
+  snprintf(sys_ex_eboot_tmp, sizeof(sys_ex_eboot_tmp), "%s.bfpilot-tmp",
+           sys_ex_eboot_path);
+  snprintf(sys_ex_param_tmp, sizeof(sys_ex_param_tmp), "%s.bfpilot-tmp",
+           sys_ex_param_path);
+
+  if(mkdir_checked(sys_ex_app_dir) == 0 && mkdir_checked(sys_ex_sce_sys_dir) == 0) {
+    /* 0-byte dummy eboot.bin required by Sony PS5 WebApp runner */
+    (void)write_atomic(sys_ex_eboot_tmp, sys_ex_eboot_path, (const unsigned char*)"", 0);
+    (void)write_atomic(sys_ex_param_tmp, sys_ex_param_path, bfpilot_param_json,
+                       bfpilot_param_json_size);
+    chmod(sys_ex_app_dir, 0755);
+    chmod(sys_ex_sce_sys_dir, 0755);
+    chmod(sys_ex_eboot_path, 0755);
+    chmod(sys_ex_param_path, 0644);
+    bfpilot_log("AppInst staged /system_ex/app/%s successfully", BFPILOT_APP_TITLE_ID);
+  } else {
+    bfpilot_log("AppInst /system_ex staging skipped or read-only (errno=%d)", errno);
+  }
+
+  /* 3. Stage /user/app/BFPL00001 */
+  int rc = mkdir_checked(BFPILOT_APP_ROOT);
+  if(rc == 0) rc = mkdir_checked(app_dir);
+  if(rc == 0) rc = mkdir_checked(sce_sys_dir);
+  if(rc == 0) rc = write_atomic(param_tmp, param_path, bfpilot_param_json,
+                                bfpilot_param_json_size);
+  if(rc == 0) rc = write_atomic(icon_tmp, icon_path, bfpilot_icon0_png,
+                                bfpilot_icon0_png_size);
+  if(rc == 0) rc = write_atomic(pic1_tmp, pic1_path, bfpilot_pic1_png,
+                                bfpilot_pic1_png_size);
+  if(rc != 0) return rc;
+  chmod(app_dir, 0755);
+  chmod(sce_sys_dir, 0755);
+  chmod(param_path, 0644);
+  chmod(icon_path, 0644);
+  chmod(pic1_path, 0644);
+  result->user_app_writable = 1;
+
   result->title_dir_resolved = title_dir != NULL;
   result->install_all_resolved = 1;
   if(title_dir) {
@@ -396,15 +474,18 @@ bfpilot_appinst_install_tile(bfpilot_appinst_result_t *result) {
   char app_dir[256];
   char param_path[320];
   char icon_path[320];
+  char pic1_path[320];
   char marker_path[320];
   snprintf(app_dir, sizeof(app_dir), BFPILOT_APP_ROOT "/%s/sce_sys",
            BFPILOT_APP_TITLE_ID);
   snprintf(param_path, sizeof(param_path), "%s/param.json", app_dir);
   snprintf(icon_path, sizeof(icon_path), "%s/icon0.png", app_dir);
+  snprintf(pic1_path, sizeof(pic1_path), "%s/pic1.png", app_dir);
   snprintf(marker_path, sizeof(marker_path), BFPILOT_APP_ROOT "/%s/.bfpilot-registered",
            BFPILOT_APP_TITLE_ID);
   if(file_matches(param_path, bfpilot_param_json, bfpilot_param_json_size) &&
      file_matches(icon_path, bfpilot_icon0_png, bfpilot_icon0_png_size) &&
+     file_matches(pic1_path, bfpilot_pic1_png, bfpilot_pic1_png_size) &&
      file_matches(marker_path, g_tile_registration_marker,
                   sizeof(g_tile_registration_marker) - 1)) {
     result->result = 0;

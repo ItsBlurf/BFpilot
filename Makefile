@@ -121,7 +121,7 @@ ARCHIVE_SEVENZ_CPP_SRCS := \
 
 ASSETS := $(wildcard assets/*)
 GEN_SRCS := $(patsubst assets/%,gen/assets/%,$(ASSETS:=.c))
-APP_ASSETS := assets-app/param.json assets-app/icon0.png
+APP_ASSETS := assets-app/param.json assets-app/icon0.png assets-app/pic1.png
 
 BFPILOT_OBJS := $(patsubst %.c,build/bfpilot/%.o,$(WEB_SRCS) $(GEN_SRCS))
 BFPILOT_ARCHIVE_OBJS := $(patsubst %.cpp,build/bfpilot-archive/%.o,$(ARCHIVE_WORKER_SRCS) $(ARCHIVE_UNRAR_SRCS) $(ARCHIVE_SEVENZ_CPP_SRCS))
