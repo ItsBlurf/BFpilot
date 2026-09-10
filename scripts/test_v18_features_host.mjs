@@ -48,15 +48,16 @@ assert.ok(html.includes('id="chmod-overlay"'), 'files.html contains #chmod-overl
 assert.ok(html.includes('id="chmod-octal"'), 'files.html contains #chmod-octal input')
 assert.ok(html.includes('mode-clickable'), 'files.html supports clickable mode column')
 assert.ok(html.includes('storage-item-btn'), 'files.html implements clickable storage buttons')
-// 6. DualSense TV Living Room Engine
-assert.ok(html.includes('id="tv-legend-bar"'), 'files.html contains #tv-legend-bar HUD')
+// 6. DualSense WebCard Navigation & UI Cleanliness
+assert.ok(!html.includes('id="tv-legend-bar"'), 'files.html must NOT contain #tv-legend-bar HUD')
+assert.ok(!html.includes('btn-ps5'), 'files.html must NOT contain PlayStation controller glyphs')
+assert.ok(!html.includes('tv-mode'), 'files.html must NOT contain tv-mode class')
+assert.ok(!html.includes('toggle-fullscreen'), 'files.html must NOT contain broken toggle-fullscreen button')
 assert.ok(html.includes('activateFocusedItem'), 'files.html defines activateFocusedItem')
 assert.ok(html.includes('setFocusedIndex'), 'files.html defines setFocusedIndex')
 assert.ok(html.includes('toggleFocusedSelection'), 'files.html defines toggleFocusedSelection')
 assert.ok(html.includes('pollGamepad'), 'files.html defines pollGamepad')
-assert.ok(html.includes('btn-ps5'), 'files.html contains PlayStation controller glyphs')
-assert.ok(!html.includes('toggle-fullscreen'), 'files.html must NOT contain broken toggle-fullscreen button')
 assert.ok(appinst.includes('registration v4'), 'appinst_direct marker must be updated to v4')
 
-console.log('All v1.8 superiority, fullscreen webapp, DualSense TV engine, and universal tile installer checks passed!')
+console.log('All v1.8 superiority, WebCard clean UI, DualSense navigation, and universal tile installer checks passed!')
 
