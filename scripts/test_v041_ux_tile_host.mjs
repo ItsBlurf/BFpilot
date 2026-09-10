@@ -88,10 +88,10 @@ assert(appinst.includes('authid_acquire_locked') &&
 
 // --- The embedded Media tile and PKG installer use the same runtime ---
 const paramObj = JSON.parse(param)
-assert.ok(paramObj.applicationCategoryType === 66048 || paramObj.applicationCategoryType === 65536, 'Media category 66048 fullscreen (or 65536)')
+assert.strictEqual(paramObj.applicationCategoryType, 65536, 'Media category 65536')
 assert.strictEqual(paramObj.titleId, 'BFPL00001')
-assert.ok(String(paramObj.webAppUri).includes('5905'), 'webAppUri must point to BFpilot port 5905')
-assert.strictEqual(paramObj.deeplinkUri, undefined, 'no deeplinkUri to prevent WebCard side-sheet')
+assert.ok(String(paramObj.deeplinkUri).includes('5905'), 'deeplinkUri must point to BFpilot port 5905')
+assert.strictEqual(paramObj.webAppUri, undefined, 'no webAppUri to avoid CE-117690-4 crash')
 assert(appinst.includes('bfpilot_param_json') && appinst.includes('bfpilot_icon0_png'),
        'main ELF embeds app assets')
 assert(appinst.includes('.bfpilot-registered') &&

@@ -1,7 +1,7 @@
 {
-  "applicationCategoryType": 66048,
+  "applicationCategoryType": 65536,
   "titleId": "BFPL00001",
-  "webAppUri": "http://127.0.0.1:5905/",
+  "deeplinkUri": "http://127.0.0.1:5905/",
   "localizedParameters": {
     "defaultLanguage": "en-US",
     "en-US": {

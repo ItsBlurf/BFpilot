@@ -67,7 +67,7 @@ INCASSET(bfpilot_icon0_png, "assets-app/icon0.png");
 INCASSET(bfpilot_pic1_png, "assets-app/pic1.png");
 
 static const unsigned char g_tile_registration_marker[] =
-    "BFpilot fullscreen webapp registration v3\n";
+    "BFpilot media tile registration v4\n";
 
 typedef int (*app_install_title_dir_fn)(const char *, const char *, void *);
 typedef int (*app_uninstall_fn)(const char *);
@@ -389,40 +389,15 @@ install_tile_locked(bfpilot_appinst_result_t *result) {
     usleep(400000); /* 400ms for ShellUI / MMS app.db to flush */
   }
 
-  /* 2. Remount /system_ex and stage system counterpart for WebApp runner */
+  /* 2. Remount /system_ex and clean up any stale WebApp dummy files */
   int remount_rc = remount_system_ex();
   bfpilot_log("AppInst remount_system_ex rc=%d", remount_rc);
-  char sys_ex_app_dir[256];
-  char sys_ex_sce_sys_dir[256];
-  char sys_ex_eboot_path[320];
-  char sys_ex_param_path[320];
-  char sys_ex_eboot_tmp[352];
-  char sys_ex_param_tmp[352];
-  snprintf(sys_ex_app_dir, sizeof(sys_ex_app_dir), "/system_ex/app/%s",
-           BFPILOT_APP_TITLE_ID);
-  snprintf(sys_ex_sce_sys_dir, sizeof(sys_ex_sce_sys_dir), "%s/sce_sys",
-           sys_ex_app_dir);
-  snprintf(sys_ex_eboot_path, sizeof(sys_ex_eboot_path), "%s/eboot.bin",
-           sys_ex_app_dir);
-  snprintf(sys_ex_param_path, sizeof(sys_ex_param_path), "%s/param.json",
-           sys_ex_sce_sys_dir);
-  snprintf(sys_ex_eboot_tmp, sizeof(sys_ex_eboot_tmp), "%s.bfpilot-tmp",
-           sys_ex_eboot_path);
-  snprintf(sys_ex_param_tmp, sizeof(sys_ex_param_tmp), "%s.bfpilot-tmp",
-           sys_ex_param_path);
-
-  if(mkdir_checked(sys_ex_app_dir) == 0 && mkdir_checked(sys_ex_sce_sys_dir) == 0) {
-    /* 0-byte dummy eboot.bin required by Sony PS5 WebApp runner */
-    (void)write_atomic(sys_ex_eboot_tmp, sys_ex_eboot_path, (const unsigned char*)"", 0);
-    (void)write_atomic(sys_ex_param_tmp, sys_ex_param_path, bfpilot_param_json,
-                       bfpilot_param_json_size);
-    chmod(sys_ex_app_dir, 0755);
-    chmod(sys_ex_sce_sys_dir, 0755);
-    chmod(sys_ex_eboot_path, 0755);
-    chmod(sys_ex_param_path, 0644);
-    bfpilot_log("AppInst staged /system_ex/app/%s successfully", BFPILOT_APP_TITLE_ID);
-  } else {
-    bfpilot_log("AppInst /system_ex staging skipped or read-only (errno=%d)", errno);
+  if(remount_rc == 0) {
+    (void)unlink("/system_ex/app/" BFPILOT_APP_TITLE_ID "/eboot.bin");
+    (void)unlink("/system_ex/app/" BFPILOT_APP_TITLE_ID "/sce_sys/param.json");
+    (void)rmdir("/system_ex/app/" BFPILOT_APP_TITLE_ID "/sce_sys");
+    (void)rmdir("/system_ex/app/" BFPILOT_APP_TITLE_ID);
+    bfpilot_log("AppInst cleaned up /system_ex/app/%s", BFPILOT_APP_TITLE_ID);
   }
 
   /* 3. Stage /user/app/BFPL00001 */
