@@ -48,9 +48,12 @@ assert.ok(html.includes('id="chmod-overlay"'), 'files.html contains #chmod-overl
 assert.ok(html.includes('id="chmod-octal"'), 'files.html contains #chmod-octal input')
 assert.ok(html.includes('mode-clickable'), 'files.html supports clickable mode column')
 assert.ok(html.includes('storage-item-btn'), 'files.html implements clickable storage buttons')
-// 6. DualSense WebCard Navigation & UI Cleanliness
-assert.ok(!html.includes('id="tv-legend-bar"'), 'files.html must NOT contain #tv-legend-bar HUD')
-assert.ok(!html.includes('btn-ps5'), 'files.html must NOT contain PlayStation controller glyphs')
+// 6. DualSense WebCard Navigation & Square Selection
+assert.ok(!html.includes('id="tv-legend-bar"'), 'files.html must NOT contain legacy #tv-legend-bar')
+assert.ok(html.includes('id="controller-legend"'), 'files.html contains #controller-legend bar')
+assert.ok(html.includes('btn-square'), 'files.html must contain Square selection glyph')
+assert.ok(!html.includes('btn-options'), 'files.html must NOT contain Start/Options button in UI')
+assert.ok(!html.includes('btn-bumper'), 'files.html must NOT contain L1/R1 bumper buttons in UI')
 assert.ok(!html.includes('tv-mode'), 'files.html must NOT contain tv-mode class')
 assert.ok(!html.includes('toggle-fullscreen'), 'files.html must NOT contain broken toggle-fullscreen button')
 assert.ok(html.includes('activateFocusedItem'), 'files.html defines activateFocusedItem')
@@ -59,5 +62,5 @@ assert.ok(html.includes('toggleFocusedSelection'), 'files.html defines toggleFoc
 assert.ok(html.includes('pollGamepad'), 'files.html defines pollGamepad')
 assert.ok(appinst.includes('registration v4'), 'appinst_direct marker must be updated to v4')
 
-console.log('All v1.8 superiority, WebCard clean UI, DualSense navigation, and universal tile installer checks passed!')
+console.log('All v1.8 superiority, WebCard clean UI, Square selection, and universal tile installer checks passed!')
 

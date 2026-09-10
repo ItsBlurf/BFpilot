@@ -1000,6 +1000,65 @@
     .storage-summary .storage-item-btn.active strong {
       color: #9ee6c4;
     }
+
+    body {
+      padding-bottom: max(38px, calc(env(safe-area-inset-bottom, 10px) + 32px));
+    }
+
+    .controller-legend {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 18px;
+      padding: 6px 16px;
+      background: rgba(9, 13, 18, 0.94);
+      backdrop-filter: blur(8px);
+      border-top: 1px solid rgba(255, 255, 255, 0.08);
+      position: fixed;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      z-index: 900;
+      font-size: 12px;
+      font-weight: 500;
+      color: #a1a1aa;
+      letter-spacing: -0.01em;
+      box-shadow: 0 -2px 10px rgba(0, 0, 0, 0.3);
+      user-select: none;
+    }
+
+    .legend-item {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      cursor: default;
+    }
+
+    .legend-item.clickable {
+      cursor: pointer;
+    }
+
+    .btn-ps5 {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 20px;
+      height: 20px;
+      padding: 0 4px;
+      border-radius: 4px;
+      background: #18181b;
+      border: 1px solid #27272a;
+      color: #fafafa;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 11px;
+      font-weight: 700;
+      line-height: 1;
+      box-shadow: inset 0 1px 0 0 rgba(255, 255, 255, 0.06);
+    }
+
+    .btn-cross { color: #60a5fa; }
+    .btn-square { color: #f472b6; }
+    .btn-triangle { color: #34d399; }
   </style>
 </head>
 <body>
@@ -1311,6 +1370,12 @@
         <button id="chmod-modal-apply" class="button primary" style="min-height: 36px;">Apply Permissions</button>
       </div>
     </div>
+  </div>
+
+  <div id="controller-legend" class="controller-legend">
+    <span class="legend-item" id="legend-open" title="Open / Enter (Cross)"><kbd class="btn-ps5 btn-cross">✕</kbd> Open</span>
+    <span class="legend-item clickable" id="legend-select" title="Toggle Selection (Square / Space)"><kbd class="btn-ps5 btn-square">□</kbd> Select</span>
+    <span class="legend-item clickable" id="legend-search" title="Focus Search (Triangle)"><kbd class="btn-ps5 btn-triangle">△</kbd> Search</span>
   </div>
 
   <script>
@@ -3840,10 +3905,14 @@
       }
       if (pad) {
         const now = Date.now();
-        const isPressed = (btnIdx) => pad.buttons[btnIdx] && pad.buttons[btnIdx].pressed;
+        const isPressed = (btnIdx) => {
+          const btn = pad.buttons[btnIdx];
+          if (!btn) return false;
+          return typeof btn === 'object' ? Boolean(btn.pressed) : Boolean(btn > 0.5);
+        };
         const justPressed = (btnIdx) => {
           const pressed = isPressed(btnIdx);
-          const wasPressed = !!lastPadButtons[btnIdx];
+          const wasPressed = Boolean(lastPadButtons[btnIdx]);
           return pressed && !wasPressed;
         };
 
@@ -3881,7 +3950,7 @@
         }
 
         for (let b = 0; b < pad.buttons.length; b++) {
-          lastPadButtons[b] = pad.buttons[b].pressed;
+          lastPadButtons[b] = isPressed(b);
         }
       }
       requestAnimationFrame(pollGamepad);
@@ -4250,41 +4319,62 @@
       });
 
       window.addEventListener('keydown', (event) => {
+        const code = event.keyCode || event.which || 0;
+        const key = event.key || '';
         const tag = (event.target && event.target.tagName) || '';
         if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') {
-          if (event.key === 'Escape') event.target.blur();
+          if (key === 'Escape' || code === 27) event.target.blur();
           return;
         }
-        if (event.key === 'ArrowUp') {
+        if (code === 38 || key === 'ArrowUp') {
           event.preventDefault();
           if (state.focusedIndex <= 0) setFocusedIndex(0);
           else setFocusedIndex(state.focusedIndex - 1);
-        } else if (event.key === 'ArrowDown') {
+        } else if (code === 40 || key === 'ArrowDown') {
           event.preventDefault();
           if (state.focusedIndex < 0) setFocusedIndex(0);
           else setFocusedIndex(state.focusedIndex + 1);
-        } else if (event.key === 'PageUp') {
+        } else if (code === 33 || key === 'PageUp') {
           event.preventDefault();
           const jump = Math.max(1, Math.floor((el('list').clientHeight || 400) / 43));
           setFocusedIndex(Math.max(0, state.focusedIndex - jump));
-        } else if (event.key === 'PageDown') {
+        } else if (code === 34 || key === 'PageDown') {
           event.preventDefault();
           const jump = Math.max(1, Math.floor((el('list').clientHeight || 400) / 43));
           setFocusedIndex(state.focusedIndex + jump);
-        } else if (event.key === 'Enter') {
+        } else if (code === 13 || key === 'Enter') {
           event.preventDefault();
           activateFocusedItem();
-        } else if (event.key === ' ') {
+        } else if (code === 113 || key === 'F2' || code === 32 || key === ' ' || key === 'Spacebar') {
+          // Square on PS5 DualSense (F2 / 113) & Space on PC keyboard
           event.preventDefault();
           toggleFocusedSelection();
-        } else if (event.key === 'Backspace' || (event.altKey && event.key === 'ArrowUp')) {
+        } else if (code === 112 || key === 'F1') {
+          // Triangle on PS5 DualSense (F1 / 112)
+          event.preventDefault();
+          const sq = el('search-query');
+          if (sq) { sq.focus(); sq.select(); }
+        } else if (code === 8 || key === 'Backspace' || (event.altKey && (code === 38 || key === 'ArrowUp'))) {
           event.preventDefault();
           navigateParent();
-        } else if (event.key === 'F5' || (event.ctrlKey && (event.key === 'r' || event.key === 'R'))) {
+        } else if (code === 116 || key === 'F5' || (event.ctrlKey && (key === 'r' || key === 'R'))) {
           event.preventDefault();
           refresh();
         }
       });
+
+      if (el('legend-select')) {
+        el('legend-select').addEventListener('click', toggleFocusedSelection);
+      }
+      if (el('legend-open')) {
+        el('legend-open').addEventListener('click', activateFocusedItem);
+      }
+      if (el('legend-search')) {
+        el('legend-search').addEventListener('click', () => {
+          const sq = el('search-query');
+          if (sq) { sq.focus(); sq.select(); }
+        });
+      }
 
       requestAnimationFrame(pollGamepad);
 
