@@ -24,6 +24,7 @@
 #include <unistd.h>
 
 #include "diag.h"
+#include "notify.h"
 #include "archive_worker.h"
 #include "fs.h"
 #include "path_ops.h"
@@ -55,7 +56,7 @@
 #define COPY_BUF_SIZE   BFPILOT_TRANSFER_BUF_SIZE
 #define UPLOAD_BUF_SIZE BFPILOT_UPLOAD_BUF_SIZE
 #define BFPILOT_IO_ALIGNMENT 0x4000U
-#define BFPILOT_COPY_PIPELINE_MIN_SIZE (2ULL * 1024ULL * 1024ULL)
+#define BFPILOT_COPY_PIPELINE_MIN_SIZE (256ULL * 1024ULL * 1024ULL)
 #define BFPILOT_WRITEBACK_SYNC_BYTES (256ULL * 1024ULL * 1024ULL)
 #define BFPILOT_SPACE_MARGIN_BYTES (256ULL * 1024ULL * 1024ULL)
 #define BFPILOT_TEXT_MAX_SIZE (5U * 1024U * 1024U)
@@ -957,6 +958,10 @@ copy_file_serial(int in, int out, const char *src, const char *dst,
       atomic_fetch_add(&g_job.written_bytes, (long)written);
     }
     if(rc != 0) break;
+#ifdef POSIX_FADV_DONTNEED
+    (void)posix_fadvise(in, (off_t)(expected_size - remaining - n), (off_t)n,
+                        POSIX_FADV_DONTNEED);
+#endif
   }
   if(job_cancelled() && rc == 0) {
     saved_errno = ECANCELED;
@@ -1004,6 +1009,7 @@ copy_file(const char *src, const char *dst, const struct stat *expected) {
 #endif
 #ifdef POSIX_FADV_SEQUENTIAL
   (void)posix_fadvise(in, 0, 0, POSIX_FADV_SEQUENTIAL);
+  (void)posix_fadvise(out, 0, 0, POSIX_FADV_SEQUENTIAL);
 #endif
 #ifdef POSIX_FADV_NOREUSE
   (void)posix_fadvise(in, 0, 0, POSIX_FADV_NOREUSE);
@@ -3948,6 +3954,30 @@ transfer_action_post_request(const http_request_t *req, const char *url,
     }
     free(body);
     return websrv_send_text(req->fd, 200, "application/json", "{\"ok\":true}");
+  } else if(!strcmp(url, "/api/fs/launch") ||
+             !strcmp(url, "/api/fs/launch-elf") ||
+             !strcmp(url, "/api/launch-elf")) {
+    char path[1024];
+    if(!form_get_arg(body, "path", path, sizeof(path))) {
+      free(body);
+      return serve_error(req, 400, "missing path");
+    }
+    rc = bfpilot_launch_payload_path(path);
+    if(rc != 0) {
+      char resp[256];
+      snprintf(resp, sizeof(resp), "{\"ok\":false,\"error\":\"launch failed\",\"errno\":%d}", -rc);
+      free(body);
+      return websrv_send_text(req->fd, 500, "application/json", resp);
+    }
+    const char *base = strrchr(path, '/');
+    base = base ? base + 1 : path;
+    char note[160];
+    snprintf(note, sizeof(note), "sent %s to elfldr", base);
+    bfpilot_notify("BFpilot", note);
+    char resp[256];
+    snprintf(resp, sizeof(resp), "{\"ok\":true,\"port\":%d,\"path\":\"%s\"}", BFPILOT_ELFLDR_PORT, path);
+    free(body);
+    return websrv_send_text(req->fd, 200, "application/json", resp);
   } else {
     rc = serve_error(req, 404, "no such action endpoint");
   }
@@ -4869,7 +4899,9 @@ transfer_request(const http_request_t *req, const char *url) {
   if(!strcmp(url, "/api/fs/archive/status")) return archive_status_handler(req);
   if(!strcmp(url, "/api/fs/archive/support")) return archive_support_handler(req);
   if(!strcmp(url, "/api/fs/job/cancel")) return cancel_handler(req);
-  if(!strcmp(url, "/api/fs/launch")) return bfpilot_launch_request(req);
+  if(!strcmp(url, "/api/fs/launch") ||
+     !strcmp(url, "/api/fs/launch-elf") ||
+     !strcmp(url, "/api/launch-elf")) return bfpilot_launch_request(req);
   if(!strcmp(url, "/api/fs/chmod")) return chmod_request(req);
   if(!strcmp(url, "/api/fs/pkg/info")) return pkg_info_request(req);
   if(!strcmp(url, "/api/fs/pkg/icon")) return pkg_icon_request(req);

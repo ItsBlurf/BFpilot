@@ -787,7 +787,7 @@ dispatch_request(const http_request_t *req, const char *initial_body,
     if(!strcmp(req->path, "/fs") || !strncmp(req->path, "/fs/", 4)) {
       return fs_request(req, req->path);
     }
-    if(!strncmp(req->path, "/api/fs/", 8)) {
+    if(!strncmp(req->path, "/api/fs/", 8) || !strcmp(req->path, "/api/launch-elf")) {
       return transfer_request(req, req->path);
     }
     return asset_request(req, req->path);
@@ -812,7 +812,10 @@ dispatch_request(const http_request_t *req, const char *initial_body,
     if(!strcmp(req->path, "/api/fs/copy") ||
        !strcmp(req->path, "/api/fs/move") ||
        !strcmp(req->path, "/api/fs/delete") ||
-       !strcmp(req->path, "/api/fs/chmod")) {
+       !strcmp(req->path, "/api/fs/chmod") ||
+       !strcmp(req->path, "/api/fs/launch") ||
+       !strcmp(req->path, "/api/fs/launch-elf") ||
+       !strcmp(req->path, "/api/launch-elf")) {
       return transfer_action_post_request(req, req->path, initial_body,
                                           initial_size, content_size);
     }

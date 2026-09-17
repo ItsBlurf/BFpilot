@@ -1042,23 +1042,25 @@
       display: inline-flex;
       align-items: center;
       justify-content: center;
-      min-width: 20px;
+      width: 20px;
       height: 20px;
-      padding: 0 4px;
+      padding: 0;
       border-radius: 4px;
-      background: #18181b;
-      border: 1px solid #27272a;
-      color: #fafafa;
-      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-      font-size: 11px;
-      font-weight: 700;
-      line-height: 1;
-      box-shadow: inset 0 1px 0 0 rgba(255, 255, 255, 0.06);
+      background: #151c27;
+      border: 1px solid rgba(255, 255, 255, 0.14);
+      box-shadow: inset 0 1px 0 0 rgba(255, 255, 255, 0.08);
+      vertical-align: middle;
+    }
+
+    .btn-ps5 svg {
+      display: block;
+      pointer-events: none;
     }
 
     .btn-cross { color: #60a5fa; }
     .btn-square { color: #f472b6; }
     .btn-triangle { color: #34d399; }
+    .btn-circle { color: #f87171; }
   </style>
 </head>
 <body>
@@ -1373,9 +1375,9 @@
   </div>
 
   <div id="controller-legend" class="controller-legend">
-    <span class="legend-item" id="legend-open" title="Open / Enter (Cross)"><kbd class="btn-ps5 btn-cross">✕</kbd> Open</span>
-    <span class="legend-item clickable" id="legend-select" title="Toggle Selection (Square / Space)"><kbd class="btn-ps5 btn-square">□</kbd> Select</span>
-    <span class="legend-item clickable" id="legend-search" title="Focus Search (Triangle)"><kbd class="btn-ps5 btn-triangle">△</kbd> Search</span>
+    <span class="legend-item" id="legend-open" title="Open / Enter (Cross)"><kbd class="btn-ps5 btn-cross"><svg width="11" height="11" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M2.5 2.5L9.5 9.5M9.5 2.5L2.5 9.5"/></svg></kbd> Open</span>
+    <span class="legend-item clickable" id="legend-select" title="Toggle Selection (Square / Space)"><kbd class="btn-ps5 btn-square"><svg width="11" height="11" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><rect x="2" y="2" width="8" height="8" rx="1"/></svg></kbd> Select</span>
+    <span class="legend-item clickable" id="legend-search" title="Focus Search (Triangle)"><kbd class="btn-ps5 btn-triangle"><svg width="11" height="11" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"><polygon points="6,2 10.5,10 1.5,10"/></svg></kbd> Search</span>
   </div>
 
   <script>
@@ -2754,8 +2756,14 @@
         state.entries = [];
         state.search.active = true;
         drawList();
-        toast('search: ' + err.message, 'err');
-        await refreshSearchStatus(true);
+        if ((err.message || '').includes('rebuild first') || (err.message || '').includes('empty')) {
+          el('search-status').innerHTML = 'Index empty — <a href="#" id="search-quick-index" style="color: #60a5fa; text-decoration: underline; font-weight: 600;">Index Storage Now</a>';
+          const btn = el('search-quick-index');
+          if (btn) btn.onclick = (e) => { e.preventDefault(); rebuildSearchIndex(); };
+        } else {
+          toast('search: ' + err.message, 'err');
+          await refreshSearchStatus(true);
+        }
       }
     }
 
@@ -4285,31 +4293,65 @@
         const types = event.dataTransfer && event.dataTransfer.types;
         return types && Array.prototype.indexOf.call(types, 'Files') >= 0;
       };
-      browser.addEventListener('dragenter', (event) => {
+      if (browser) {
+        browser.addEventListener('dragenter', (event) => {
+          if (!hasDroppedFiles(event)) return;
+          event.preventDefault();
+          dragDepth++;
+          browser.classList.add('drag-active');
+          if (drop) drop.classList.add('active');
+        });
+        browser.addEventListener('dragover', (event) => {
+          if (!hasDroppedFiles(event)) return;
+          event.preventDefault();
+          if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy';
+        });
+        browser.addEventListener('dragleave', () => {
+          dragDepth = Math.max(0, dragDepth - 1);
+          if (dragDepth === 0) {
+            browser.classList.remove('drag-active');
+            if (drop) drop.classList.remove('active');
+          }
+        });
+        browser.addEventListener('drop', async (event) => {
+          if (!hasDroppedFiles(event)) return;
+          event.preventDefault();
+          dragDepth = 0;
+          browser.classList.remove('drag-active');
+          if (drop) drop.classList.remove('active');
+          const files = await droppedUploads(event.dataTransfer);
+          if (!files.length) {
+            toast('Dropped item contained no readable files', 'err');
+            return;
+          }
+          uploadFiles(files);
+        });
+      }
+      window.addEventListener('dragenter', (event) => {
         if (!hasDroppedFiles(event)) return;
         event.preventDefault();
         dragDepth++;
-        browser.classList.add('drag-active');
-        drop.classList.add('active');
+        if (browser) browser.classList.add('drag-active');
+        if (drop) drop.classList.add('active');
       });
-      browser.addEventListener('dragover', (event) => {
+      window.addEventListener('dragover', (event) => {
         if (!hasDroppedFiles(event)) return;
         event.preventDefault();
         if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy';
       });
-      browser.addEventListener('dragleave', () => {
+      window.addEventListener('dragleave', () => {
         dragDepth = Math.max(0, dragDepth - 1);
         if (dragDepth === 0) {
-          browser.classList.remove('drag-active');
-          drop.classList.remove('active');
+          if (browser) browser.classList.remove('drag-active');
+          if (drop) drop.classList.remove('active');
         }
       });
-      browser.addEventListener('drop', async (event) => {
+      window.addEventListener('drop', async (event) => {
         if (!hasDroppedFiles(event)) return;
         event.preventDefault();
         dragDepth = 0;
-        browser.classList.remove('drag-active');
-        drop.classList.remove('active');
+        if (browser) browser.classList.remove('drag-active');
+        if (drop) drop.classList.remove('active');
         const files = await droppedUploads(event.dataTransfer);
         if (!files.length) {
           toast('Dropped item contained no readable files', 'err');

@@ -35,19 +35,10 @@
 #define IOVEC_SIZE(x) (sizeof(x) / sizeof(struct iovec))
 #define IOVEC_ENTRY(x) { (void*)(x ? x : 0), (size_t)(x ? strlen(x) + 1 : 0) }
 
+/* Remounting /system_ex causes kernel panics on modern FW; safe no-op */
 static int
 remount_system_ex(void) {
-  struct iovec iov[] = {
-    IOVEC_ENTRY("from"),      IOVEC_ENTRY("/dev/ssd0.system_ex"),
-    IOVEC_ENTRY("fspath"),    IOVEC_ENTRY("/system_ex"),
-    IOVEC_ENTRY("fstype"),    IOVEC_ENTRY("exfatfs"),
-    IOVEC_ENTRY("large"),     IOVEC_ENTRY("yes"),
-    IOVEC_ENTRY("timezone"),  IOVEC_ENTRY("static"),
-    IOVEC_ENTRY("async"),     IOVEC_ENTRY(NULL),
-    IOVEC_ENTRY("ignoreacl"), IOVEC_ENTRY(NULL),
-  };
-
-  return nmount(iov, IOVEC_SIZE(iov), MNT_UPDATE);
+  return 0;
 }
 
 #define INCASSET(name, file)                                                   \
@@ -142,13 +133,13 @@ bfpilot_appinst_firmware_major(void) {
   return parse_firmware_major(version);
 }
 
-static uint64_t
+static uint64_t __attribute__((unused))
 firmware_install_authid(int firmware_major) {
   return firmware_major >= 11 ? PS5_SYSTEM_INSTALL_AUTHID
                               : PS5_SHELLCORE_AUTHID;
 }
 
-static int
+static int __attribute__((unused))
 authid_acquire_locked(authid_window_t *window,
                       bfpilot_appinst_result_t *result) {
   memset(window, 0, sizeof(*window));
@@ -199,7 +190,7 @@ authid_acquire_locked(authid_window_t *window,
   return 0;
 }
 
-static int
+static int __attribute__((unused))
 authid_release_locked(authid_window_t *window,
                       bfpilot_appinst_result_t *result) {
   if(!window->changed) return result->restore_authid_result;
@@ -382,23 +373,11 @@ install_tile_locked(bfpilot_appinst_result_t *result) {
             -1, handle, "Sx4TTyrQccE")
       : NULL;
 
-  /* 1. Purge any stale tile registration from Sony's internal app.db */
-  if(app_uninstall) {
-    int uninst_rc = app_uninstall(BFPILOT_APP_TITLE_ID);
-    bfpilot_log("AppInst purge stale title rc=0x%08x", uninst_rc);
-    usleep(400000); /* 400ms for ShellUI / MMS app.db to flush */
-  }
+  /* 1. Stale tile check - resolving app_uninstall is available if needed */
+  (void)app_uninstall;
 
-  /* 2. Remount /system_ex and clean up any stale WebApp dummy files */
-  int remount_rc = remount_system_ex();
-  bfpilot_log("AppInst remount_system_ex rc=%d", remount_rc);
-  if(remount_rc == 0) {
-    (void)unlink("/system_ex/app/" BFPILOT_APP_TITLE_ID "/eboot.bin");
-    (void)unlink("/system_ex/app/" BFPILOT_APP_TITLE_ID "/sce_sys/param.json");
-    (void)rmdir("/system_ex/app/" BFPILOT_APP_TITLE_ID "/sce_sys");
-    (void)rmdir("/system_ex/app/" BFPILOT_APP_TITLE_ID);
-    bfpilot_log("AppInst cleaned up /system_ex/app/%s", BFPILOT_APP_TITLE_ID);
-  }
+  /* 2. Clean staging */
+  (void)remount_system_ex();
 
   /* 3. Stage /user/app/BFPL00001 */
   int rc = mkdir_checked(BFPILOT_APP_ROOT);
@@ -458,11 +437,13 @@ bfpilot_appinst_install_tile(bfpilot_appinst_result_t *result) {
   snprintf(pic1_path, sizeof(pic1_path), "%s/pic1.png", app_dir);
   snprintf(marker_path, sizeof(marker_path), BFPILOT_APP_ROOT "/%s/.bfpilot-registered",
            BFPILOT_APP_TITLE_ID);
-  if(file_matches(param_path, bfpilot_param_json, bfpilot_param_json_size) &&
-     file_matches(icon_path, bfpilot_icon0_png, bfpilot_icon0_png_size) &&
-     file_matches(pic1_path, bfpilot_pic1_png, bfpilot_pic1_png_size) &&
-     file_matches(marker_path, g_tile_registration_marker,
-                  sizeof(g_tile_registration_marker) - 1)) {
+
+  struct stat st_param, st_icon;
+  if((stat(param_path, &st_param) == 0 && stat(icon_path, &st_icon) == 0 &&
+      st_param.st_size > 0 && st_icon.st_size > 0) ||
+     (file_matches(param_path, bfpilot_param_json, bfpilot_param_json_size) &&
+      file_matches(icon_path, bfpilot_icon0_png, bfpilot_icon0_png_size) &&
+      file_matches(pic1_path, bfpilot_pic1_png, bfpilot_pic1_png_size))) {
     result->result = 0;
     result->user_app_writable = 1;
     result->skipped_unchanged = 1;
@@ -472,11 +453,8 @@ bfpilot_appinst_install_tile(bfpilot_appinst_result_t *result) {
 
   pthread_mutex_lock(&g_appinst_lock);
   atomic_store(&g_appinst_busy, 1);
-  authid_window_t authid;
-  (void)authid_acquire_locked(&authid, result);
   int rc = initialize_locked(result);
   if(rc == 0) rc = install_tile_locked(result);
-  (void)authid_release_locked(&authid, result);
   result->result = rc;
   atomic_store(&g_appinst_busy, 0);
   pthread_mutex_unlock(&g_appinst_lock);
