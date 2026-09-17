@@ -580,6 +580,9 @@ diag_request(const http_request_t *req) {
                     launcher_diag.launcher_final_state);
   json_error_escape(checkpoint_json, sizeof(checkpoint_json), checkpoint);
 
+  unsigned long long free_ram = 0, total_ram = 0;
+  bfpilot_diag_get_memory_info(&free_ram, &total_ram);
+
   int n = snprintf(body, sizeof(body),
                    "{\"ok\":true,"
                    "\"name\":\"BFpilot\","
@@ -591,6 +594,8 @@ diag_request(const http_request_t *req) {
                    "\"uptime\":%ld,"
                    "\"port\":%u,"
                    "\"firmwareMajor\":%d,"
+                   "\"free_ram_mb\":%llu,"
+                   "\"total_ram_mb\":%llu,"
                    "\"cwd\":\"%s\","
                    "\"can_stat_root\":%s,"
                    "\"can_opendir_data\":%s,"
@@ -656,12 +661,15 @@ diag_request(const http_request_t *req) {
                    "\"/api/fs/launch\","
                    "\"/api/fs/chmod\","
                    "\"/api/fs/pkg/info\","
-                   "\"/api/fs/pkg/icon\"]}",
+                   "\"/api/fs/pkg/icon\","
+                   "\"/api/diag/logs\"]}",
                    VERSION_TAG, BUILD_VERSION, BFPILOT_BUILD_MODE,
                    (long)getpid(), (long)now,
                    bfpilot_diag_uptime(),
                    (unsigned int)g_websrv_port,
                    bfpilot_appinst_firmware_major(),
+                   (unsigned long long)(free_ram / (1024ULL * 1024ULL)),
+                   (unsigned long long)(total_ram / (1024ULL * 1024ULL)),
                    cwd_json,
                    json_bool(can_stat_root),
                    json_bool(can_opendir_data),
@@ -735,6 +743,44 @@ diag_log_udp_request(const http_request_t *req) {
 
 
 static int
+diag_logs_request(const http_request_t *req) {
+  char tail_str[32] = {0};
+  char fmt_str[32] = {0};
+  char clear_str[32] = {0};
+  char level_str[32] = {0};
+
+  (void)websrv_get_query_arg(req, "tail", tail_str, sizeof(tail_str));
+  (void)websrv_get_query_arg(req, "fmt", fmt_str, sizeof(fmt_str));
+  (void)websrv_get_query_arg(req, "clear", clear_str, sizeof(clear_str));
+  (void)websrv_get_query_arg(req, "level", level_str, sizeof(level_str));
+
+  if(clear_str[0] && strcmp(clear_str, "0") != 0) {
+    bfpilot_diag_clear_logs();
+    const char clear_msg[] = "{\"ok\":true,\"cleared\":true}";
+    return websrv_send(req->fd, 200, "application/json", clear_msg, sizeof(clear_msg) - 1);
+  }
+
+  size_t tail_count = 200;
+  if(tail_str[0]) {
+    long t = strtol(tail_str, NULL, 10);
+    if(t > 0) tail_count = (size_t)t;
+  }
+
+  const char *fmt = fmt_str[0] ? fmt_str : "text";
+  char *log_data = NULL;
+  size_t log_size = 0;
+  if(bfpilot_diag_dump_logs(&log_data, &log_size, tail_count, fmt, level_str) != 0 || !log_data) {
+    return websrv_send_error_json(req->fd, 500, "failed to read log buffer");
+  }
+
+  const char *mime = (!strcmp(fmt, "json")) ? "application/json" : "text/plain; charset=utf-8";
+  int rc = websrv_send(req->fd, 200, mime, log_data, log_size);
+  free(log_data);
+  return rc;
+}
+
+
+static int
 shutdown_request(const http_request_t *req) {
   char token[64];
   if(!websrv_get_query_arg(req, "token", token, sizeof(token)) ||
@@ -781,6 +827,9 @@ dispatch_request(const http_request_t *req, const char *initial_body,
     if(!strcmp(req->path, "/api/diag/log_udp")) {
       return diag_log_udp_request(req);
     }
+    if(!strcmp(req->path, "/api/diag/logs")) {
+      return diag_logs_request(req);
+    }
     if(!strcmp(req->path, "/api/control/shutdown")) {
       return shutdown_request(req);
     }
@@ -796,6 +845,9 @@ dispatch_request(const http_request_t *req, const char *initial_body,
   if(!strcmp(req->method, "POST")) {
     if(!strcmp(req->path, "/api/control/shutdown") || !strncmp(req->path, "/api/control/shutdown?", 22)) {
       return shutdown_request(req);
+    }
+    if(!strcmp(req->path, "/api/diag/logs")) {
+      return diag_logs_request(req);
     }
     if(!strcmp(req->path, "/api/fs/upload")) {
       return transfer_upload_request(req, initial_body, initial_size,

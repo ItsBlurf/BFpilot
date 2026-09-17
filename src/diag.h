@@ -35,6 +35,8 @@ int bfpilot_diag_launcher_rc(void);
 void bfpilot_diag_get_checkpoint(char *out, size_t out_size);
 
 void bfpilot_diag_get_cwd(char *out, size_t out_size);
+
+void bfpilot_diag_get_cwd(char *out, size_t out_size);
 int bfpilot_diag_can_stat_root(void);
 int bfpilot_diag_can_opendir_data(void);
 int bfpilot_diag_can_opendir_data_homebrew(void);
@@ -43,3 +45,7 @@ int bfpilot_diag_can_opendir_ext0(void);
 int bfpilot_diag_can_opendir_ext0_homebrew(void);
 int bfpilot_diag_can_write_data_bfpilot(void);
 int bfpilot_diag_can_write_user_app(void);
+
+int bfpilot_diag_dump_logs(char **out_buf, size_t *out_size, size_t tail_count, const char *fmt, const char *level_filter);
+void bfpilot_diag_clear_logs(void);
+void bfpilot_diag_get_memory_info(unsigned long long *free_bytes, unsigned long long *total_bytes);

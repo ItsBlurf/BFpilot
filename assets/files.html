@@ -1203,18 +1203,21 @@
   <div id="toast" class="toast"></div>
 
   <div id="log-overlay" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.85); z-index: 9999; padding: 20px; box-sizing: border-box; flex-direction: column;">
-    <div style="display: flex; justify-content: space-between; align-items: center; background: #111821; padding: 12px; border: 1px solid #293645; border-bottom: 0; border-radius: 8px 8px 0 0;">
-      <h3 style="margin: 0; color: #fff; font-family: monospace;">Diagnostics & Logs</h3>
-      <div style="display: flex; align-items: center; gap: 12px;">
-        <select id="log-select" style="background: #090d12; color: #fff; border: 1px solid #293645; padding: 6px 12px; border-radius: 4px; outline: none; cursor: pointer; font-family: monospace;">
-          <option value="bfpilot">Bfpilot Log (/data/BFpilot/log.txt)</option>
+    <div style="display: flex; justify-content: space-between; align-items: center; background: #111821; padding: 12px; border: 1px solid #293645; border-bottom: 0; border-radius: 8px 8px 0 0; flex-wrap: wrap; gap: 8px;">
+      <h3 style="margin: 0; color: #fff; font-family: monospace;">Diagnostics &amp; Logs</h3>
+      <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+        <input id="log-filter" type="text" placeholder="Filter logs..." style="background: #090d12; color: #fff; border: 1px solid #293645; padding: 6px 10px; border-radius: 4px; font-family: monospace; font-size: 12px; width: 130px; outline: none;">
+        <select id="log-select" style="background: #090d12; color: #fff; border: 1px solid #293645; padding: 6px 10px; border-radius: 4px; outline: none; cursor: pointer; font-family: monospace;">
+          <option value="live" selected>Live Real-Time Logs (In-Memory Buffer)</option>
+          <option value="bfpilot">BFpilot Disk Log (/data/BFpilot/log.txt)</option>
           <option value="error-history">PS5 Error History (/system_data/priv/error/history/)</option>
           <option value="vsh">PS5 VSH Log (/system_data/priv/vshlog/vshlog.0.txt)</option>
           <option value="archive">Archive Extractor Log (archive-worker.log)</option>
           <option value="pkg">PKG Installer Log (pkg-installer.log)</option>
           <option value="search">Search Crawler Log (search_crawl.log)</option>
-          <option value="boot">Bfpilot Boot Log (boot.log)</option>
+          <option value="boot">BFpilot Boot Log (boot.log)</option>
         </select>
+        <button id="log-clear" class="button warn" style="padding: 6px 10px;">Clear</button>
         <button id="log-close" class="button danger" style="padding: 6px 12px;">Close</button>
       </div>
     </div>
@@ -3979,6 +3982,24 @@
         const lc = el('log-content');
         if (!lc) return;
 
+        if (value === 'live') {
+          try {
+            const r = await fetch('/api/diag/logs?fmt=text&tail=300');
+            if (!r.ok) throw new Error('HTTP ' + r.status);
+            let t = await r.text();
+            const filter = el('log-filter') ? el('log-filter').value.trim().toLowerCase() : '';
+            if (filter) {
+              t = t.split('\n').filter(line => line.toLowerCase().includes(filter)).join('\n');
+            }
+            const autoScroll = (lc.scrollHeight - lc.scrollTop <= lc.clientHeight + 60);
+            lc.textContent = t || 'Live log buffer is empty.';
+            if (autoScroll) lc.scrollTop = lc.scrollHeight;
+          } catch (err) {
+            lc.textContent = 'Error reading live logs: ' + err.message;
+          }
+          return;
+        }
+
         if (value === 'error-history') {
           try {
             const r = await fetch('/fs/system_data/priv/error/history?fmt=json');
@@ -4022,6 +4043,10 @@
                 // Ignore parse errors for individual files
               }
             }
+            const filter = el('log-filter') ? el('log-filter').value.trim().toLowerCase() : '';
+            if (filter && combinedText) {
+              combinedText = combinedText.split('\n').filter(l => l.toLowerCase().includes(filter)).join('\n');
+            }
             lc.textContent = combinedText || 'Failed to parse error history.';
           } catch (err) {
             lc.textContent = 'Error loading error history: ' + err.message;
@@ -4040,7 +4065,11 @@
         try {
           const r = await fetch('/fs' + path + '?tail=100000');
           if (!r.ok) throw new Error('HTTP ' + r.status);
-          const t = await r.text();
+          let t = await r.text();
+          const filter = el('log-filter') ? el('log-filter').value.trim().toLowerCase() : '';
+          if (filter && t) {
+            t = t.split('\n').filter(l => l.toLowerCase().includes(filter)).join('\n');
+          }
           const autoScroll = (lc.scrollHeight - lc.scrollTop <= lc.clientHeight + 50);
           lc.textContent = t || 'No logs found.';
           if (autoScroll) lc.scrollTop = lc.scrollHeight;
@@ -4060,6 +4089,24 @@
         el('log-overlay').style.display = 'none';
         if (logTimer) { clearInterval(logTimer); logTimer = null; }
       });
+
+      el('log-clear').addEventListener('click', async () => {
+        const value = el('log-select') ? el('log-select').value : '';
+        if (value === 'live') {
+          try {
+            await fetch('/api/diag/logs?clear=1');
+          } catch(e) {}
+        }
+        const lc = el('log-content');
+        if (lc) lc.textContent = 'Cleared.';
+        fetchLogs();
+      });
+
+      if (el('log-filter')) {
+        el('log-filter').addEventListener('input', () => {
+          fetchLogs();
+        });
+      }
 
       el('log-select').addEventListener('change', () => {
         const lc = el('log-content');

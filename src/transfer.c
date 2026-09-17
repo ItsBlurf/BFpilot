@@ -834,6 +834,10 @@ copy_file_pipelined(int in, int out, const char *src, const char *dst,
     }
     atomic_fetch_add(&g_job.read_bytes, (long)n);
     remaining -= (unsigned long long)n;
+#ifdef POSIX_FADV_DONTNEED
+    (void)posix_fadvise(in, (off_t)(expected_size - remaining - n), (off_t)n,
+                        POSIX_FADV_DONTNEED);
+#endif
 
     pthread_mutex_lock(&pipe.lock);
     if(pipe.writer_errno) {
@@ -1018,6 +1022,9 @@ copy_file(const char *src, const char *dst, const struct stat *expected) {
   job_set_current(src);
   unsigned long long expected_size =
       expected->st_size > 0 ? (unsigned long long)expected->st_size : 0;
+  if(expected_size > 0) {
+    (void)posix_fallocate(out, 0, (off_t)expected_size);
+  }
   int rc = 1;
   if(expected_size >= BFPILOT_COPY_PIPELINE_MIN_SIZE) {
     rc = copy_file_pipelined(in, out, src, dst, expected_size);
@@ -2259,8 +2266,16 @@ append_mount_candidate(json_buf_t *b, int *first, const char *path,
   }
 
   char label[64];
-  snprintf(label, sizeof(label), "%s", path + strlen("/mnt/"));
-  for(char *p = label; *p; p++) *p = (char)toupper((unsigned char)*p);
+  if(!strcmp(path, "/mnt/ext1")) {
+    snprintf(label, sizeof(label), "M.2 SSD");
+  } else if(!strcmp(path, "/mnt/ext0")) {
+    snprintf(label, sizeof(label), "USB Extended");
+  } else if(!strncmp(path, "/mnt/usb", 8)) {
+    snprintf(label, sizeof(label), "USB Drive %s", path + strlen("/mnt/usb"));
+  } else {
+    snprintf(label, sizeof(label), "%s", path + strlen("/mnt/"));
+    for(char *p = label; *p; p++) *p = (char)toupper((unsigned char)*p);
+  }
   return append_fs_place(b, first, label, path, kind, 0, 1);
 }
 
