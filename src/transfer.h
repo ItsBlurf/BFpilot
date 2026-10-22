@@ -31,6 +31,8 @@ int transfer_archive_prepare_request(const http_request_t *req,
                                      const char *initial_data,
                                      size_t initial_size,
                                      size_t content_size);
+int transfer_archive_batch_request(const http_request_t *, const char *, size_t,
+                                   size_t);
 
 int transfer_download_prepare_request(const http_request_t *req,
                                       const char *initial_data,

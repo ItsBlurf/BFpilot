@@ -452,7 +452,11 @@ int g_archive_cancel = 0;
 
 int
 transfer_archive_busy(void) {
-  return atomic_load(&g_archive_busy) != 0;
+  return atomic_load(&g_archive_busy) != 0
+#if BFPILOT_ENABLE_INTEGRATED_ARCHIVE
+      || bfpilot_archive_batch_busy()
+#endif
+      ;
 }
 
 
@@ -498,11 +502,11 @@ job_cancelled(void) {
 
 static int
 job_begin(const char *verb) {
-  if(atomic_load(&g_archive_busy)) return 0;
+  if(transfer_archive_busy()) return 0;
   int expected = 0;
   if(!atomic_compare_exchange_strong(&g_job.busy, &expected, 1)) return 0;
   /* Close the race with archive_prepare claiming its own busy flag. */
-  if(atomic_load(&g_archive_busy)) {
+  if(transfer_archive_busy()) {
     atomic_store(&g_job.busy, 0);
     return 0;
   }
@@ -4673,7 +4677,11 @@ transfer_archive_prepare_request(const http_request_t *req,
   char nice[32] = {0};
   char cleanup_partial[16] = {0};
 
-  if(atomic_load(&g_job.busy)) {
+  if(atomic_load(&g_job.busy)
+#if BFPILOT_ENABLE_INTEGRATED_ARCHIVE
+     || bfpilot_archive_batch_busy()
+#endif
+     ) {
     drain_body(req->fd, initial_size, content_size);
     return serve_error(req, 409, "another file-manager job is running");
   }
@@ -4881,8 +4889,121 @@ transfer_archive_prepare_request(const http_request_t *req,
 }
 
 
+int
+transfer_archive_batch_request(const http_request_t *req, const char *initial,
+                                size_t initial_size, size_t content_size) {
+#if !BFPILOT_ENABLE_INTEGRATED_ARCHIVE
+  drain_body(req->fd, initial_size, content_size);
+  return serve_error(req, 400, "integrated archive support is disabled");
+#else
+  int expected = 0;
+  if(bfpilot_archive_batch_busy() || atomic_load(&g_job.busy) ||
+     !atomic_compare_exchange_strong(&g_archive_busy, &expected, 1)) {
+    drain_body(req->fd, initial_size, content_size);
+    return serve_error(req, 409, "another file-manager job is running");
+  }
+  if(atomic_load(&g_job.busy) || bfpilot_archive_batch_busy()) {
+    atomic_store(&g_archive_busy, 0);
+    drain_body(req->fd, initial_size, content_size);
+    return serve_error(req, 409, "another file-manager job is running");
+  }
+  const size_t form_limit = BFAB_MAX_ITEMS * (6U * BFAB_PATH_SIZE + 32U) + 4096U;
+  char *body = NULL;
+  int rc = read_request_body(req, initial, initial_size, content_size, form_limit, &body);
+  int http = 400;
+  const char *error = "invalid archive batch fields";
+  bfab_job_t batch = {0};
+  bfab_item_t *items = NULL;
+  if(rc || memchr(body, 0, content_size)) goto fail;
+  items = calloc(BFAB_MAX_ITEMS, sizeof(*items));
+  if(!items) { error = "out of memory"; http = 500; goto fail; }
+  batch.items = items; batch.state = BFAB_PREPARED; batch.revision = 1;
+  batch.nice = BFPILOT_ARCHIVE_DEFAULT_NICE;
+  unsigned options = 0;
+  int need_destination = 0;
+  for(const char *p = body; *p;) {
+    const char *amp = strchr(p, '&');
+    size_t length = amp ? (size_t)(amp - p) : strlen(p);
+    const char *eq = memchr(p, '=', length);
+    size_t key_size = eq ? (size_t)(eq - p) : length;
+    char key[32], value[4097];
+    if(!eq || form_component_decode(p, key_size, key, sizeof(key)) ||
+       form_component_decode(eq + 1, length - key_size - 1, value, sizeof(value))) goto fail;
+    if(!strcmp(key, "src") || !strcmp(key, "dst")) {
+      int source = !strcmp(key, "src");
+      if(batch.count >= BFAB_MAX_ITEMS || (source ? need_destination : !need_destination)) goto fail;
+      (void)bfpilot_path_decode_byte_tokens(value);
+      if(strlen(value) >= BFAB_PATH_SIZE || !archive_path_allowed(value) ||
+         !config_value_safe(value, 0)) {
+        error = bfpilot_smb_path(value) ? "copy archives to local storage before extracting" :
+                "archive batch paths must be within local allowed roots";
+        goto fail;
+      }
+      strcpy(source ? items[batch.count].source : items[batch.count].destination, value);
+      need_destination = source;
+      if(!source) batch.count++;
+    } else {
+      unsigned bit = !strcmp(key, "password") ? 1U : !strcmp(key, "threads") ? 2U :
+        !strcmp(key, "nice") ? 4U : !strcmp(key, "cleanupPartial") ? 8U :
+        !strcmp(key, "merge") ? 16U : 0U;
+      if(!bit || (options & bit) || !config_value_safe(value, 1)) goto fail;
+      options |= bit;
+      if(bit == 1) {
+        if(strlen(value) >= sizeof(batch.password)) goto fail;
+        strcpy(batch.password, value);
+      } else if(bit == 2) batch.threads = archive_normalize_threads_text(value);
+      else if(bit == 4) batch.nice = archive_normalize_nice_text(value);
+      else if(bit == 8 && archive_bool_text_true(value)) batch.flags |= BFAB_CLEANUP;
+      else if(bit == 16 && archive_bool_text_true(value)) {
+        error = "archive merge is not available in this build"; goto fail;
+      }
+    }
+    if(!amp) break;
+    p = amp + 1;
+  }
+  if(need_destination || !batch.count) goto fail;
+  struct timespec stamp;
+  static atomic_ullong batch_sequence;
+  if(clock_gettime(CLOCK_REALTIME, &stamp)) { http = 500; error = strerror(errno); goto fail; }
+  snprintf(batch.id, sizeof(batch.id), "b%lx-%llx-%lx-%llx", (unsigned long)getpid(),
+           (unsigned long long)stamp.tv_sec, (unsigned long)stamp.tv_nsec,
+           atomic_fetch_add(&batch_sequence, 1));
+  batch.created = (uint64_t)stamp.tv_sec;
+  if(bfab_validate(&batch)) goto fail;
+  for(unsigned i = 0; i < batch.count; i++) {
+    struct stat st;
+    if(lstat(items[i].source, &st) || !S_ISREG(st.st_mode)) {
+      error = "archive source is not a regular local file"; http = 404; goto fail;
+    }
+    if(lstat(items[i].destination, &st) == 0) {
+      error = "archive destination already exists"; http = 409; goto fail;
+    }
+    if(errno != ENOENT) { error = strerror(errno); http = 500; goto fail; }
+    for(unsigned k = 0; k < i; k++) if(!strcmp(items[k].destination, items[i].destination)) {
+      error = "archive batch contains duplicate destinations"; http = 409; goto fail;
+    }
+  }
+  rc = bfpilot_archive_batch_start(&batch);
+  if(rc) { error = strerror(-rc); http = rc == -EBUSY || rc == -EAGAIN ? 409 : 500; goto fail; }
+  free(items); free(body);
+  bfpilot_search_mark_stale("archive batch");
+  char response[256];
+  int n = snprintf(response, sizeof(response), "{\"ok\":true,\"id\":\"%s\",\"count\":%u}", batch.id, batch.count);
+  // Acceptance is already durable; a disconnected browser cannot release it.
+  return websrv_send(req->fd, 200, "application/json", response, (size_t)n);
+fail:
+  free(items); free(body);
+  atomic_store(&g_archive_busy, 0);
+  return serve_error(req, http, error);
+#endif
+}
+
 static int
 cancel_handler(const http_request_t *req) {
+#if BFPILOT_ENABLE_INTEGRATED_ARCHIVE
+  int batch_rc = bfpilot_archive_batch_cancel();
+  if(batch_rc) return serve_error(req, 500, "archive batch cancellation could not be journaled; current extraction asked to stop");
+#endif
   __atomic_store_n(&g_archive_cancel, 1, __ATOMIC_RELAXED);
   if(download_cancel_pending()) return status_handler(req);
   if(atomic_load(&g_job.busy)) {
@@ -4918,6 +5039,13 @@ transfer_request(const http_request_t *req, const char *url) {
   if(!strcmp(url, "/api/fs/pkg/status")) return bfpilot_pkg_status_request(req);
   if(!strcmp(url, "/api/fs/text")) return text_read_request(req);
   if(!strcmp(url, "/api/fs/archive/status")) return archive_status_handler(req);
+#if BFPILOT_ENABLE_INTEGRATED_ARCHIVE
+  if(!strcmp(url, "/api/fs/archive/batch/status")) {
+    char *body = NULL; size_t size = 0;
+    int rc = bfpilot_archive_batch_status(&body, &size);
+    return rc ? serve_error(req, 500, strerror(-rc)) : serve_owned(req, 200, body, size);
+  }
+#endif
   if(!strcmp(url, "/api/fs/archive/support")) return archive_support_handler(req);
   if(!strcmp(url, "/api/fs/job/cancel")) return cancel_handler(req);
   if(!strcmp(url, "/api/fs/launch") ||

@@ -46,6 +46,26 @@ existing bounded manual decoder thread selection and output buffering.
 
 Select archive → set Target → Extract → optional password → watch `/api/fs/archive/status`.
 
+## Sequential batch API
+
+POST `/api/fs/archive/batch` with repeated ordered `src`, `dst` form pairs
+and optional common `password`, `threads`, `nice`, `cleanupPartial` fields.
+At most2048 local regular archives are accepted, within the12MiB form limit.
+Destinations must be absent and distinct. The browser currently uses the
+single-archive action; the multiple-archive dialog is still in development.
+
+GET `/api/fs/archive/batch/status` returns queue identity/counts and individual
+outcomes. The server retains its queue across browser refresh/main replacement.
+Cancellation through `/api/fs/job/cancel` stops the current item cooperatively
+and leaves later items unattempted. A failed archive does not prevent later
+archives; check both `succeeded` and `failed` even when queue state is `done`.
+Uncertain recovery stops for inspection instead of repeating an extraction.
+
+Batch state lives in the private `batch/` directory. Password and exact path
+spaces are preserved; passwords are not exposed by status. Keep these private
+files when diagnosing recovery. Controlled main replacement is tested; file
+sync is not a guarantee against storage loss during a power cut.
+
 ## Code
 
 * UnRAR — `third_party/unrar-ps5/`

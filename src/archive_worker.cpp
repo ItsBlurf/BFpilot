@@ -5,6 +5,7 @@
  */
 
 #include "archive_worker.h"
+#include "archive_batch_store.h"
 #include "full_archive_client.h"
 #include "tree_chmod.h"
 #include "tree_walk.h"
@@ -84,12 +85,14 @@ struct ArchiveConfig {
   std::string source;
   std::string destination;
   std::string password;
+  std::string request_id;
   unsigned threads = 0;
   int priority_nice = 0;
   bool cleanup_partial = false;
 };
 
 struct WorkerStatus {
+  std::string request_id;
   std::string state;
   std::string archive_type;
   std::string source;
@@ -118,6 +121,7 @@ struct WorkerStatus {
 };
 
 static WorkerStatus g_status;
+static bool g_terminal_status_durable = false;
 static long g_last_status_ms = 0;
 static int g_last_progress = -1;
 static std::atomic<unsigned long long> g_io_input_bytes(0);
@@ -692,7 +696,8 @@ WriteStatus(bool force) {
   const std::string escaped[] = {
     JsonEscape(g_status.state), JsonEscape(g_status.archive_type),
     JsonEscape(g_status.source), JsonEscape(g_status.destination),
-    JsonEscape(g_status.stage), JsonEscape(g_status.current), JsonEscape(g_status.error)
+    JsonEscape(g_status.stage), JsonEscape(g_status.current), JsonEscape(g_status.error),
+    JsonEscape(g_status.request_id)
   };
   size_t capacity = 4096;
   for(const auto &field : escaped) {
@@ -739,7 +744,7 @@ WriteStatus(bool force) {
       "\"rarMtLargeBlocks\":%llu,"
       "\"priorityNice\":%d,\"priorityRc\":%d,\"priorityErrno\":%d,"
       "\"archiveExitCode\":%d,"
-      "\"requiresInjection\":%s}",
+      "\"requiresInjection\":%s,\"requestId\":\"%s\"}",
       worker_name,
       escaped[0].c_str(),
       escaped[1].c_str(),
@@ -768,15 +773,20 @@ WriteStatus(bool force) {
       rar_mt_threaded_blocks, rar_mt_large_blocks,
       g_status.priority_nice, g_status.priority_rc,
       g_status.priority_errno,
-      g_status.archive_exit_code, requires_injection);
+      g_status.archive_exit_code, requires_injection, escaped[7].c_str());
   if(n < 0 || (size_t)n >= capacity) return;
   size_t len = (size_t)n;
 
-  int fd = open(BFPILOT_ARCHIVE_STATUS_TMP, O_WRONLY | O_CREAT | O_TRUNC, 0666);
+  const bool terminal = g_status.state == "done" || g_status.state == "error";
+  if(terminal) g_terminal_status_durable = false;
+  int fd = open(BFPILOT_ARCHIVE_STATUS_TMP, O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW, 0666);
   if(fd < 0) return;
   bool ok = WriteAll(fd, body.get(), len);
-  close(fd);
-  if(ok) rename(BFPILOT_ARCHIVE_STATUS_TMP, BFPILOT_ARCHIVE_STATUS);
+  if(ok && terminal && fsync(fd) != 0) ok = false;
+  if(close(fd) != 0) ok = false;
+  if(ok && rename(BFPILOT_ARCHIVE_STATUS_TMP, BFPILOT_ARCHIVE_STATUS) != 0) ok = false;
+  if(terminal) g_terminal_status_durable = ok;
+  if(!ok) LogLine("archive status publication failed errno=%d terminal=%d", errno, terminal ? 1 : 0);
 }
 
 static void
@@ -879,6 +889,7 @@ LoadConfig(ArchiveConfig &cfg, std::string &error) {
   cfg.source.clear();
   cfg.destination.clear();
   cfg.password.clear();
+  cfg.request_id.clear();
   cfg.threads = 0;
   cfg.priority_nice = BFPILOT_ARCHIVE_NICE;
   cfg.cleanup_partial = false;
@@ -896,20 +907,23 @@ LoadConfig(ArchiveConfig &cfg, std::string &error) {
         data.substr(pos, end == std::string::npos ? std::string::npos
                                                   : end - pos);
     pos = end == std::string::npos ? data.size() : end + 1;
-    line = Trim(line);
+    if(!line.empty() && line.back() == '\r') line.pop_back();
     if(line.empty() || line[0] == '#' || line[0] == ';') continue;
     size_t eq = line.find('=');
     if(eq == std::string::npos) continue;
     std::string key = Trim(line.substr(0, eq));
-    std::string value = Trim(line.substr(eq + 1));
+    // Paths/passwords can legitimately start/end with spaces. Only option
+    // syntax is trimmed; private job writers never include CR line endings.
+    std::string value = line.substr(eq + 1);
     if(key == "source") cfg.source = value;
     else if(key == "destination") cfg.destination = value;
     else if(key == "password") cfg.password = value;
-    else if(key == "threads") cfg.threads = ParseArchiveThreads(value);
-    else if(key == "nice") cfg.priority_nice = ParseArchiveNice(value);
+    else if(key == "requestId") cfg.request_id = value;
+    else if(key == "threads") cfg.threads = ParseArchiveThreads(Trim(value));
+    else if(key == "nice") cfg.priority_nice = ParseArchiveNice(Trim(value));
     else if(key == "cleanupPartial") {
       cfg.cleanup_partial =
-          value == "1" || value == "true" || value == "yes" || value == "on";
+          Trim(value) == "1" || Trim(value) == "true" || Trim(value) == "yes" || Trim(value) == "on";
     }
   }
 
@@ -2340,13 +2354,19 @@ static int FinalizeArchive(const ArchiveConfig &cfg, ArchiveType type, int rc, s
     return 21;
   }
 
-  ClearActiveFullArchive();
   g_status.stage.clear();
   g_stage_owned = false;
   g_status.current = cfg.destination;
   g_status.percent = 100;
   g_status.state = "done";
   WriteStatus(true);
+  // Keep the full helper's publication identity until terminal success is
+  // durably recorded. Reload can then reconcile this exact batch item.
+  if(g_terminal_status_durable) ClearActiveFullArchive();
+  else {
+    LogLine("published extraction terminal status not durable; recovery identity retained");
+    return 21;
+  }
   LogLine("extract done type=%s destination=%s bytes_written=%llu files=%llu",
           ArchiveTypeName(type), cfg.destination.c_str(),
           g_status.bytes_written, g_status.files_done);
@@ -2355,6 +2375,8 @@ static int FinalizeArchive(const ArchiveConfig &cfg, ArchiveType type, int rc, s
 
 static int
 bfpilot_archive_run_prepared_job_impl(void) {
+  g_status.request_id.clear();
+  g_terminal_status_durable = false;
   g_status.state = "starting";
   g_status.started_ms = NowMs();
   g_status.percent = 0;
@@ -2390,6 +2412,7 @@ bfpilot_archive_run_prepared_job_impl(void) {
   ArchiveConfig cfg;
   std::string error;
   if(!LoadConfig(cfg, error)) {
+    g_status.request_id = cfg.request_id;
     g_status.state = "error";
     g_status.error = error;
     g_status.errno_code = errno;
@@ -2399,6 +2422,7 @@ bfpilot_archive_run_prepared_job_impl(void) {
   }
 
   g_status.source = cfg.source;
+  g_status.request_id = cfg.request_id;
   g_status.destination = cfg.destination;
   g_status.threads = cfg.threads;
   ApplyArchiveScheduling(cfg.priority_nice);
@@ -2544,6 +2568,7 @@ static bool RecoverActiveFullArchive() {
     LogLine("full archive recovery refused: %s",g_status.error.c_str());return true;
   }
   g_status.source=active.source;g_status.destination=active.destination;
+  g_status.request_id=cfg.request_id;
   g_status.stage=active.stage;g_status.helper_task_id=active.id;
   g_status.threads=cfg.threads;g_stage_owned=!active.stage_missing;
   WriteStatus(true);
@@ -2557,7 +2582,9 @@ static bool RecoverActiveFullArchive() {
         g_status.total_bytes=g_status.bytes_written=totals.bytes;
         g_status.total_files=g_status.files_done=totals.files;
         g_status.state="done";g_status.percent=100;g_status.current=active.destination;
-        g_status.stage.clear();ClearActiveFullArchive();WriteStatus(true);
+        g_status.stage.clear();WriteStatus(true);
+        if(g_terminal_status_durable) ClearActiveFullArchive();
+        else rc=21;
       } else {
         g_status.state="error";g_status.error="published archive could not be verified and synced";
         g_status.errno_code=-sync_rc;WriteStatus(true);rc=21;
@@ -2577,6 +2604,7 @@ static bool RecoverActiveFullArchive() {
 }
 
 static std::atomic<int> g_archive_daemon_exit(0);
+#include "archive_batch_runtime.inc"
 static std::atomic<int> g_archive_daemon_running(0);
 static pthread_mutex_t g_archive_daemon_mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t g_archive_daemon_condition = PTHREAD_COND_INITIALIZER;
@@ -2661,16 +2689,19 @@ ArchiveDaemonMain(void *arg) {
      StatusLooksInterrupted(startup_status)) {
     MarkInterruptedArchiveStatus(startup_status);
   }
+  BatchInitialize();
 
   std::string last_job;
   for(;;) {
     if(g_archive_daemon_exit) break;
+    if(BatchTick()) { ArchiveDaemonWait(); continue; }
+    if(bfpilot_archive_batch_busy()) { ArchiveDaemonWait(); continue; }
     std::string status;
     bool prepared = ReadSmallFile(BFPILOT_ARCHIVE_STATUS, status, 32768) &&
                     status.find("\"state\":\"prepared\"") != std::string::npos;
     if(prepared) {
       std::string job;
-      if(ReadSmallFile(BFPILOT_ARCHIVE_JOB, job, 32768) && job != last_job) {
+      if(ReadSmallFile(BFPILOT_ARCHIVE_JOB, job, 32768) && job != last_job && !BatchOwnsJob(job)) {
         last_job = job;
         int rc = bfpilot_archive_run_prepared_job();
         LogLine("archive daemon job finished rc=%d", rc);

@@ -822,6 +822,10 @@ dispatch_request(const http_request_t *req, const char *initial_body,
       return transfer_archive_prepare_request(req, initial_body, initial_size,
                                               content_size);
     }
+    if(!strcmp(req->path, "/api/fs/archive/batch")) {
+      return transfer_archive_batch_request(req, initial_body, initial_size,
+                                            content_size);
+    }
     if(!strcmp(req->path, "/api/fs/download/prepare")) {
       return transfer_download_prepare_request(req, initial_body, initial_size,
                                                content_size);
