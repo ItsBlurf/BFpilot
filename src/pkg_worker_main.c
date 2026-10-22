@@ -26,6 +26,7 @@
 
 #include <ps5/kernel.h>
 #include <ps5/payload.h>
+#include "pkg_protocol.h"
 
 #define PKG_WORKER_PORT 9041
 #define PKG_WORKER_PROTOCOL "BFPKG/1"
@@ -304,10 +305,8 @@ main(void) {
     (void)setsockopt(client, SOL_SOCKET, SO_SNDTIMEO, &timeout,
                      sizeof(timeout));
     char request[PKG_PATH_CAPACITY + 32];
-    ssize_t received = recv(client, request, sizeof(request) - 1, 0);
-    if(received > 0) {
-      request[received] = 0;
-      request[strcspn(request, "\r\n")] = 0;
+    int read_rc = bfpilot_pkg_read_request(client, request, sizeof(request));
+    if(read_rc == 0) {
       char response[160];
       if(!strcmp(request, "PING")) {
         int init_rc = appinst_init_status();
@@ -337,6 +336,8 @@ main(void) {
         snprintf(response, sizeof(response), "ERR PROTOCOL");
       }
       (void)send_all(client, response);
+    } else {
+      (void)send_all(client, "ERR PROTOCOL");
     }
     close(client);
   }

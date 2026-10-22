@@ -39,8 +39,11 @@ assert(html.includes('select-all-checkbox'), '#11 select all')
 assert(html.includes('selectedEntries'), '#11 selection helper')
 
 // #12 version
-assert(versionH.includes('v0.4.4') && !versionH.includes('alpha'), 'version.h v0.4.4')
-assert(makefile.includes('v0.4.4') && !makefile.includes('alpha'), 'Makefile v0.4.4')
+const buildVersion = versionH.match(/#define BUILD_VERSION "([^"]+)"/)?.[1]
+assert(buildVersion && /^v\d+\.\d+\.\d+(?:-dev\.\d+)?$/.test(buildVersion), 'explicit build version')
+assert(makefile.includes('BUILD_VERSION ?= ' + buildVersion) &&
+       makefile.includes('VERSION_TAG := bfpilot-' + buildVersion) &&
+       versionH.includes('"bfpilot-' + buildVersion + '"'), 'header and build versions match exactly')
 assert(makefile.includes('--build-id=sha1') &&
        !makefile.includes('--build-id=uuid'),
        'release builds use a deterministic content-derived build ID')

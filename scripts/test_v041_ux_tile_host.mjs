@@ -129,8 +129,11 @@ assert(html.includes("endsWith('.7z')"), '#9')
 assert(transfer.includes('chmod_request') || transfer.includes('/api/fs/chmod'), '#10')
 assert(html.includes('chmodSelected') || html.includes('id="chmod"'), '#10 ui')
 assert(html.includes('row-checkbox') && html.includes('select-all-checkbox'), '#11')
-assert(versionH.includes('v0.4.4') && makefile.includes('v0.4.4') &&
-       !versionH.includes('alpha') && !makefile.includes('alpha'),
-       'current release version')
+const buildVersion = versionH.match(/#define BUILD_VERSION "([^"]+)"/)?.[1]
+assert(buildVersion && /^v\d+\.\d+\.\d+(?:-dev\.\d+)?$/.test(buildVersion), 'explicit build version')
+assert(makefile.includes('BUILD_VERSION ?= ' + buildVersion) &&
+       makefile.includes('VERSION_TAG := bfpilot-' + buildVersion) &&
+       versionH.includes('"bfpilot-' + buildVersion + '"'), 'header and build versions match exactly')
+
 
 console.log('v0.4.4 all-in-one + UX host checks passed')

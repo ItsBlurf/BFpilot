@@ -276,6 +276,9 @@
 
     .browser {
       min-height: 650px;
+      /* A finite viewport is required: an auto-sized virtual scroller grows
+       * to its full spacer height and defeats virtualization on large trees. */
+      height: calc(100vh - 150px);
       display: grid;
       grid-template-rows: auto auto auto auto minmax(0, 1fr);
       overflow: hidden;
@@ -586,6 +589,14 @@
     .muted-cell {
       color: var(--muted);
       font-size: 12px;
+    }
+
+    .file-row:hover .muted-cell,
+    .file-row:focus .muted-cell,
+    .file-row.selected .muted-cell,
+    .file-row.gamepad-focus .muted-cell,
+    .file-row.revealed .muted-cell {
+      color: #b2c4d5;
     }
 
     .name mark {
@@ -1999,17 +2010,21 @@
         (elapsed > 0 && copied > 0 ? copied / elapsed : 0);
       const speed = instantSpeed > 0 ? instantSpeed : avgSpeed;
       const reportedEta = Number(job.etaSeconds || 0);
-      const pct = total > 0 ? Math.max(0, Math.min(100, (copied / total) * 100)) : 0;
+      const known = job.totalKnown !== false;
+      const pct = known && total > 0 ? Math.max(0, Math.min(100, (copied / total) * 100)) : 0;
       const parts = [];
 
-      if (total > 0) {
+      if (!known) {
+        parts.push(shortSize(copied) + " copied");
+        parts.push(doneFiles + " files completed; discovering remaining items");
+      } else if (total > 0) {
         parts.push(shortSize(copied) + ' / ' + shortSize(total));
         parts.push(pct.toFixed(1) + '%');
       } else if (job.busy) {
         parts.push(job.current || 'Preparing');
       }
 
-      if (totalFiles > 0) {
+      if (known && totalFiles > 0) {
         parts.push(doneFiles + ' / ' + totalFiles + ' items');
       }
 
@@ -2019,9 +2034,9 @@
         } else {
           parts.push(speedMBps(speed));
         }
-        if (reportedEta > 0) {
+        if (known && reportedEta > 0) {
           parts.push('ETA ' + shortDuration(reportedEta));
-        } else if (total > copied) {
+        } else if (known && total > copied) {
           parts.push('ETA ' + shortDuration((total - copied) / speed));
         }
       }
@@ -2029,7 +2044,7 @@
       if (failedFiles > 0) parts.push(failedFiles + ' failed');
       if (job.cancelling) parts.push('cancelling');
 
-      if (job.current && total > 0) parts.push(displayFsText(job.current));
+      if (job.current && (total > 0 || !known)) parts.push(displayFsText(job.current));
       if (!parts.length) return job.error || 'Done';
       return parts.join(' | ');
     }
@@ -2228,9 +2243,29 @@
 
     async function loadFolderSize(path, token, entry) {
       try {
-        const du = await api('/api/fs/du?path=' + encodeURIComponent(path));
-        if (token !== state.detailToken) return;
-        if (!state.selected.has(entryKey(entry))) return;
+        const base = '/api/fs/du?async=1&path=' + encodeURIComponent(path);
+        let du;
+        // A previous selection may still be closing its directory handles.
+        for (let attempt = 0; ; attempt++) {
+          try { du = await api(base); break; }
+          catch (err) {
+            if (attempt >= 20 || !String(err.message).includes('previous size request')) throw err;
+            await new Promise(resolve => setTimeout(resolve, 100));
+          }
+        }
+        while (du.busy) {
+          if (token !== state.detailToken || !state.selected.has(entryKey(entry))) {
+            await fetch(base + '&id=' + du.id + '&cancel=1').catch(() => {});
+            return;
+          }
+          renderDetail(displayFsText(entry.name), [
+            ['Kind', 'Folder'], ['Size so far', exactSize(du.size)],
+            ['Files found', String(du.files || 0)], ['Path', displayFsText(path)]
+          ], 'Calculating folder size in the background. You can keep browsing.');
+          await new Promise(resolve => setTimeout(resolve, 400));
+          du = await api(base + '&id=' + du.id);
+        }
+        if (token !== state.detailToken || !state.selected.has(entryKey(entry))) return;
 
         const rows = [
           ['Kind', 'Folder'],
@@ -2240,7 +2275,7 @@
           ['Permissions', formatMode(entry.mode)],
           ['Path', displayFsText(path)]
         ];
-        const note = 'Full recursive size calculated on selection only.';
+        const note = 'Full folder size calculated without following symbolic links or crossing mounts.';
         renderDetail(displayFsText(entry.name), rows, note);
       } catch (err) {
         if (token !== state.detailToken) return;
@@ -2430,6 +2465,25 @@
       return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
     }
 
+    function syncSelectionRows() {
+      // Preserve each row's DOM identity between click and dblclick, as well
+      // as native checkbox focus. Virtual rendering still handles scrolling.
+      document.querySelectorAll('.file-row[data-path]').forEach((row) => {
+        row.classList.toggle('gamepad-focus', Number(row.dataset.index) === state.focusedIndex);
+        const checkbox = row.querySelector('.row-checkbox');
+        if (!checkbox) return;
+        const selected = state.selected.has(row.dataset.key);
+        row.classList.toggle('selected', selected);
+        checkbox.checked = selected;
+      });
+      const all = el('select-all-checkbox');
+      if (all) {
+        all.checked = state.entries.length > 0 && state.entries.every(entry => state.selected.has(entryKey(entry)));
+        all.indeterminate = state.selected.size > 0 && !all.checked;
+      }
+      updateSelection();
+    }
+
     function makeRow(entry, parent, itemIndex) {
       const path = parent ? parentPath(state.path) : entryPath(entry);
       const key = entryKey(entry);
@@ -2441,6 +2495,7 @@
         (parent ? 'parent' : '') + (entry.path ? ' search-result' : '') +
         (itemIndex !== undefined && itemIndex === state.focusedIndex ? ' gamepad-focus' : '');
       row.dataset.path = cleanPath(path);
+      row.dataset.key = key;
       if (itemIndex !== undefined) row.dataset.index = itemIndex;
       row.tabIndex = -1;
       row.innerHTML = chkHtml +
@@ -2489,20 +2544,22 @@
         if (event.target.closest('.chk-col')) {
           if (state.selected.has(key)) state.selected.delete(key);
           else state.selected.add(key);
-          drawList();
+          syncSelectionRows();
           return;
         }
         if (event.ctrlKey || event.metaKey) {
           if (state.selected.has(key)) state.selected.delete(key);
           else state.selected.add(key);
         } else {
+          if (state.selected.size === 1 && state.selected.has(key)) return;
           state.selected.clear();
           state.selected.add(key);
         }
-        drawList();
+        syncSelectionRows();
       });
 
-      row.addEventListener('dblclick', () => {
+      row.addEventListener('dblclick', (event) => {
+        if (event.target.closest('.chk-col, .mode-clickable')) return;
         if (parent) return;
         const next = entryPath(entry);
         if (entry.dir) {
@@ -2558,7 +2615,7 @@
             state.selected.add(entryKey(entry));
           }
         }
-        drawList();
+        syncSelectionRows();
       });
 
       const scroller = document.createElement('div');
@@ -3418,7 +3475,7 @@
         try {
           const job = await api('/api/fs/job/status');
           missed = 0;
-          const pct = job.totalBytes > 0 ?
+          const pct = job.totalKnown !== false && job.totalBytes > 0 ?
             Math.max(0, Math.min(100, (job.copiedBytes / job.totalBytes) * 100)) : 0;
           fill.style.width = pct.toFixed(1) + '%';
           verb.textContent = job.verb || 'Working';
@@ -3902,7 +3959,7 @@
       const key = entryKey(item);
       if (state.selected.has(key)) state.selected.delete(key);
       else state.selected.add(key);
-      drawList();
+      syncSelectionRows();
     }
 
     let lastPadButtons = {};

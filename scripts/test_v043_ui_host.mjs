@@ -105,9 +105,12 @@ assert(actionsBlock.indexOf('id="selection"') < actionsBlock.indexOf('id="contex
   'selection count stays visible before the dynamic contextual action group')
 assert(/\.context-actions\[hidden\]\s*\{[^}]*display:\s*none/s.test(html),
   'hidden contextual actions consume no toolbar space')
-assert(version.includes('v0.4.4') && makefile.includes('v0.4.4') &&
-  !version.includes('alpha') && !makefile.includes('alpha'),
-  'release version is consistent')
+const buildVersion = version.match(/#define BUILD_VERSION "([^"]+)"/)?.[1]
+assert(buildVersion && /^v\d+\.\d+\.\d+(?:-dev\.\d+)?$/.test(buildVersion), 'explicit build version')
+assert(makefile.includes('BUILD_VERSION ?= ' + buildVersion) &&
+       makefile.includes('VERSION_TAG := bfpilot-' + buildVersion) &&
+       version.includes('"bfpilot-' + buildVersion + '"'), 'header and build versions match exactly')
+
 
 const scriptMatch = html.match(/<script>([\s\S]*)<\/script>/)
 assert(scriptMatch, 'inline application script found')

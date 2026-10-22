@@ -48,8 +48,9 @@ assert(transfer.includes('job_begin("upload")'), 'upload joins single-writer gat
 assert(transfer.includes('Close the race with job_begin'), 'archive/transfer exclusion')
 assert(transfer.includes('#define BFPILOT_FS_MAX_DEPTH 64U'), 'recursive depth cap')
 assert(transfer.includes('depth > BFPILOT_FS_MAX_DEPTH'), 'depth guard is enforced')
-assert(transfer.includes('delete_recursive_force_inner(child, root_dev'),
-  'staging cleanup stays on its root device')
+assert(transfer.includes('bfpilot_tree_walk_post(path, st.st_dev') &&
+  read('src/tree_walk.c').includes('st.st_dev != device'),
+  'iterative staging cleanup stays on its root device')
 
 const workerStart = transfer.indexOf('copy_worker(void *arg)')
 const workerEnd = transfer.indexOf('struct delete_arg', workerStart)

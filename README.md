@@ -8,7 +8,7 @@ http://<PS5_IP>:5905/
 
 Works from the PS5 browser or any PC/phone on the same network.
 
-Current version **v0.4.4**. Tested on PS5 FW **11.60**.
+Development version **v0.4.5-dev.4**. Tested on PS5 FW **11.60**.
 
 ## Payloads
 
@@ -36,7 +36,9 @@ Current version **v0.4.4**. Tested on PS5 FW **11.60**.
 - Single-click selects; double-click opens folders; the Open button works with controllers
 - Circle/browser Back returns through folder history; active operations block accidental navigation, and returning to a parent reveals the folder just left
 - The last successful folder and sort mode survive a browser reload; long paths keep their rightmost component visible
-- Folder size is calculated when a folder is selected
+- Folder size is calculated in the background when a folder is selected
+- Large folder copies start without waiting for a complete source scan;
+  progress reports completed files while discovering the remaining items
 
 **Selection**
 - Checkboxes + select all (works fine with a controller)

@@ -121,7 +121,8 @@ write_status(const char *state, const char *path, const char *message,
           "\"primaryResult\":%d,\"fallbackResult\":%d,"
           "\"embeddedWorker\":%s,"
           "\"restoreAuthIdResult\":%d,\"updatedAt\":%ld,\"pid\":%ld}\n",
-          atomic_load(&g_pkg_busy) ? "true" : "false",
+          (!strcmp(state, "queued") || !strcmp(state, "starting") ||
+           !strcmp(state, "submitting")) ? "true" : "false",
           (unsigned long)package_count, (unsigned long)submitted,
           (unsigned long)failed, percent,
           (unsigned long long)total_bytes, result, (unsigned int)result,
@@ -244,7 +245,6 @@ pkg_worker(void *argument) {
                        percent, &last_submit, last_result);
   }
 
-  atomic_store(&g_pkg_busy, 0);
   const char *state = failed_count == 0 ? "accepted" :
                       submitted_count == 0 ? "error" :
                                              "completed_with_errors";
@@ -275,6 +275,9 @@ pkg_worker(void *argument) {
           (unsigned long)job->count, (unsigned long)submitted_count,
           (unsigned long)failed_count, state);
   free(job);
+  /* Release only after the final status is published; a new queue must not
+   * race this queue's final rename of the shared status file. */
+  atomic_store(&g_pkg_busy, 0);
   return NULL;
 }
 
@@ -379,13 +382,13 @@ bfpilot_pkg_install_start(const char *const *paths, size_t path_count,
   if(rc != 0) {
     if(error && error_size) snprintf(error, error_size,
                                      "could not start PKG worker (%d)", rc);
-    atomic_store(&g_pkg_busy, 0);
     (void)write_status("error", job->items[0].path,
                        "could not start integrated PKG worker",
                        job->items[0].info.content_id,
                        job->items[0].info.title_id, job->count, 0, 1,
                        job->total_bytes, 0, NULL, -rc);
     free(job);
+    atomic_store(&g_pkg_busy, 0);
     return -rc;
   }
   pthread_detach(thread);

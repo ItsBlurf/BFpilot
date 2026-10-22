@@ -29,6 +29,7 @@
 #include "fs.h"
 #include "path_ops.h"
 #include "tree_chmod.h"
+#include "tree_walk.h"
 #include "paths.h"
 #include "payload_launch.h"
 #include "pkg_file.h"
@@ -361,6 +362,7 @@ struct job_state {
   pthread_mutex_t lock;
   atomic_int      busy;
   atomic_int      cancel;
+  atomic_int      total_known;
   atomic_long     total_bytes;
   atomic_long     copied_bytes;
   atomic_int      total_files;
@@ -373,9 +375,9 @@ struct job_state {
   atomic_int      pipeline_files;
   atomic_int      serial_files;
   atomic_int      writeback_syncs;
-  char            current[512];
-  char            source[512];
-  char            destination[512];
+  char            current[1024];
+  char            source[1024];
+  char            destination[1024];
   char            verb[16];
   char            error[256];
   unsigned long   source_dev;
@@ -388,6 +390,8 @@ struct job_state {
   double          last_instant_bps;
 };
 
+
+static atomic_int g_du_cancel;
 
 static struct job_state g_job = {
   .lock = PTHREAD_MUTEX_INITIALIZER,
@@ -404,7 +408,7 @@ struct upload_state {
   long            sync_ms;
   unsigned int    sync_count;
   int             buffer_aligned;
-  char            path[512];
+  char            path[1024];
 };
 
 static struct upload_state g_upload = {
@@ -496,8 +500,10 @@ job_begin(const char *verb) {
     atomic_store(&g_job.busy, 0);
     return 0;
   }
+  atomic_store(&g_du_cancel, 1);
   pthread_mutex_lock(&g_job.lock);
   atomic_store(&g_job.cancel, 0);
+  atomic_store(&g_job.total_known, 1);
   atomic_store(&g_job.total_bytes, 0);
   atomic_store(&g_job.copied_bytes, 0);
   atomic_store(&g_job.total_files, 0);
@@ -533,6 +539,7 @@ job_end(int rc, const char *err) {
   int saved_errno = errno;
   pthread_mutex_lock(&g_job.lock);
   g_job.ended_at = time(NULL);
+  if(rc == 0) atomic_store(&g_job.total_known, 1);
   long ended_ms = monotonic_ms();
   atomic_store(&g_job.elapsed_ms,
                ended_ms > g_job.started_ms ? ended_ms - g_job.started_ms : 0);
@@ -583,77 +590,33 @@ download_expire_pending(void) {
 }
 
 
-static int
-size_walker_inner(const char *path, dev_t root_dev, long *items, long *bytes,
-                  int count_dirs, unsigned depth) {
-  if(depth > BFPILOT_FS_MAX_DEPTH) {
-    errno = ELOOP;
-    return -1;
+struct size_context { long *items, *bytes; int count_dirs; };
+static int walk_job_cancelled(void *context) {
+  (void)context;
+  return job_cancelled();
+}
+static int size_entry(const char *path, const char *relative,
+                       const struct stat *st, void *context) {
+  (void)relative;
+  struct size_context *scan = context;
+  job_set_current(path);
+  if(S_ISREG(st->st_mode) || scan->count_dirs) {
+    if(*scan->items == INT_MAX || st->st_size > LONG_MAX - *scan->bytes)
+      return -EOVERFLOW;
+    (*scan->items)++;
+    if(st->st_size > 0) *scan->bytes += (long)st->st_size;
   }
-  if(job_cancelled()) {
-    errno = ECANCELED;
-    return -1;
-  }
-
-  struct stat st;
-  if(lstat(path, &st) != 0) return -1;
-  if(st.st_dev != root_dev) {
-    bfpilot_log("transfer scan stopped at mount boundary path=%s root_dev=%lu child_dev=%lu",
-                path, (unsigned long)root_dev, (unsigned long)st.st_dev);
-    errno = EXDEV;
-    return -1;
-  }
-  if(S_ISDIR(st.st_mode)) {
-    if(count_dirs) (*items)++;
-    if(count_dirs && st.st_size > 0) *bytes += (long)st.st_size;
-    DIR *d = opendir(path);
-    if(!d) return -1;
-    int rc = 0;
-    int saved_errno = 0;
-    struct dirent *ent;
-    for(;;) {
-      errno = 0;
-      ent = readdir(d);
-      if(!ent) {
-        if(errno != 0) {
-          saved_errno = errno;
-          rc = -1;
-        }
-        break;
-      }
-      if(!strcmp(ent->d_name, ".") || !strcmp(ent->d_name, "..")) continue;
-      char child[1024];
-      if(join_path_checked(child, sizeof(child), path, ent->d_name) != 0 ||
-         size_walker_inner(child, root_dev, items, bytes, count_dirs,
-                           depth + 1) != 0) {
-        saved_errno = errno;
-        rc = -1;
-        break;
-      }
-    }
-    if(closedir(d) != 0 && rc == 0) {
-      saved_errno = errno;
-      rc = -1;
-    }
-    if(rc != 0) errno = saved_errno;
-    return rc;
-  } else if(S_ISREG(st.st_mode)) {
-    (*items)++;
-    *bytes += (long)st.st_size;
-  } else if(count_dirs) {
-    (*items)++;
-    if(st.st_size > 0) *bytes += (long)st.st_size;
-  }
+  atomic_store(&g_job.total_files, (int)*scan->items);
+  atomic_store(&g_job.total_bytes, *scan->bytes);
   return 0;
 }
-
-
-static int
-size_walker(const char *path, dev_t root_dev, long *items, long *bytes,
-            int count_dirs) {
-  return size_walker_inner(path, root_dev, items, bytes, count_dirs, 0);
+static int size_walker(const char *path, dev_t root_dev, long *items,
+                        long *bytes, int count_dirs) {
+  struct size_context scan = {items, bytes, count_dirs};
+  int rc = bfpilot_tree_walk(path, root_dev, size_entry, walk_job_cancelled, &scan);
+  if(rc != 0) errno = -rc;
+  return rc == 0 ? 0 : -1;
 }
-
 
 static void *
 alloc_aligned_io_buffer(size_t size, int *aligned_out) {
@@ -1082,242 +1045,87 @@ copy_file(const char *src, const char *dst, const struct stat *expected) {
 }
 
 
-static int
-copy_recursive_inner(const char *src, const char *dst, dev_t root_dev,
-                     unsigned depth) {
-  if(depth > BFPILOT_FS_MAX_DEPTH) {
-    errno = ELOOP;
-    return -1;
+struct copy_walk_context { const char *destination; };
+static int copy_entry(const char *src, const char *relative,
+                       const struct stat *st, void *context) {
+  struct copy_walk_context *copy = context;
+  char dst[1024];
+  if(*relative) {
+    if(join_path_checked(dst, sizeof(dst), copy->destination, relative) != 0)
+      return -errno;
+  } else snprintf(dst, sizeof(dst), "%s", copy->destination);
+  job_set_current(src);
+  if(S_ISDIR(st->st_mode)) {
+    if(mkdir(dst, 0777) != 0 || chmod(dst, 0777) != 0) return -errno;
+    return 0;
   }
-  if(job_cancelled()) {
-    errno = ECANCELED;
-    return -1;
+  if(!S_ISREG(st->st_mode)) {
+    job_set_error("unsupported source type: %s", src);
+    return -EOPNOTSUPP;
   }
-  struct stat st;
-  if(lstat(src, &st) != 0) return -1;
-  if(st.st_dev != root_dev) {
-    bfpilot_log("copy stopped at mount boundary src=%s root_dev=%lu child_dev=%lu",
-                src, (unsigned long)root_dev, (unsigned long)st.st_dev);
-    errno = EXDEV;
-    return -1;
+  long total = atomic_load(&g_job.total_bytes);
+  if(st->st_size < 0 || st->st_size > LONG_MAX - total ||
+     atomic_load(&g_job.total_files) == INT_MAX) return -EOVERFLOW;
+  atomic_fetch_add(&g_job.total_files, 1);
+  atomic_fetch_add(&g_job.total_bytes, (long)st->st_size);
+  /* Space is checked as each file is discovered. There is no second complete
+   * directory pass before the first write. The file's allocation/write/fsync
+   * gates still protect against delayed ENOSPC and storage failures. */
+  char parent[1024];
+  snprintf(parent, sizeof(parent), "%s", dst);
+  char *slash = strrchr(parent, '/');
+  if(slash == parent) slash[1] = 0;
+  else if(slash) *slash = 0;
+  unsigned long long available, needed;
+  int space = check_free_space_for_bytes(parent, (unsigned long long)st->st_size,
+                                        &available, &needed);
+  if(space != 0) return space > 0 ? -ENOSPC : -errno;
+  if(copy_file(src, dst, st) != 0) {
+    atomic_fetch_add(&g_job.failed_files, 1);
+    return -errno;
   }
-
-  if(S_ISDIR(st.st_mode)) {
-    /* Every destination here is a private staging path; collision is an error. */
-    if(mkdir(dst, 0777) != 0) return -1;
-    apply_chmod_0777(dst);
-    DIR *d = opendir(src);
-    if(!d) return -1;
-    int rc = 0;
-    int saved_errno = 0;
-    struct dirent *ent;
-    for(;;) {
-      errno = 0;
-      ent = readdir(d);
-      if(!ent) {
-        if(errno != 0) {
-          saved_errno = errno;
-          rc = -1;
-        }
-        break;
-      }
-      if(!strcmp(ent->d_name, ".") || !strcmp(ent->d_name, "..")) continue;
-      char s2[1024], d2[1024];
-      if(join_path_checked(s2, sizeof(s2), src, ent->d_name) != 0 ||
-         join_path_checked(d2, sizeof(d2), dst, ent->d_name) != 0 ||
-         copy_recursive_inner(s2, d2, root_dev, depth + 1) != 0) {
-        saved_errno = errno;
-        rc = -1;
-        atomic_fetch_add(&g_job.failed_files, 1);
-        errno = saved_errno;
-        break;
-      }
-    }
-    if(closedir(d) != 0 && rc == 0) {
-      saved_errno = errno;
-      rc = -1;
-    }
-    if(rc != 0) errno = saved_errno;
-    return rc;
-  }
-
-  if(S_ISREG(st.st_mode)) {
-    int rc = copy_file(src, dst, &st);
-    if(rc == 0) atomic_fetch_add(&g_job.done_files, 1);
-    return rc;
-  }
-
-  errno = EOPNOTSUPP;
-  job_set_error("unsupported source type: %s", src);
-  return -1;
+  atomic_fetch_add(&g_job.done_files, 1);
+  return 0;
+}
+static int copy_recursive(const char *src, const char *dst, dev_t root_dev) {
+  struct copy_walk_context copy = {dst};
+  int rc = bfpilot_tree_walk(src, root_dev, copy_entry, walk_job_cancelled, &copy);
+  if(rc != 0) errno = -rc;
+  return rc == 0 ? 0 : -1;
 }
 
-
-static int
-copy_recursive(const char *src, const char *dst, dev_t root_dev) {
-  return copy_recursive_inner(src, dst, root_dev, 0);
-}
-
-
-static int
-delete_recursive_inner(const char *path, dev_t root_dev, int count_progress,
-                       unsigned depth) {
-  if(depth > BFPILOT_FS_MAX_DEPTH) {
-    errno = ELOOP;
-    return -1;
-  }
-  if(job_cancelled()) {
-    errno = ECANCELED;
-    return -1;
-  }
-  struct stat st;
-  if(lstat(path, &st) != 0) return -1;
-  if(st.st_dev != root_dev) {
-    bfpilot_log("delete stopped at mount boundary path=%s root_dev=%lu child_dev=%lu",
-                path, (unsigned long)root_dev, (unsigned long)st.st_dev);
-    errno = EXDEV;
-    return -1;
-  }
-
-  if(S_ISDIR(st.st_mode)) {
-    DIR *d = opendir(path);
-    if(!d) return -1;
-    int rc = 0;
-    int saved_errno = 0;
-    struct dirent *ent;
-    for(;;) {
-      errno = 0;
-      ent = readdir(d);
-      if(!ent) {
-        if(errno != 0) {
-          saved_errno = errno;
-          rc = -1;
-        }
-        break;
-      }
-      if(!strcmp(ent->d_name, ".") || !strcmp(ent->d_name, "..")) continue;
-      char child[1024];
-      if(join_path_checked(child, sizeof(child), path, ent->d_name) != 0 ||
-         delete_recursive_inner(child, root_dev, count_progress,
-                                depth + 1) != 0) {
-        saved_errno = errno;
-        rc = -1;
-        atomic_fetch_add(&g_job.failed_files, 1);
-        errno = saved_errno;
-        break;
-      }
-    }
-    if(closedir(d) != 0 && rc == 0) {
-      saved_errno = errno;
-      rc = -1;
-    }
-    if(rc != 0) errno = saved_errno;
-    if(rc == 0) {
-      job_set_current(path);
-      if(rmdir(path) != 0) return -1;
-      if(count_progress) {
-        if(st.st_size > 0) {
-          atomic_fetch_add(&g_job.copied_bytes, (long)st.st_size);
-        }
-        atomic_fetch_add(&g_job.done_files, 1);
-      }
-    }
-    return rc;
-  }
-
-  job_set_current(path);
-  if(unlink(path) != 0) return -1;
-  if(count_progress) {
-    if(st.st_size > 0) {
-      atomic_fetch_add(&g_job.copied_bytes, (long)st.st_size);
-    }
+struct delete_context { int progress; };
+static int delete_entry(const char *path, const char *relative,
+                         const struct stat *st, void *context) {
+  (void)relative;
+  struct delete_context *remove = context;
+  struct stat current;
+  if(lstat(path, &current) != 0) return -errno;
+  if(current.st_dev != st->st_dev || current.st_ino != st->st_ino ||
+     (current.st_mode & S_IFMT) != (st->st_mode & S_IFMT)) return -EAGAIN;
+  if(remove->progress) job_set_current(path);
+  if((S_ISDIR(st->st_mode) ? rmdir(path) : unlink(path)) != 0) return -errno;
+  if(remove->progress) {
+    if(st->st_size > 0) atomic_fetch_add(&g_job.copied_bytes, (long)st->st_size);
     atomic_fetch_add(&g_job.done_files, 1);
   }
   return 0;
 }
-
-
-static int
-delete_recursive(const char *path, dev_t root_dev, int count_progress) {
-  return delete_recursive_inner(path, root_dev, count_progress, 0);
+static int delete_recursive(const char *path, dev_t root_dev, int count_progress) {
+  struct delete_context remove = {count_progress};
+  int rc = bfpilot_tree_walk_post(path, root_dev, delete_entry,
+                                 walk_job_cancelled, &remove);
+  if(rc != 0) errno = -rc;
+  return rc == 0 ? 0 : -1;
 }
-
-
-static int
-delete_recursive_force_inner(const char *path, dev_t root_dev,
-                             unsigned depth) {
-  if(depth > BFPILOT_FS_MAX_DEPTH) {
-    errno = ELOOP;
-    return -1;
-  }
+static int delete_recursive_force(const char *path) {
   struct stat st;
-  if(lstat(path, &st) != 0) {
-    return errno == ENOENT ? 0 : -1;
-  }
-  if(st.st_dev != root_dev) {
-    errno = EXDEV;
-    return -1;
-  }
-
-  if(S_ISDIR(st.st_mode)) {
-    DIR *d = opendir(path);
-    if(!d) return -1;
-    int rc = 0;
-    int saved_errno = 0;
-    struct dirent *ent;
-    for(;;) {
-      errno = 0;
-      ent = readdir(d);
-      if(!ent) {
-        if(errno != 0) {
-          saved_errno = errno;
-          rc = -1;
-        }
-        break;
-      }
-      if(!strcmp(ent->d_name, ".") || !strcmp(ent->d_name, "..")) continue;
-      char child[1024];
-      if(strlen(path) + strlen(ent->d_name) + 2 >= sizeof(child)) {
-        errno = ENAMETOOLONG;
-        saved_errno = errno;
-        rc = -1;
-        break;
-      }
-      if(join_path_checked(child, sizeof(child), path, ent->d_name) != 0) {
-        saved_errno = errno;
-        rc = -1;
-        break;
-      }
-      if(delete_recursive_force_inner(child, root_dev, depth + 1) != 0) {
-        saved_errno = errno;
-        rc = -1;
-        break;
-      }
-    }
-    if(closedir(d) != 0 && rc == 0) {
-      saved_errno = errno;
-      rc = -1;
-    }
-    if(rc != 0) {
-      errno = saved_errno;
-      return -1;
-    }
-    return rmdir(path);
-  }
-
-  return unlink(path);
+  if(lstat(path, &st) != 0) return errno == ENOENT ? 0 : -1;
+  struct delete_context remove = {0};
+  int rc = bfpilot_tree_walk_post(path, st.st_dev, delete_entry, NULL, &remove);
+  if(rc != 0) errno = -rc;
+  return rc == 0 ? 0 : -1;
 }
-
-
-static int
-delete_recursive_force(const char *path) {
-  struct stat root_st;
-  if(lstat(path, &root_st) != 0) {
-    return errno == ENOENT ? 0 : -1;
-  }
-  return delete_recursive_force_inner(path, root_st.st_dev, 0);
-}
-
 
 /*
  * Validate an existing-directory merge before changing the destination. Both
@@ -1492,7 +1300,6 @@ struct copy_arg {
 static void *
 copy_worker(void *arg) {
   struct copy_arg *a = arg;
-  long files = 0, bytes = 0;
   struct stat src_st, dst_st, final_st;
   char final_dst[1024];
   char staging_dst[1024];
@@ -1518,19 +1325,8 @@ copy_worker(void *arg) {
   g_job.source_dev = (unsigned long)src_st.st_dev;
   pthread_mutex_unlock(&g_job.lock);
 
-  job_set_current("Scanning source");
-  if(size_walker(a->src, src_st.st_dev, &files, &bytes, 0) != 0) {
-    int saved_errno = errno;
-    char err[192];
-    snprintf(err, sizeof(err), "source scan: %s",
-             job_cancelled() ? "cancelled" : strerror(saved_errno));
-    errno = saved_errno;
-    job_end(-1, err);
-    free(a);
-    return NULL;
-  }
-  atomic_store(&g_job.total_files, (int)files);
-  atomic_store(&g_job.total_bytes, bytes);
+  atomic_store(&g_job.total_known, 0);
+  job_set_current(a->src);
 
   if(stat(a->dst, &dst_st) == 0) {
     if(!S_ISDIR(dst_st.st_mode)) {
@@ -1593,44 +1389,6 @@ copy_worker(void *arg) {
     return NULL;
   }
 
-  /*
-   * Retaining an old destination until final rename intentionally requires
-   * temporary room for the complete replacement. Same-device rename moves need
-   * no extra bytes; copies and cross-device moves do.
-   */
-  {
-    int need_space = 1;
-    if(a->is_move && !merge_existing_dir && stat(a->dst, &dst_st) == 0 &&
-       (dev_t)dst_st.st_dev == src_st.st_dev) {
-      need_space = 0;
-    }
-    if(need_space && bytes > 0) {
-      unsigned long long available = 0, needed = 0;
-      int space_rc = check_free_space_for_bytes(
-          a->dst, (unsigned long long)bytes, &available, &needed);
-      if(space_rc < 0) {
-        char err[160];
-        snprintf(err, sizeof(err), "statvfs target: %s", strerror(errno));
-        job_end(-1, err);
-        free(a);
-        return NULL;
-      }
-      if(space_rc > 0) {
-        char err[192];
-        snprintf(err, sizeof(err),
-                 "not enough free space for %s: need %llu bytes, available %llu",
-                 a->is_move ? "move" : "copy", needed, available);
-        bfpilot_log("transfer space preflight fail verb=%s need=%llu avail=%llu dst=%s",
-                    a->is_move ? "move" : "copy", needed, available, a->dst);
-        job_end(-1, err);
-        free(a);
-        return NULL;
-      }
-      bfpilot_log("transfer space preflight ok verb=%s need=%llu avail=%llu dst=%s",
-                  a->is_move ? "move" : "copy", needed, available, a->dst);
-    }
-  }
-
   struct timespec staging_now;
   if(clock_gettime(CLOCK_MONOTONIC, &staging_now) != 0) {
     staging_now.tv_sec = time(NULL);
@@ -1665,8 +1423,8 @@ copy_worker(void *arg) {
       return NULL;
     }
     if(rename(a->src, final_dst) == 0) {
-      atomic_store(&g_job.done_files, (int)(files > 0 ? files : 1));
-      atomic_store(&g_job.copied_bytes, bytes);
+      /* A same-device rename does not read/copy the tree or invent counts. */
+      job_set_current("Moved by atomic rename");
       bfpilot_search_mark_stale(a->is_move ? "move" : "copy");
       job_end(0, NULL);
       free(a);
@@ -2053,79 +1811,139 @@ stat_request(const http_request_t *req) {
 }
 
 
-typedef struct du_state {
-  unsigned long long bytes;
-  long               entries;
-  long               files;
-  long               dirs;
-  dev_t              root_dev;
-} du_state_t;
-
-
-static void
-du_walk(const char *path, du_state_t *du) {
-  struct stat st;
-  if(lstat(path, &st) != 0) return;
-
-  du->entries++;
-  if(st.st_size > 0) du->bytes += (unsigned long long)st.st_size;
-
-  if(!S_ISDIR(st.st_mode)) {
-    du->files++;
-    return;
-  }
-
-  du->dirs++;
-  if(st.st_dev != du->root_dev) return;
-
-  DIR *dir = opendir(path);
-  if(!dir) return;
-
-  struct dirent *ent;
-  while((ent = readdir(dir))) {
-    if(!strcmp(ent->d_name, ".") || !strcmp(ent->d_name, "..")) continue;
-
-    char child[1024];
-    if(strlen(path) + strlen(ent->d_name) + 2 >= sizeof(child)) {
-      continue;
-    }
-    join_path(child, sizeof(child), path, ent->d_name);
-    du_walk(child, du);
-  }
-
-  closedir(dir);
-}
-
-
-static int
-du_request(const http_request_t *req) {
+/* One read-only size worker, independent of the transfer slot. Selecting a new
+ * folder cancels the old walk; a lease stops abandoned browser requests. */
+typedef struct du_counts {
+  atomic_ulong bytes;
+  atomic_long entries, files, dirs;
+  int background;
+  long deadline;
+} du_counts_t;
+static struct {
+  pthread_mutex_t lock;
+  atomic_int busy;
+  atomic_long lease_ms;
+  unsigned long id;
   char path[1024];
-  if(!websrv_get_query_arg(req, "path", path, sizeof(path)) ||
-     !path_is_safe(path)) {
-    return serve_error(req, 400, "missing or unsafe path");
-  }
+  int error;
+  du_counts_t counts;
+} g_du = {.lock = PTHREAD_MUTEX_INITIALIZER};
+struct du_arg { char path[1024]; dev_t device; };
 
-  struct stat st;
-  if(lstat(path, &st) != 0) return serve_error(req, 404, strerror(errno));
-
-  du_state_t du = {0};
-  du.root_dev = st.st_dev;
-  du_walk(path, &du);
-
-  json_buf_t b = {0};
-  if(json_append(&b, "{\"ok\":true,\"path\":") != 0 ||
-     json_string(&b, path) != 0 ||
-     json_appendf(&b,
-                  ",\"size\":%llu,\"entries\":%ld,\"files\":%ld,"
-                  "\"dirs\":%ld,\"truncated\":false}",
-                  du.bytes, du.entries, du.files, du.dirs) != 0) {
-    free(b.data);
-    return -1;
-  }
-
-  return serve_owned(req, 200, b.data, b.len);
+static int du_cancelled(void *context) {
+  du_counts_t *du = context;
+  return du->background ? transfer_job_busy() || atomic_load(&g_du_cancel) ||
+      monotonic_ms() - atomic_load(&g_du.lease_ms) > 30000 :
+      monotonic_ms() > du->deadline;
 }
-
+static int du_entry(const char *path, const char *relative,
+                     const struct stat *st, void *context) {
+  (void)path; (void)relative;
+  du_counts_t *du = context;
+  unsigned long size = st->st_size > 0 ? (unsigned long)st->st_size : 0;
+  if(size > ULONG_MAX - atomic_load(&du->bytes) ||
+     atomic_load(&du->entries) == LONG_MAX) return -EOVERFLOW;
+  atomic_fetch_add(&du->entries, 1);
+  atomic_fetch_add(&du->bytes, size);
+  atomic_fetch_add(S_ISDIR(st->st_mode) ? &du->dirs : &du->files, 1);
+  return 0;
+}
+static void *du_worker(void *context) {
+  struct du_arg *arg = context;
+  int rc = bfpilot_tree_walk(arg->path, arg->device, du_entry, du_cancelled,
+                            &g_du.counts);
+  pthread_mutex_lock(&g_du.lock);
+  g_du.error = rc ? -rc : 0;
+  atomic_store(&g_du.busy, 0);
+  pthread_mutex_unlock(&g_du.lock);
+  free(arg);
+  return NULL;
+}
+static int du_response(const http_request_t *req, const char *path,
+                        du_counts_t *du, int busy, unsigned long id, int error) {
+  json_buf_t b = {0};
+  if(json_appendf(&b, "{\"ok\":%s,\"busy\":%s,\"id\":%lu,\"path\":",
+      error ? "false" : "true", busy ? "true" : "false", id) != 0 ||
+     json_string(&b, path) != 0 ||
+     json_appendf(&b, ",\"size\":%lu,\"entries\":%ld,\"files\":%ld,"
+      "\"dirs\":%ld,\"truncated\":%s,\"errno\":%d,\"error\":",
+      atomic_load(&du->bytes), atomic_load(&du->entries),
+      atomic_load(&du->files), atomic_load(&du->dirs),
+      busy || error ? "true" : "false", error) != 0 ||
+     json_string(&b, error ? strerror(error) : "") != 0 ||
+     json_append(&b, "}") != 0) { free(b.data); return -1; }
+  return serve_owned(req, error ? 500 : 200, b.data, b.len);
+}
+static int du_request(const http_request_t *req) {
+  char path[1024], async_s[16], id_s[32], cancel_s[16];
+  if(!websrv_get_query_arg(req, "path", path, sizeof(path)) || !path_is_safe(path))
+    return serve_error(req, 400, "missing or unsafe path");
+  int asynchronous = websrv_get_query_arg(req, "async", async_s, sizeof(async_s)) &&
+                     !strcmp(async_s, "1");
+  if(!asynchronous) {
+    /* Preserve quick legacy queries, but never monopolize an HTTP thread for
+     * an unbounded crawl. Large callers must use the background/poll API. */
+    struct stat st;
+    if(lstat(path, &st) != 0) return serve_error(req, 404, strerror(errno));
+    du_counts_t counts = {.deadline = monotonic_ms() + 200};
+    int rc = bfpilot_tree_walk(path, st.st_dev, du_entry, du_cancelled, &counts);
+    return du_response(req, path, &counts, 0, 0, rc == -ECANCELED ? ETIMEDOUT : -rc);
+  }
+  int has_id = websrv_get_query_arg(req, "id", id_s, sizeof(id_s));
+  unsigned long id = has_id ? strtoul(id_s, NULL, 10) : 0;
+  int cancel = websrv_get_query_arg(req, "cancel", cancel_s, sizeof(cancel_s)) &&
+               !strcmp(cancel_s, "1");
+  pthread_mutex_lock(&g_du.lock);
+  if(has_id && (id != g_du.id || strcmp(path, g_du.path))) {
+    pthread_mutex_unlock(&g_du.lock);
+    return serve_error(req, 404, "size request expired");
+  }
+  if(cancel) {
+    atomic_store(&g_du_cancel, 1);
+  } else if(!has_id) {
+    if(atomic_load(&g_du.busy)) {
+      atomic_store(&g_du_cancel, 1);
+      pthread_mutex_unlock(&g_du.lock);
+      return serve_error(req, 409, "previous size request is cancelling");
+    }
+    if(transfer_job_busy()) {
+      pthread_mutex_unlock(&g_du.lock);
+      return serve_error(req, 409, "folder size is unavailable during a transfer");
+    }
+    struct du_arg *arg = calloc(1, sizeof(*arg));
+    struct stat st;
+    if(!arg || lstat(path, &st) != 0) {
+      int error = arg ? errno : ENOMEM;
+      free(arg); pthread_mutex_unlock(&g_du.lock);
+      return serve_error(req, 500, strerror(error));
+    }
+    snprintf(arg->path, sizeof(arg->path), "%s", path);
+    arg->device = st.st_dev;
+    snprintf(g_du.path, sizeof(g_du.path), "%s", path);
+    g_du.id++;
+    g_du.error = 0;
+    atomic_store(&g_du.counts.bytes, 0);
+    atomic_store(&g_du.counts.entries, 0);
+    atomic_store(&g_du.counts.files, 0);
+    atomic_store(&g_du.counts.dirs, 0);
+    g_du.counts.background = 1;
+    atomic_store(&g_du_cancel, 0);
+    atomic_store(&g_du.lease_ms, monotonic_ms());
+    atomic_store(&g_du.busy, 1);
+    pthread_attr_t attr;
+    pthread_t thread;
+    pthread_attr_init(&attr);
+    pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+    int rc = pthread_create(&thread, &attr, du_worker, arg);
+    pthread_attr_destroy(&attr);
+    if(rc) { free(arg); g_du.error = rc; atomic_store(&g_du.busy, 0); }
+  }
+  atomic_store(&g_du.lease_ms, monotonic_ms());
+  int result = du_response(req, g_du.path, &g_du.counts,
+                           atomic_load(&g_du.busy), g_du.id, g_du.error);
+  pthread_mutex_unlock(&g_du.lock);
+  return result;
+}
 
 typedef struct shortcut_entry {
   char label[64];
@@ -2536,6 +2354,14 @@ spawn_copy_or_move_values(const http_request_t *req, int is_move,
   pthread_attr_t at;
   pthread_attr_init(&at);
   pthread_attr_setdetachstate(&at, PTHREAD_CREATE_DETACHED);
+  /* Existing destination-merge validation remains depth-bounded; provision
+   * its worst-case path frames explicitly instead of relying on libc defaults. */
+  int stack_rc = pthread_attr_setstacksize(&at, 512 * 1024);
+  if(stack_rc != 0) {
+    pthread_attr_destroy(&at);
+    free(a); errno = stack_rc; job_end(-1, "worker stack");
+    return serve_error(req, 500, "worker stack");
+  }
   int trc = pthread_create(&t, &at, copy_worker, a);
   pthread_attr_destroy(&at);
   if(trc != 0) {
@@ -2604,6 +2430,14 @@ delete_handler_values(const http_request_t *req, const char *path,
   pthread_attr_t at;
   pthread_attr_init(&at);
   pthread_attr_setdetachstate(&at, PTHREAD_CREATE_DETACHED);
+  /* Existing destination-merge validation remains depth-bounded; provision
+   * its worst-case path frames explicitly instead of relying on libc defaults. */
+  int stack_rc = pthread_attr_setstacksize(&at, 512 * 1024);
+  if(stack_rc != 0) {
+    pthread_attr_destroy(&at);
+    free(a); errno = stack_rc; job_end(-1, "worker stack");
+    return serve_error(req, 500, "worker stack");
+  }
   int trc = pthread_create(&t, &at, delete_worker, a);
   pthread_attr_destroy(&at);
   if(trc != 0) {
@@ -2685,7 +2519,8 @@ status_handler(const http_request_t *req) {
   int serial_files = atomic_load(&g_job.serial_files);
   int writeback_syncs = atomic_load(&g_job.writeback_syncs);
   int cancel = atomic_load(&g_job.cancel);
-  char verb[16], current[512], source[512], destination[512], err[256];
+  char verb[16], current[sizeof(g_job.current)], source[sizeof(g_job.source)],
+       destination[sizeof(g_job.destination)], err[256];
   unsigned long source_dev, destination_dev;
   long started_ms;
   time_t started_at;
@@ -2762,7 +2597,7 @@ status_handler(const http_request_t *req) {
      json_string(&b, destination) != 0 ||
      json_appendf(&b,
       ",\"totalBytes\":%ld,\"copiedBytes\":%ld,"
-      "\"totalFiles\":%d,\"doneFiles\":%d,\"failedFiles\":%d,"
+      "\"totalKnown\":%s,\"totalFiles\":%d,\"doneFiles\":%d,\"failedFiles\":%d,"
       "\"startedAt\":%ld,\"endedAt\":%ld,"
       "\"elapsedSeconds\":%ld,\"elapsedMs\":%ld,"
       "\"bytesRead\":%ld,\"bytesWritten\":%ld,"
@@ -2772,7 +2607,7 @@ status_handler(const http_request_t *req) {
       "\"speedBytesPerSec\":%ld,\"averageMBps\":%.2f,"
       "\"instantSpeedBytesPerSec\":%ld,\"instantMBps\":%.2f,"
       "\"etaSeconds\":%ld}",
-      tb, cb, tf, df, ff, (long)started_at, (long)ended_at,
+      tb, cb, atomic_load(&g_job.total_known) ? "true" : "false", tf, df, ff, (long)started_at, (long)ended_at,
       elapsed, elapsed_ms, read_bytes, written_bytes, pipeline_files,
       serial_files, writeback_syncs, (unsigned int)COPY_BUF_SIZE, source_dev,
       destination_dev, last_errno, speed, avg_mbps, instant_speed, instant_mbps, eta) != 0) {
@@ -2788,7 +2623,7 @@ transfer_stats_handler(const http_request_t *req) {
   unsigned long bytes, destination_dev;
   unsigned int sync_count;
   int error_code, buffer_aligned;
-  char path[512];
+  char path[sizeof(g_upload.path)];
   bfpilot_download_stats_t download;
 
   pthread_mutex_lock(&g_upload.lock);
@@ -3999,10 +3834,16 @@ transfer_action_post_request(const http_request_t *req, const char *url,
     char note[160];
     snprintf(note, sizeof(note), "sent %s to elfldr", base);
     bfpilot_notify("BFpilot", note);
-    char resp[256];
-    snprintf(resp, sizeof(resp), "{\"ok\":true,\"port\":%d,\"path\":\"%s\"}", BFPILOT_ELFLDR_PORT, path);
+    json_buf_t response = {0};
+    int response_rc = json_appendf(&response, "{\"ok\":true,\"port\":%d,\"path\":", BFPILOT_ELFLDR_PORT);
+    if(response_rc == 0) response_rc = json_string(&response, path);
+    if(response_rc == 0) response_rc = json_append(&response, "}");
     free(body);
-    return websrv_send_text(req->fd, 200, "application/json", resp);
+    if(response_rc != 0) {
+      free(response.data);
+      return serve_error(req, 500, "could not format launch response");
+    }
+    return serve_owned(req, 200, response.data, response.len);
   } else {
     rc = serve_error(req, 404, "no such action endpoint");
   }
