@@ -438,12 +438,11 @@ bfpilot_appinst_install_tile(bfpilot_appinst_result_t *result) {
   snprintf(marker_path, sizeof(marker_path), BFPILOT_APP_ROOT "/%s/.bfpilot-registered",
            BFPILOT_APP_TITLE_ID);
 
-  struct stat st_param, st_icon;
-  if((stat(param_path, &st_param) == 0 && stat(icon_path, &st_icon) == 0 &&
-      st_param.st_size > 0 && st_icon.st_size > 0) ||
-     (file_matches(param_path, bfpilot_param_json, bfpilot_param_json_size) &&
-      file_matches(icon_path, bfpilot_icon0_png, bfpilot_icon0_png_size) &&
-      file_matches(pic1_path, bfpilot_pic1_png, bfpilot_pic1_png_size))) {
+  if(file_matches(param_path, bfpilot_param_json, bfpilot_param_json_size) &&
+     file_matches(icon_path, bfpilot_icon0_png, bfpilot_icon0_png_size) &&
+     file_matches(pic1_path, bfpilot_pic1_png, bfpilot_pic1_png_size) &&
+     file_matches(marker_path, g_tile_registration_marker,
+                  sizeof(g_tile_registration_marker) - 1)) {
     result->result = 0;
     result->user_app_writable = 1;
     result->skipped_unchanged = 1;

@@ -52,6 +52,7 @@ WEB_SRCS += src/text_format.c
 WEB_SRCS += src/payload_launch.c
 WEB_SRCS += src/tile_bootstrap.c
 WEB_SRCS += src/path_ops.c
+WEB_SRCS += src/tree_chmod.c
 WEB_SRCS += src/pkg_install.c
 WEB_SRCS += src/pkg_file.c
 WEB_SRCS += src/pkg_worker_client.c

@@ -581,7 +581,12 @@ diag_request(const http_request_t *req) {
   json_error_escape(checkpoint_json, sizeof(checkpoint_json), checkpoint);
 
   unsigned long long free_ram = 0, total_ram = 0;
-  bfpilot_diag_get_memory_info(&free_ram, &total_ram);
+  int memory_available = bfpilot_diag_get_memory_info(&free_ram, &total_ram);
+  char free_ram_json[32] = "null", total_ram_json[32] = "null";
+  if(memory_available & BFPILOT_MEMORY_FREE_VALID)
+    snprintf(free_ram_json, sizeof(free_ram_json), "%llu", free_ram / (1024ULL * 1024ULL));
+  if(memory_available & BFPILOT_MEMORY_TOTAL_VALID)
+    snprintf(total_ram_json, sizeof(total_ram_json), "%llu", total_ram / (1024ULL * 1024ULL));
 
   int n = snprintf(body, sizeof(body),
                    "{\"ok\":true,"
@@ -594,8 +599,9 @@ diag_request(const http_request_t *req) {
                    "\"uptime\":%ld,"
                    "\"port\":%u,"
                    "\"firmwareMajor\":%d,"
-                   "\"free_ram_mb\":%llu,"
-                   "\"total_ram_mb\":%llu,"
+                   "\"free_ram_mb\":%s,"
+                   "\"total_ram_mb\":%s,"
+                   "\"memory_source\":\"%s\","
                    "\"cwd\":\"%s\","
                    "\"can_stat_root\":%s,"
                    "\"can_opendir_data\":%s,"
@@ -668,8 +674,8 @@ diag_request(const http_request_t *req) {
                    bfpilot_diag_uptime(),
                    (unsigned int)g_websrv_port,
                    bfpilot_appinst_firmware_major(),
-                   (unsigned long long)(free_ram / (1024ULL * 1024ULL)),
-                   (unsigned long long)(total_ram / (1024ULL * 1024ULL)),
+                   free_ram_json, total_ram_json,
+                   memory_available ? "sysctl" : "unavailable",
                    cwd_json,
                    json_bool(can_stat_root),
                    json_bool(can_opendir_data),

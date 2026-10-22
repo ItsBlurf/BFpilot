@@ -1194,12 +1194,14 @@ search_worker(void *arg) {
   char roots_fail[512] = {0};
   int roots_succeeded = 0;
   int roots_failed = 0;
+  int roots_attempted = 0;
   int fatal = 0;
 
   /* One global visited set across roots so nullfs aliases do not double-count. */
   visited_set_t visited = {0};
 
   for(int i = 0; i < root_count && !search_cancelled() && !idx->truncated && !fatal; i++) {
+    roots_attempted++;
     publish_progress(idx, roots[i], NULL, 0);
     search_diag_log("ROOT CRAWL start: %s", roots[i]);
     /* Always same-device per root. Index All completeness = multi-root list
@@ -1212,6 +1214,9 @@ search_worker(void *arg) {
       roots_succeeded++;
       append_root_csv(roots_ok, sizeof(roots_ok), roots[i]);
       search_diag_log("ROOT CRAWL ok: %s entries=%zu", roots[i], idx->count);
+    } else if(saved_errno == ECANCELED || search_cancelled()) {
+      /* A requested cancellation is neither a root success nor a failure. */
+      break;
     } else if(saved_errno == ENOMEM) {
       /* Hard stop: do not thrash after OOM. */
       fatal = 1;
@@ -1264,7 +1269,7 @@ search_worker(void *arg) {
   }
 
   pthread_mutex_lock(&g_search.lock);
-  g_search.roots_tried = root_count;
+  g_search.roots_tried = roots_attempted;
   g_search.roots_succeeded = roots_succeeded;
   g_search.roots_failed = roots_failed;
   snprintf(g_search.roots_ok, sizeof(g_search.roots_ok), "%s", roots_ok);

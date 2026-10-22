@@ -48,4 +48,6 @@ int bfpilot_diag_can_write_user_app(void);
 
 int bfpilot_diag_dump_logs(char **out_buf, size_t *out_size, size_t tail_count, const char *fmt, const char *level_filter);
 void bfpilot_diag_clear_logs(void);
-void bfpilot_diag_get_memory_info(unsigned long long *free_bytes, unsigned long long *total_bytes);
+#define BFPILOT_MEMORY_FREE_VALID 1
+#define BFPILOT_MEMORY_TOTAL_VALID 2
+int bfpilot_diag_get_memory_info(unsigned long long *free_bytes, unsigned long long *total_bytes);

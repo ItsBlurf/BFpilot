@@ -330,46 +330,119 @@ parse_sfo(const unsigned char *sfo, size_t size, bfpilot_pkg_details_t *details)
   }
 }
 
+static int
+json_hex4(const char **cursor, const char *end, unsigned *value) {
+  if(end - *cursor < 4) return -1;
+  unsigned result = 0;
+  for(int i = 0; i < 4; i++) {
+    unsigned char c = (unsigned char)*(*cursor)++;
+    unsigned digit;
+    if(c >= '0' && c <= '9') digit = c - '0';
+    else if(c >= 'a' && c <= 'f') digit = c - 'a' + 10;
+    else if(c >= 'A' && c <= 'F') digit = c - 'A' + 10;
+    else return -1;
+    result = (result << 4) | digit;
+  }
+  *value = result;
+  return 0;
+}
+
+/* Decode a bounded string, validating even a truncated output's remaining
+ * input. UTF-8 sequences and surrogate pairs are never split in the result. */
+static int
+json_read_string(const char **cursor, const char *end, char *out, size_t size) {
+  const char *p = *cursor;
+  if(!size || p >= end || *p++ != '"') return -1;
+  size_t used = 0;
+  int truncated = 0;
+  out[0] = 0;
+  while(p < end) {
+    unsigned char c = (unsigned char)*p++;
+    if(c == '"') { out[used] = 0; *cursor = p; return 0; }
+    if(c < 0x20) break;
+    unsigned char bytes[5] = {0};
+    size_t count = 1;
+    bytes[0] = c;
+    if(c == '\\') {
+      if(p >= end) break;
+      c = (unsigned char)*p++;
+      switch(c) {
+      case '"': case '\\': case '/': bytes[0] = c; break;
+      case 'b': bytes[0] = '\b'; break;
+      case 'f': bytes[0] = '\f'; break;
+      case 'n': bytes[0] = '\n'; break;
+      case 'r': bytes[0] = '\r'; break;
+      case 't': bytes[0] = '\t'; break;
+      case 'u': {
+        unsigned cp = 0;
+        if(json_hex4(&p, end, &cp) != 0 || cp == 0) goto invalid;
+        if(cp >= 0xd800 && cp <= 0xdbff) {
+          if(end - p < 6 || p[0] != '\\' || p[1] != 'u') goto invalid;
+          p += 2;
+          unsigned low = 0;
+          if(json_hex4(&p, end, &low) != 0 || low < 0xdc00 || low > 0xdfff) goto invalid;
+          cp = 0x10000 + ((cp - 0xd800) << 10) + low - 0xdc00;
+        } else if(cp >= 0xdc00 && cp <= 0xdfff) goto invalid;
+        if(cp < 0x80) bytes[0] = (unsigned char)cp;
+        else if(cp < 0x800) {
+          count = 2; bytes[0] = 0xc0 | (cp >> 6); bytes[1] = 0x80 | (cp & 63);
+        } else if(cp < 0x10000) {
+          count = 3; bytes[0] = 0xe0 | (cp >> 12);
+          bytes[1] = 0x80 | ((cp >> 6) & 63); bytes[2] = 0x80 | (cp & 63);
+        } else {
+          count = 4; bytes[0] = 0xf0 | (cp >> 18); bytes[1] = 0x80 | ((cp >> 12) & 63);
+          bytes[2] = 0x80 | ((cp >> 6) & 63); bytes[3] = 0x80 | (cp & 63);
+        }
+        break;
+      }
+      default: goto invalid;
+      }
+    } else if(c >= 0x80) {
+      const char *start = p - 1;
+      size_t available = (size_t)(end - start);
+      memcpy(bytes, start, available < 4 ? available : 4);
+      count = bfpilot_utf8_sequence_length(bytes);
+      if(count == 0 || count > available) goto invalid;
+      p = start + count;
+    }
+    if(!truncated && count < size - used) {
+      memcpy(out + used, bytes, count);
+      used += count;
+    } else truncated = 1;
+  }
+invalid:
+  out[0] = 0;
+  return -1;
+}
+
 static void
 json_extract_val(const char *json, size_t json_len, const char *key, char *out, size_t out_size) {
+  if(!out || !out_size) return;
   out[0] = 0;
-  if(!json || !key || !out_size) return;
-  size_t klen = strlen(key);
-  const char *p = json;
-  const char *end = json + json_len;
-
-  while(p + klen + 2 < end) {
-    const char *found = strstr(p, key);
-    if(!found || found + klen >= end) break;
-    if(found > json && *(found - 1) == '"' && *(found + klen) == '"') {
-      const char *colon = found + klen + 1;
-      while(colon < end && (*colon == ' ' || *colon == '\t' || *colon == '\r' || *colon == '\n')) colon++;
-      if(colon < end && *colon == ':') {
-        const char *val = colon + 1;
-        while(val < end && (*val == ' ' || *val == '\t' || *val == '\r' || *val == '\n')) val++;
-        if(val < end) {
-          if(*val == '"') {
-            val++;
-            size_t o = 0;
-            while(val < end && *val != '"' && o + 1 < out_size) {
-              if(*val == '\\' && val + 1 < end) val++;
-              out[o++] = *val++;
-            }
-            out[o] = 0;
-            return;
-          } else {
-            size_t o = 0;
-            while(val < end && *val != ',' && *val != '}' && *val != ']' &&
-                  *val != ' ' && *val != '\r' && *val != '\n' && o + 1 < out_size) {
-              out[o++] = *val++;
-            }
-            out[o] = 0;
-            return;
-          }
-        }
+  if(!json || !key) return;
+  const char *p = json, *end = json + json_len;
+  while(p < end) {
+    if(*p != '"') { p++; continue; }
+    char name[256];
+    if(json_read_string(&p, end, name, sizeof(name)) != 0) return;
+    const char *value = p;
+    while(value < end && isspace((unsigned char)*value)) value++;
+    if(value == end || *value != ':' || strcmp(name, key)) continue;
+    value++;
+    while(value < end && isspace((unsigned char)*value)) value++;
+    if(value == end) return;
+    if(*value == '"') {
+      (void)json_read_string(&value, end, out, out_size);
+    } else if(*value != '{' && *value != '[' && *value != '}' && *value != ']') {
+      size_t used = 0;
+      while(value < end && *value != ',' && *value != '}' && *value != ']' &&
+            !isspace((unsigned char)*value)) {
+        if(used + 1 < out_size) out[used++] = *value;
+        value++;
       }
+      out[used] = 0;
     }
-    p = found + klen;
+    return;
   }
 }
 

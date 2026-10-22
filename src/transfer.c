@@ -28,6 +28,7 @@
 #include "archive_worker.h"
 #include "fs.h"
 #include "path_ops.h"
+#include "tree_chmod.h"
 #include "paths.h"
 #include "payload_launch.h"
 #include "pkg_file.h"
@@ -1022,15 +1023,30 @@ copy_file(const char *src, const char *dst, const struct stat *expected) {
   job_set_current(src);
   unsigned long long expected_size =
       expected->st_size > 0 ? (unsigned long long)expected->st_size : 0;
-  if(expected_size > 0) {
-    (void)posix_fallocate(out, 0, (off_t)expected_size);
-  }
   int rc = 1;
-  if(expected_size >= BFPILOT_COPY_PIPELINE_MIN_SIZE) {
+  if(expected_size > 0) {
+    int allocation_rc = posix_fallocate(out, 0, (off_t)expected_size);
+    if(allocation_rc != 0 && allocation_rc != EOPNOTSUPP &&
+       allocation_rc != ENOSYS && allocation_rc != EINVAL) {
+      job_set_error("preallocate(%s): %s", dst, strerror(allocation_rc));
+      errno = allocation_rc;
+      rc = -1;
+    }
+  }
+  if(rc == 1 && expected_size >= BFPILOT_COPY_PIPELINE_MIN_SIZE) {
     rc = copy_file_pipelined(in, out, src, dst, expected_size);
   }
   if(rc == 1) {
     rc = copy_file_serial(in, out, src, dst, expected_size);
+  }
+
+  /* Do not publish a staging file while delayed storage errors can still be
+   * hidden in buffered writes. Unsupported preallocation retains this gate. */
+  if(rc == 0) {
+    if(fsync(out) != 0) {
+      job_set_error("fsync(%s): %s", dst, strerror(errno));
+      rc = -1;
+    } else atomic_fetch_add(&g_job.writeback_syncs, 1);
   }
 
   int saved_errno = errno;
@@ -1773,25 +1789,19 @@ delete_worker(void *arg) {
 
 
 static int
+chmod_cancelled(void *context) {
+  (void)context;
+  return job_cancelled();
+}
+
+static int
 chmod_recursive_dir(const char *dir_path, mode_t mode) {
-  DIR *d = opendir(dir_path);
-  if(!d) return -errno;
-  struct dirent *de;
-  while((de = readdir(d)) != NULL) {
-    if(!strcmp(de->d_name, ".") || !strcmp(de->d_name, "..")) continue;
-    char subpath[PATH_MAX];
-    int n = snprintf(subpath, sizeof(subpath), "%s/%s", dir_path, de->d_name);
-    if(n < 0 || (size_t)n >= sizeof(subpath)) continue;
-    struct stat st;
-    if(lstat(subpath, &st) != 0) continue;
-    if(S_ISLNK(st.st_mode)) continue;
-    if(S_ISDIR(st.st_mode)) {
-      chmod_recursive_dir(subpath, mode);
-    }
-    (void)bfpilot_path_chmod(subpath, mode);
-  }
-  closedir(d);
-  return bfpilot_path_chmod(dir_path, mode);
+  if(!job_begin("chmod")) return -EBUSY;
+  job_set_current(dir_path);
+  int rc = bfpilot_tree_chmod(dir_path, mode, chmod_cancelled, NULL);
+  if(rc != 0) errno = -rc;
+  job_end(rc, rc ? strerror(-rc) : NULL);
+  return rc;
 }
 
 static int
@@ -1829,7 +1839,7 @@ chmod_request(const http_request_t *req) {
   if(rc != 0) {
     snprintf(body, sizeof(body),
              "{\"ok\":false,\"error\":\"chmod failed\",\"errno\":%d}", -rc);
-    return websrv_send_text(req->fd, 500, "application/json", body);
+    return websrv_send_text(req->fd, rc == -EBUSY ? 409 : 500, "application/json", body);
   }
   if(lstat(resolved, &st) != 0) {
     return serve_error(req, 500, "chmod ok but stat failed");
@@ -3965,7 +3975,7 @@ transfer_action_post_request(const http_request_t *req, const char *url,
       char resp[256];
       snprintf(resp, sizeof(resp), "{\"ok\":false,\"error\":\"chmod failed\",\"errno\":%d}", -rc);
       free(body);
-      return websrv_send_text(req->fd, 500, "application/json", resp);
+      return websrv_send_text(req->fd, rc == -EBUSY ? 409 : 500, "application/json", resp);
     }
     free(body);
     return websrv_send_text(req->fd, 200, "application/json", "{\"ok\":true}");
@@ -5262,6 +5272,15 @@ transfer_upload_request(const http_request_t *req, const char *initial_data,
   }
 
   free(buf);
+  if(!failed) {
+    long sync_started = monotonic_ms();
+    if(fsync(out) != 0) {
+      failed = 1;
+      failure_errno = errno ? errno : EIO;
+      snprintf(err, sizeof(err), "fsync: %s", strerror(failure_errno));
+    } else sync_count++;
+    sync_ms += monotonic_ms() - sync_started;
+  }
   int close_rc = close(out);
   if(close_rc != 0 && !failed) {
     failed = 1;

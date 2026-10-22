@@ -22,6 +22,7 @@
 #include <sys/vmmeter.h>
 #include <strings.h>
 #include <stdlib.h>
+#include <stdint.h>
 
 #include "paths.h"
 
@@ -553,18 +554,6 @@ bfpilot_diag_dump_logs(char **out_buf, size_t *out_size, size_t tail_count,
   size_t available = g_log_ring_count;
   if(limit > available) limit = available;
 
-  size_t est_cap = (limit * (BFPILOT_LOG_MAX_LINE + 16)) + 2048;
-  char *buf = malloc(est_cap);
-  if(!buf) {
-    pthread_mutex_unlock(&g_diag_lock);
-    return -1;
-  }
-
-  size_t len = 0;
-  if(is_json) {
-    len += (size_t)snprintf(buf + len, est_cap - len, "{\"ok\":true,\"count\":%zu,\"logs\":[", limit);
-  }
-
   size_t start_idx;
   if(g_log_ring_count < BFPILOT_LOG_RING_CAPACITY) {
     start_idx = available >= limit ? available - limit : 0;
@@ -572,6 +561,36 @@ bfpilot_diag_dump_logs(char **out_buf, size_t *out_size, size_t tail_count,
     start_idx = (g_log_ring_head + BFPILOT_LOG_RING_CAPACITY - limit) % BFPILOT_LOG_RING_CAPACITY;
   }
 
+  /* Size the selected tail while locked, including worst-case JSON escaping.
+   * The ring bounds the allocation to less than 3.1 MiB. Filtering follows
+   * tail selection, and count describes the rows actually returned. */
+  size_t capacity = 64;
+  size_t selected = 0;
+  for(size_t i = 0; i < limit; i++) {
+    const char *line = g_log_ring[(start_idx + i) % BFPILOT_LOG_RING_CAPACITY].line;
+    if(level_filter && *level_filter && !case_str_search(line, level_filter)) continue;
+    selected++;
+    capacity += is_json ? 3 : 1;
+    for(const unsigned char *p = (const unsigned char *)line; *p; p++) {
+      capacity += is_json && *p < 0x20 ? 6 :
+                  is_json && (*p == '"' || *p == '\\') ? 2 : 1;
+    }
+  }
+  char *buf = malloc(capacity);
+  if(!buf) {
+    pthread_mutex_unlock(&g_diag_lock);
+    return -1;
+  }
+  size_t len = 0;
+  if(is_json) {
+    int n = snprintf(buf, capacity, "{\"ok\":true,\"count\":%zu,\"logs\":[", selected);
+    if(n < 0 || (size_t)n >= capacity) {
+      free(buf);
+      pthread_mutex_unlock(&g_diag_lock);
+      return -1;
+    }
+    len = (size_t)n;
+  }
   size_t written_items = 0;
   for(size_t i = 0; i < limit; i++) {
     size_t idx = (start_idx + i) % BFPILOT_LOG_RING_CAPACITY;
@@ -583,39 +602,44 @@ bfpilot_diag_dump_logs(char **out_buf, size_t *out_size, size_t tail_count,
 
     if(is_json) {
       if(written_items > 0) {
-        if(len + 2 < est_cap) buf[len++] = ',';
+        buf[len++] = ',';
       }
-      if(len + 2 < est_cap) buf[len++] = '"';
-      for(const char *p = line; *p && len + 6 < est_cap; p++) {
+      buf[len++] = '"';
+      for(const char *p = line; *p; p++) {
         if(*p == '"' || *p == '\\') {
           buf[len++] = '\\';
           buf[len++] = *p;
-        } else if(*p == '\n' || *p == '\r') {
-          /* omit raw newlines in json strings */
         } else if((unsigned char)*p < 0x20) {
-          len += (size_t)snprintf(buf + len, est_cap - len, "\\u%04x", (unsigned char)*p);
+          static const char hex[] = "0123456789abcdef";
+          buf[len++] = '\\';
+          buf[len++] = 'u';
+          buf[len++] = '0';
+          buf[len++] = '0';
+          buf[len++] = hex[(unsigned char)*p >> 4];
+          buf[len++] = hex[(unsigned char)*p & 15];
         } else {
           buf[len++] = *p;
         }
       }
-      if(len + 2 < est_cap) buf[len++] = '"';
+      buf[len++] = '"';
     } else {
       size_t line_len = strlen(line);
-      if(len + line_len + 2 < est_cap) {
-        memcpy(buf + len, line, line_len);
-        len += line_len;
-        if(len > 0 && buf[len - 1] != '\n') {
-          buf[len++] = '\n';
-        }
+      memcpy(buf + len, line, line_len);
+      len += line_len;
+      if(len == 0 || buf[len - 1] != '\n') {
+        buf[len++] = '\n';
       }
     }
     written_items++;
   }
 
   if(is_json) {
-    len += (size_t)snprintf(buf + len, est_cap - len, "]}");
+    buf[len++] = ']';
+    buf[len++] = '}';
   } else if(len == 0) {
-    len = (size_t)snprintf(buf, est_cap, "# BFpilot live log buffer (empty)\n");
+    const char empty[] = "# BFpilot live log buffer (empty)\n";
+    len = sizeof(empty) - 1;
+    memcpy(buf, empty, len);
   }
   buf[len] = 0;
 
@@ -626,39 +650,48 @@ bfpilot_diag_dump_logs(char **out_buf, size_t *out_size, size_t tail_count,
 }
 
 
-void
+int
 bfpilot_diag_get_memory_info(unsigned long long *free_bytes, unsigned long long *total_bytes) {
   if(free_bytes) *free_bytes = 0;
   if(total_bytes) *total_bytes = 0;
 
+  int available = 0;
   uint64_t ram_total = 0;
   size_t ram_total_size = sizeof(ram_total);
-  int mib_phys[2] = {6, 6}; /* CTL_HW = 6, HW_PHYSMEM = 6 */
+  int mib_phys[2] = {CTL_HW, HW_PHYSMEM};
   if(sysctl(mib_phys, 2, &ram_total, &ram_total_size, NULL, 0) < 0 || ram_total == 0) {
-    if(sysctlbyname("hw.physmem", &ram_total, &ram_total_size, NULL, 0) < 0 || ram_total == 0) {
-      ram_total = 16ULL * 1024ULL * 1024ULL * 1024ULL; /* Fallback 16GB unified GDDR6 */
-    }
+    ram_total = 0;
+    ram_total_size = sizeof(ram_total);
+    if(sysctlbyname("hw.physmem", &ram_total, &ram_total_size, NULL, 0) < 0) ram_total = 0;
   }
-  if(total_bytes) *total_bytes = (unsigned long long)ram_total;
+  if(ram_total > 0) {
+    available |= BFPILOT_MEMORY_TOTAL_VALID;
+    if(total_bytes) *total_bytes = (unsigned long long)ram_total;
+  }
 
+  /* VM resident pages are not all used RAM. Only return an actual free-page
+   * measurement; unavailable sysctls must not become invented availability. */
+  long page_size = getpagesize();
+  uint64_t free_pages = 0;
+  size_t free_size = sizeof(free_pages);
+  int free_rc = sysctlbyname("vm.stats.vm.v_free_count", &free_pages, &free_size, NULL, 0);
   struct vmtotal vmt;
+  memset(&vmt, 0, sizeof(vmt));
   size_t vmt_size = sizeof(vmt);
-  int mib_vmt[2] = {2, 1}; /* CTL_VM = 2, VM_METER = 1 */
-  uint64_t ram_used = 0;
-  if(sysctl(mib_vmt, 2, &vmt, &vmt_size, NULL, 0) == 0 ||
-     sysctlbyname("vm.vmtotal", &vmt, &vmt_size, NULL, 0) == 0) {
-    unsigned int page_size = (unsigned int)getpagesize();
-    if(page_size == 0) page_size = 4096;
-    ram_used = (uint64_t)vmt.t_rm * (uint64_t)page_size;
-  }
-
-  if(free_bytes) {
-    if(ram_total > ram_used && ram_used > 0) {
-      *free_bytes = (unsigned long long)(ram_total - ram_used);
-    } else {
-      /* Fallback: PS5 typical OS footprint ~4.5GB, leaving ~11.5GB available for usermode/apps */
-      *free_bytes = (unsigned long long)(ram_total > (4608ULL * 1024ULL * 1024ULL) ?
-                                         ram_total - (4608ULL * 1024ULL * 1024ULL) : ram_total);
+  if(free_rc != 0) {
+    int mib_vmt[2] = {CTL_VM, 1}; /* VM_METER */
+    free_rc = sysctl(mib_vmt, 2, &vmt, &vmt_size, NULL, 0);
+    if(free_rc != 0) {
+      memset(&vmt, 0, sizeof(vmt));
+      vmt_size = sizeof(vmt);
+      free_rc = sysctlbyname("vm.vmtotal", &vmt, &vmt_size, NULL, 0);
     }
+    if(free_rc == 0 && vmt.t_free >= 0) free_pages = (uint64_t)vmt.t_free;
+    else free_rc = -1;
   }
+  if(free_rc == 0 && page_size > 0 && free_pages <= UINT64_MAX / (uint64_t)page_size) {
+    available |= BFPILOT_MEMORY_FREE_VALID;
+    if(free_bytes) *free_bytes = free_pages * (uint64_t)page_size;
+  }
+  return available;
 }
