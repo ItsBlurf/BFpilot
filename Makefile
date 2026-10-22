@@ -24,8 +24,8 @@ PYTHON ?= python3
 # Ship / daily use must stay 5905.
 WEB_PORT ?= 5905
 
-VERSION_TAG := bfpilot-v0.4.5-dev.21
-BUILD_VERSION ?= v0.4.5-dev.21
+VERSION_TAG := bfpilot-v0.4.5-dev.22
+BUILD_VERSION ?= v0.4.5-dev.22
 
 LLVM_CONFIG ?= $(if $(wildcard $(PS5_PAYLOAD_SDK)/bin/prospero-llvm-config),$(PS5_PAYLOAD_SDK)/bin/prospero-llvm-config,$(CURDIR)/build-tools/llvm-config)
 LLVM_BINDIR ?= $(shell "$(LLVM_CONFIG)" --bindir 2>/dev/null || dirname "$$(command -v clang 2>/dev/null || command -v clang.exe 2>/dev/null || command -v llvm-strip 2>/dev/null || command -v llvm-strip.exe 2>/dev/null || echo clang)" 2>/dev/null || echo .)
@@ -40,7 +40,7 @@ FULL_ARCHIVE_INPUTS := $(shell find third_party/wfm-7zip-helper -path '*/_o_*' -
 PKG_WORKER_BIN := build/internal/bfpilot-pkg-worker.elf
 PKG_WORKER_OBJ := build/internal/pkg_worker_main.o
 PKG_SOURCE_BIN := build/internal/bf-pkg-source.elf
-PKG_SOURCE_INPUTS := $(wildcard src/pkg_source*.[ch]) src/remote_io.c src/remote_io.h src/smb.c src/smb.h src/path_ops.c src/path_ops.h src/fs_at.c src/fs_at.h src/pkg_file.c src/pkg_file.h src/paths.h
+PKG_SOURCE_INPUTS := $(wildcard src/pkg_source*.[ch]) src/remote_io.c src/remote_io.h src/smb.c src/smb.h src/path_ops.c src/path_ops.h src/fs_at.c src/fs_at.h src/pkg_file.c src/pkg_file.h src/paths.h src/diag.h
 LEGACY_HELPER_BINS := bfpilot-launcher-installer.elf
 LEGACY_HELPER_BINS += bfpilot-archive-worker.elf bfpilot-pkg-installer.elf
 

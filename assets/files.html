@@ -55,6 +55,11 @@
     input {
       font: inherit;
     }
+    #language-choice {
+      min-height: 34px; max-width: 10rem; padding: 0 7px;
+      font: inherit; color: var(--ink); background: var(--panel-2);
+      border: 1px solid var(--line); border-radius: 6px;
+    }
 
     button {
       min-height: 34px;
@@ -862,6 +867,9 @@
       .top-inner {
         grid-template-columns: auto minmax(0, 1fr) auto auto;
       }
+      .brand { grid-row: 1; grid-column: 1; }
+      .title { grid-row: 1; grid-column: 2; }
+      #language-choice { grid-row: 2; grid-column: 3 / -1; justify-self: end; }
 
       #view-logs {
         grid-row: 1;
@@ -875,7 +883,7 @@
 
       .status {
         grid-row: 2;
-        grid-column: 1 / -1;
+        grid-column: 1 / 3;
       }
 
       .storage-summary span {
@@ -1099,6 +1107,11 @@
         </div>
       </div>
       <div class="status" id="status"><span class="dot"></span><span>Connecting</span></div>
+      <select id="language-choice" aria-label="Language" title="Language" data-native-language>
+        <option value="auto">Auto / 自动</option>
+        <option value="en">English</option>
+        <option value="zh-CN">简体中文</option>
+      </select>
       <button id="view-logs" class="button" title="View System Logs">Logs</button>
       <button id="terminate-top" class="danger" title="Terminate Payload">Exit</button>
     </div>
@@ -1372,7 +1385,7 @@
 
         <table style="width: 100%; border-collapse: collapse; text-align: center; font-size: 13px;">
           <thead>
-            <tr style="color: #6b7a8a; font-size: 11px; text-transform: uppercase;">
+            <tr style="color: #9babbc; font-size: 11px; text-transform: uppercase;">
               <th style="text-align: left; padding-bottom: 8px;">Scope</th>
               <th style="padding-bottom: 8px;">Read (4)</th>
               <th style="padding-bottom: 8px;">Write (2)</th>
@@ -1382,21 +1395,21 @@
           <tbody>
             <tr style="border-top: 1px solid #1f2a36;">
               <td style="text-align: left; padding: 8px 0; font-weight: 600; color: #e3e8ed;">Owner</td>
-              <td><input type="checkbox" id="chmod-ur" style="transform: scale(1.2); cursor: pointer;"></td>
-              <td><input type="checkbox" id="chmod-uw" style="transform: scale(1.2); cursor: pointer;"></td>
-              <td><input type="checkbox" id="chmod-ux" style="transform: scale(1.2); cursor: pointer;"></td>
+              <td><input type="checkbox" id="chmod-ur" aria-label="Owner read" style="transform: scale(1.2); cursor: pointer;"></td>
+              <td><input type="checkbox" id="chmod-uw" aria-label="Owner write" style="transform: scale(1.2); cursor: pointer;"></td>
+              <td><input type="checkbox" id="chmod-ux" aria-label="Owner execute" style="transform: scale(1.2); cursor: pointer;"></td>
             </tr>
             <tr style="border-top: 1px solid #1f2a36;">
               <td style="text-align: left; padding: 8px 0; font-weight: 600; color: #e3e8ed;">Group</td>
-              <td><input type="checkbox" id="chmod-gr" style="transform: scale(1.2); cursor: pointer;"></td>
-              <td><input type="checkbox" id="chmod-gw" style="transform: scale(1.2); cursor: pointer;"></td>
-              <td><input type="checkbox" id="chmod-gx" style="transform: scale(1.2); cursor: pointer;"></td>
+              <td><input type="checkbox" id="chmod-gr" aria-label="Group read" style="transform: scale(1.2); cursor: pointer;"></td>
+              <td><input type="checkbox" id="chmod-gw" aria-label="Group write" style="transform: scale(1.2); cursor: pointer;"></td>
+              <td><input type="checkbox" id="chmod-gx" aria-label="Group execute" style="transform: scale(1.2); cursor: pointer;"></td>
             </tr>
             <tr style="border-top: 1px solid #1f2a36;">
               <td style="text-align: left; padding: 8px 0; font-weight: 600; color: #e3e8ed;">Others</td>
-              <td><input type="checkbox" id="chmod-or" style="transform: scale(1.2); cursor: pointer;"></td>
-              <td><input type="checkbox" id="chmod-ow" style="transform: scale(1.2); cursor: pointer;"></td>
-              <td><input type="checkbox" id="chmod-ox" style="transform: scale(1.2); cursor: pointer;"></td>
+              <td><input type="checkbox" id="chmod-or" aria-label="Others read" style="transform: scale(1.2); cursor: pointer;"></td>
+              <td><input type="checkbox" id="chmod-ow" aria-label="Others write" style="transform: scale(1.2); cursor: pointer;"></td>
+              <td><input type="checkbox" id="chmod-ox" aria-label="Others execute" style="transform: scale(1.2); cursor: pointer;"></td>
             </tr>
           </tbody>
         </table>
@@ -1404,7 +1417,7 @@
         <div style="display: flex; align-items: center; justify-content: space-between; background: #101720; padding: 10px 14px; border-radius: 6px; border: 1px solid #1f2a36;">
           <span style="font-weight: 600; color: #e3e8ed; font-size: 13px;">Octal Mode:</span>
           <div style="display: flex; gap: 8px; align-items: center;">
-            <input type="text" id="chmod-octal" value="0755" maxlength="4" style="width: 70px; font-family: Consolas, monospace; font-size: 16px; font-weight: bold; text-align: center; background: #090d12; border: 1px solid #3b4d60; border-radius: 4px; color: #5ee0aa; padding: 4px;">
+            <input type="text" id="chmod-octal" aria-label="Octal Mode:" value="0755" maxlength="4" style="width: 70px; font-family: Consolas, monospace; font-size: 16px; font-weight: bold; text-align: center; background: #090d12; border: 1px solid #3b4d60; border-radius: 4px; color: #5ee0aa; padding: 4px;">
           </div>
         </div>
 
@@ -1434,17 +1447,19 @@
     <span class="legend-item clickable" id="legend-search" title="Focus Search (Triangle)"><kbd class="btn-ps5 btn-triangle"><svg width="11" height="11" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"><polygon points="6,2 10.5,10 1.5,10"/></svg></kbd> Search</span>
   </div>
 
+  <script src="/i18n.js"></script>
   <script>
+    const t = BFpilotI18n.t;
     const state = {
       path: '/data',
       focusedIndex: 0,
       entries: [],
       places: [
-        { label: 'Root', path: '/', kind: 'root' },
-        { label: 'Homebrew', path: '/data/homebrew', kind: 'homebrew' },
-        { label: 'Mounts', path: '/mnt', kind: 'mounts' },
-        { label: 'User', path: '/user', kind: 'user' },
-        { label: 'Data', path: '/data', kind: 'internal' }
+        { label: t('Root'), path: '/', kind: 'root' },
+        { label: t('Homebrew'), path: '/data/homebrew', kind: 'homebrew' },
+        { label: t('Mounts'), path: '/mnt', kind: 'mounts' },
+        { label: t('User'), path: '/user', kind: 'user' },
+        { label: t('Data'), path: '/data', kind: 'internal' }
       ],
       selected: new Set(),
       detailToken: 0,
@@ -1481,6 +1496,15 @@
     const PATH_STORAGE_KEY = 'bfpilot:last-path:v1';
 
     const el = id => document.getElementById(id);
+    el('language-choice').value = BFpilotI18n.preference;
+    el('language-choice').addEventListener('change', (event) => {
+      if (pathNavigationBlocked()) {
+        event.target.value = BFpilotI18n.preference;
+        toast(t('Finish or cancel the active task first'), 'err');
+        return;
+      }
+      BFpilotI18n.setPreference(event.target.value);
+    });
 
     function cleanPath(path) {
       if (!path || path[0] !== '/') return '/';
@@ -1649,11 +1673,11 @@
     function confirmShadowMountWrite(path, action) {
       if (!shadowMountSensitivePath(path)) return true;
       return confirm(
-        'ShadowMountPlus scans this destination. Writing directly into a scanned ' +
-        'location while ShadowMountPlus is running can cause a kernel panic.\n\n' +
-        'BFpilot stages replacements before finalizing, but the safest option is ' +
-        'to stop ShadowMountPlus or use an unscanned staging folder on the same disk.\n\n' +
-        'Continue with ' + action + '?'
+        t('ShadowMountPlus scans this destination. Writing directly into a scanned ') +
+        t('location while ShadowMountPlus is running can cause a kernel panic.\n\n') +
+        t('BFpilot stages replacements before finalizing, but the safest option is ') +
+        t('to stop ShadowMountPlus or use an unscanned staging folder on the same disk.\n\n') +
+        t('Continue with ') + action + '?'
       );
     }
 
@@ -1701,7 +1725,7 @@
         if (a.dir !== b.dir) return a.dir ? -1 : 1;
         let result = 0;
         if (key === 'type') {
-          result = fileType(a).localeCompare(fileType(b), undefined, {
+          result = fileType(a).localeCompare(fileType(b), BFpilotI18n.locale, {
             numeric: true, sensitivity: 'base'
           });
         } else if (key === 'size') {
@@ -1711,12 +1735,12 @@
         } else if (key === 'mode') {
           result = Number(a.mode || 0) - Number(b.mode || 0);
         } else {
-          result = displayFsText(a.name).localeCompare(displayFsText(b.name), undefined, {
+          result = displayFsText(a.name).localeCompare(displayFsText(b.name), BFpilotI18n.locale, {
             numeric: true, sensitivity: 'base'
           });
         }
         if (result === 0) {
-          result = displayFsText(a.name).localeCompare(displayFsText(b.name), undefined, {
+          result = displayFsText(a.name).localeCompare(displayFsText(b.name), BFpilotI18n.locale, {
             numeric: true, sensitivity: 'base'
           });
         }
@@ -1777,8 +1801,8 @@
     }
 
     function exactSize(size) {
-      if (!Number.isFinite(size) || size < 0) return 'Unknown';
-      return shortSize(size) + ' (' + Math.round(size).toLocaleString() + ' bytes)';
+      if (!Number.isFinite(size) || size < 0) return t('Unknown');
+      return shortSize(size) + ' (' + Math.round(size).toLocaleString(BFpilotI18n.locale) + t(' bytes)');
     }
 
     function storageSummary(place) {
@@ -1791,9 +1815,9 @@
       const pctValue = Number(place.usableUsedPercent);
       const pct = Number.isFinite(pctValue) ? pctValue : Number(place.usedPercent || 0);
       const reserved = Number(place.reservedBytes || 0);
-      let summary = shortSize(free) + ' usable free of ' + shortSize(total) +
-        ', ' + pct.toFixed(0) + '% used';
-      if (reserved > 0) summary += ', ' + shortSize(reserved) + ' reserved';
+      let summary = shortSize(free) + t(' usable free of ') + shortSize(total) +
+        ', ' + pct.toFixed(0) + t('% used');
+      if (reserved > 0) summary += ', ' + shortSize(reserved) + t(' reserved');
       return summary;
     }
 
@@ -1808,7 +1832,10 @@
 
       const label = document.createElement('span');
       label.className = 'place-label';
-      label.textContent = place.label || cleanPath(place.path);
+      label.textContent = place.kind === 'usb' && /usb\d+$/.test(place.path)
+        ? t('USB Drive ') + place.path.match(/usb(\d+)$/)[1]
+        : ['root', 'homebrew', 'mounts', 'user', 'internal', 'network'].includes(place.kind)
+          ? t(place.label || cleanPath(place.path)) : (place.label || cleanPath(place.path));
       button.appendChild(label);
 
       const meta = document.createElement('span');
@@ -1839,7 +1866,7 @@
       }
       if (!items.length) {
         const empty = document.createElement('span');
-        empty.textContent = 'Storage: waiting for data';
+        empty.textContent = t('Storage: waiting for data');
         box.appendChild(empty);
         return;
       }
@@ -1849,11 +1876,11 @@
         item.className = 'storage-item-btn' + (cleanPath(place.path) === state.path ? ' active' : '');
         const title = document.createElement('strong');
         title.textContent = place.kind === 'internal'
-          ? 'Data'
+          ? t('Data')
           : place.kind === 'smb' ? 'SMB ' + displayFsText(place.path.split('/').pop()) : cleanPath(place.path);
         item.appendChild(title);
         item.appendChild(document.createTextNode(': ' + (storageSummary(place) || 'unknown')));
-        item.title = 'Go to ' + cleanPath(place.path);
+        item.title = t('Go to ') + cleanPath(place.path);
         item.addEventListener('click', () => {
           openPath(cleanPath(place.path));
         });
@@ -1965,11 +1992,11 @@
         });
       } catch (err) {
         state.places = [
-          { label: 'Root', path: '/', kind: 'root' },
-          { label: 'Homebrew', path: '/data/homebrew', kind: 'homebrew' },
-          { label: 'Mounts', path: '/mnt', kind: 'mounts' },
-          { label: 'User', path: '/user', kind: 'user' },
-          { label: 'Data', path: '/data', kind: 'internal' }
+          { label: t('Root'), path: '/', kind: 'root' },
+          { label: t('Homebrew'), path: '/data/homebrew', kind: 'homebrew' },
+          { label: t('Mounts'), path: '/mnt', kind: 'mounts' },
+          { label: t('User'), path: '/user', kind: 'user' },
+          { label: t('Data'), path: '/data', kind: 'internal' }
         ];
         if (!quiet) toast('places: ' + err.message, 'err');
       }
@@ -1995,7 +2022,7 @@
         state.smbRecords = data.connections || [];
         const select = el('smb-record');
         select.textContent = '';
-        select.add(new Option('New connection', ''));
+        select.add(new Option(t('New connection'), ''));
         for (const record of state.smbRecords) select.add(new Option(displayFsText(record.label), record.id));
         const activeId = state.path.startsWith('/smb/') ? state.path.split('/')[2] : '';
         if (state.smbRecords.some(record => record.id === activeId)) select.value = activeId;
@@ -2037,15 +2064,15 @@
     }
 
     async function addShortcut() {
-      const path = cleanPath(prompt('Shortcut path', state.path) || '');
+      const path = cleanPath(prompt(t('Shortcut path'), state.path) || '');
       if (!path || path === '/') return;
-      const label = prompt('Shortcut label', path.split('/').filter(Boolean).pop() || path);
+      const label = prompt(t('Shortcut label'), path.split('/').filter(Boolean).pop() || path);
       if (label === null) return;
       try {
         await api('/api/fs/shortcut/add?path=' + encodeURIComponent(path) +
           '&label=' + encodeURIComponent(label));
         await refreshPlaces(false);
-        toast('Shortcut saved', 'ok');
+        toast(t('Shortcut saved'), 'ok');
       } catch (err) {
         toast('shortcut: ' + err.message, 'err');
       }
@@ -2054,14 +2081,14 @@
     async function removeShortcut() {
       const match = activeShortcut();
       if (!match) {
-        toast('Open a custom shortcut first', 'err');
+        toast(t('Open a custom shortcut first'), 'err');
         return;
       }
-      if (!confirm('Remove shortcut "' + (match.label || match.path) + '"?')) return;
+      if (!confirm(t('Remove shortcut "') + (match.label || match.path) + '"?')) return;
       try {
         await api('/api/fs/shortcut/delete?path=' + encodeURIComponent(match.path));
         await refreshPlaces(false);
-        toast('Shortcut removed', 'ok');
+        toast(t('Shortcut removed'), 'ok');
       } catch (err) {
         toast('shortcut: ' + err.message, 'err');
       }
@@ -2070,16 +2097,16 @@
     async function customizeShortcut() {
       const match = activeShortcut();
       if (!match) {
-        toast('Open a custom shortcut first', 'err');
+        toast(t('Open a custom shortcut first'), 'err');
         return;
       }
-      const label = prompt('Shortcut name', match.label || match.path);
+      const label = prompt(t('Shortcut name'), match.label || match.path);
       if (label === null) return;
       try {
         await api('/api/fs/shortcut/rename?path=' + encodeURIComponent(match.path) +
           '&label=' + encodeURIComponent(label));
         await refreshPlaces(false);
-        toast('Shortcut updated', 'ok');
+        toast(t('Shortcut updated'), 'ok');
       } catch (err) {
         toast('shortcut: ' + err.message, 'err');
       }
@@ -2131,8 +2158,8 @@
     }
 
     function formatDate(seconds) {
-      if (!Number.isFinite(seconds) || seconds <= 0) return 'Unknown';
-      return new Date(seconds * 1000).toLocaleString();
+      if (!Number.isFinite(seconds) || seconds <= 0) return t('Unknown');
+      return new Date(seconds * 1000).toLocaleString(BFpilotI18n.locale);
     }
 
     function jobProgressText(job) {
@@ -2153,38 +2180,44 @@
       const parts = [];
 
       if (!known) {
-        parts.push(shortSize(copied) + " copied");
-        parts.push(doneFiles + " files completed; discovering remaining items");
+        parts.push(shortSize(copied) + t(" copied"));
+        parts.push(doneFiles + t(" files completed; discovering remaining items"));
       } else if (total > 0) {
         parts.push(shortSize(copied) + ' / ' + shortSize(total));
         parts.push(pct.toFixed(1) + '%');
       } else if (job.busy) {
-        parts.push(job.current || 'Preparing');
+        parts.push(job.current || t('Preparing'));
       }
 
       if (known && totalFiles > 0) {
-        parts.push(doneFiles + ' / ' + totalFiles + ' items');
+        parts.push(doneFiles + ' / ' + totalFiles + t(' items'));
       }
 
       if (speed > 0) {
         if (instantSpeed > 0 && avgSpeed > 0 && Math.abs(instantSpeed - avgSpeed) > 1024 * 1024) {
-          parts.push(speedMBps(instantSpeed) + ' (avg ' + speedMBps(avgSpeed) + ')');
+          parts.push(speedMBps(instantSpeed) + t(' (avg ') + speedMBps(avgSpeed) + ')');
         } else {
           parts.push(speedMBps(speed));
         }
         if (known && reportedEta > 0) {
-          parts.push('ETA ' + shortDuration(reportedEta));
+          parts.push(t('ETA ') + shortDuration(reportedEta));
         } else if (known && total > copied) {
-          parts.push('ETA ' + shortDuration((total - copied) / speed));
+          parts.push(t('ETA ') + shortDuration((total - copied) / speed));
         }
       }
 
-      if (failedFiles > 0) parts.push(failedFiles + ' failed');
-      if (job.cancelling) parts.push('cancelling');
+      if (failedFiles > 0) parts.push(failedFiles + t(' failed'));
+      if (job.cancelling) parts.push(t('Cancelling...'));
 
       if (job.current && (total > 0 || !known)) parts.push(displayFsText(job.current));
-      if (!parts.length) return job.error || 'Done';
+      if (!parts.length) return job.error || t('Done');
       return parts.join(' | ');
+    }
+
+    function jobVerbLabel(value) {
+      const labels = { copy: 'Copy', move: 'Move', delete: 'Delete', upload: 'Upload Files',
+        download: 'Download', extract: 'Extract', chmod: 'Apply Permissions', size: 'Size' };
+      return t(Object.prototype.hasOwnProperty.call(labels, value) ? labels[value] : value || 'Working');
     }
 
     function setJobBox(verb, text, pct) {
@@ -2197,7 +2230,7 @@
         state.jobHideTimer = 0;
       }
       el('job').classList.add('show');
-      el('job-verb').textContent = verb || 'Working';
+      el('job-verb').textContent = jobVerbLabel(verb);
       el('job-text').textContent = text || '';
       el('job-fill').style.width = Math.max(0, Math.min(100, pct || 0)).toFixed(1) + '%';
       el('job-cancel').disabled = false;
@@ -2213,17 +2246,17 @@
         parts.push(shortSize(doneBytes) + ' / ' + shortSize(totalBytes));
         parts.push(pct.toFixed(1) + '%');
       } else {
-        parts.push('Preparing');
+        parts.push(t('Preparing'));
       }
 
-      parts.push(Math.min(index + 1, count) + ' / ' + count + ' files');
+      parts.push(Math.min(index + 1, count) + ' / ' + count + t(' files'));
       if (speed > 0) {
         parts.push(speedMBps(speed));
         if (totalBytes > doneBytes) {
-          parts.push('ETA ' + shortDuration((totalBytes - doneBytes) / speed));
+          parts.push(t('ETA ') + shortDuration((totalBytes - doneBytes) / speed));
         }
       }
-      if (failed > 0) parts.push(failed + ' failed');
+      if (failed > 0) parts.push(failed + t(' failed'));
       if (cancelling) parts.push('cancelling');
       if (name) parts.push(displayFsText(name));
 
@@ -2243,28 +2276,28 @@
       const total = Number(job.totalBytes || 0);
       const parts = [];
       if (job.state === 'prepared') {
-        parts.push('Job prepared');
-        parts.push('starting integrated extractor');
+        parts.push(t('Job prepared'));
+        parts.push(t('starting integrated extractor'));
       } else {
         parts.push(job.state || 'archive');
       }
       if (job.archiveType && job.archiveType !== 'pending') parts.push(job.archiveType);
       if (job.progressUnit === 'decoder-bytes') {
-        parts.push(shortSize(Number(job.decoderBytesDone || 0)) + ' processed by decoder');
+        parts.push(shortSize(Number(job.decoderBytesDone || 0)) + t(' processed by decoder'));
       } else if (job.totalKnown === false) {
-        parts.push(shortSize(written) + " output");
+        parts.push(shortSize(written) + t(" output"));
       } else if (total > 0) {
         parts.push(shortSize(written) + ' / ' + shortSize(total));
       }
       if (pct > 0) parts.push(Math.max(0, Math.min(100, pct)).toFixed(0) + '%');
       if (job.averageMBps > 0) parts.push(Number(job.averageMBps).toFixed(2) + ' MB/s');
       if (job.cpuUtilPercent > 0) parts.push('CPU ' + Number(job.cpuUtilPercent).toFixed(0) + '%');
-      if (job.outputWaitMBps > 0) parts.push('write ' + Number(job.outputWaitMBps).toFixed(1) + ' MB/s');
+      if (job.outputWaitMBps > 0) parts.push(t('write ') + Number(job.outputWaitMBps).toFixed(1) + ' MB/s');
       if (job.rarMtBlocks > 0 && Number(job.effectiveThreads || 0) > 1) {
         parts.push('MT ' + Number(job.rarMtThreadedBlocks || 0) + '/' + Number(job.rarMtBlocks || 0));
       }
       if (job.filesDone || job.totalFiles) {
-        parts.push(Number(job.filesDone || 0) + ' / ' + Number(job.totalFiles || 0) + ' files');
+        parts.push(Number(job.filesDone || 0) + ' / ' + Number(job.totalFiles || 0) + t(' files'));
       }
       if (job.current) parts.push(displayFsText(job.current));
       if (job.error) parts.push(displayFsText(job.error));
@@ -2284,8 +2317,8 @@
         state.jobHideTimer = 0;
       }
       box.classList.add('show');
-      verb.textContent = 'extract';
-      text.textContent = 'Waiting for archive status';
+      verb.textContent = t('Extract');
+      text.textContent = t('Waiting for archive status');
       cancel.disabled = true;
       let missed = 0;
 
@@ -2295,7 +2328,7 @@
           missed = 0;
           const pct = Math.max(0, Math.min(100, Number(job.percent || 0)));
           fill.style.width = pct.toFixed(1) + '%';
-          verb.textContent = 'extract';
+          verb.textContent = t('Extract');
           text.textContent = archiveProgressText(job);
           cancel.disabled = !['prepared', 'starting', 'recovering', 'running', 'finalizing'].includes(job.state);
 
@@ -2307,7 +2340,7 @@
           } else if (job.state === 'done' || job.state === 'error') {
             clearInterval(state.archiveTimer);
             state.archiveTimer = 0;
-            toast(job.state === 'done' ? 'Archive extracted' : ('extract: ' + (job.error || 'failed')),
+            toast(job.state === 'done' ? t('Archive extracted') : ('extract: ' + (job.error || 'failed')),
               job.state === 'done' ? 'ok' : 'err');
             if (job.state === 'done') refreshCurrentView();
             state.jobHideTimer = setTimeout(() => {
@@ -2320,7 +2353,7 @@
           }
         } catch (err) {
           missed++;
-          text.textContent = 'Waiting for archive status...';
+          text.textContent = t('Waiting for archive status...');
           if (missed >= 120) {
             clearInterval(state.archiveTimer);
             state.archiveTimer = 0;
@@ -2343,7 +2376,7 @@
       key.textContent = label;
 
       const val = document.createElement('span');
-      val.textContent = value || 'Unknown';
+      val.textContent = value || t('Unknown');
       val.title = val.textContent;
 
       row.appendChild(key);
@@ -2401,35 +2434,35 @@
             return;
           }
           renderDetail(displayFsText(entry.name), [
-            ['Kind', 'Folder'], ['Size so far', exactSize(du.size)],
-            ['Files found', String(du.files || 0)], ['Path', displayFsText(path)]
-          ], 'Calculating folder size in the background. You can keep browsing.');
+            [t('Kind'), t('Folder')], [t('Size so far'), exactSize(du.size)],
+            [t('Files found'), String(du.files || 0)], [t('Path'), displayFsText(path)]
+          ], t('Calculating folder size in the background. You can keep browsing.'));
           await new Promise(resolve => setTimeout(resolve, 400));
           du = await api(base + '&id=' + du.id);
         }
         if (token !== state.detailToken || !state.selected.has(entryKey(entry))) return;
 
         const rows = [
-          ['Kind', 'Folder'],
-          ['Size', exactSize(du.size)],
-          ['Files', String(du.files || 0)],
-          ['Folders', String(Math.max(0, (du.dirs || 0) - 1))],
-          ['Permissions', entry.remote ? 'SMB server ACL' : formatMode(entry.mode)],
-          ['Path', displayFsText(path)]
+          [t('Kind'), t('Folder')],
+          [t('Size'), exactSize(du.size)],
+          [t('Files'), String(du.files || 0)],
+          [t('Folders'), String(Math.max(0, (du.dirs || 0) - 1))],
+          [t('Permissions'), entry.remote ? t('SMB server ACL') : formatMode(entry.mode)],
+          [t('Path'), displayFsText(path)]
         ];
-        const note = entry.remote ? 'Full remote folder size calculated.' : 'Full folder size calculated without following symbolic links or crossing mounts.';
+        const note = entry.remote ? t('Full remote folder size calculated.') : t('Full folder size calculated without following symbolic links or crossing mounts.');
         renderDetail(displayFsText(entry.name), rows, note);
       } catch (err) {
         if (token !== state.detailToken) return;
         const rows = [
-          ['Kind', 'Folder'],
-          ['Size', exactSize(entry.size)],
-          ['Modified', formatDate(entry.mtime)],
-          ['Permissions', entry.remote ? 'SMB server ACL' : formatMode(entry.mode)],
-          ['Path', displayFsText(path)]
+          [t('Kind'), t('Folder')],
+          [t('Size'), exactSize(entry.size)],
+          [t('Modified'), formatDate(entry.mtime)],
+          [t('Permissions'), entry.remote ? t('SMB server ACL') : formatMode(entry.mode)],
+          [t('Path'), displayFsText(path)]
         ];
         renderDetail(displayFsText(entry.name), rows,
-          'Could not calculate folder size: ' + err.message);
+          t('Could not calculate folder size: ') + err.message);
       }
     }
 
@@ -2455,22 +2488,22 @@
 
       const title = document.createElement('strong');
       if (!clipboard || !clipboard.entries.length) {
-        title.textContent = 'Clipboard empty';
+        title.textContent = t('Clipboard empty');
         status.appendChild(title);
-        status.appendChild(document.createTextNode('Select items in the file list.'));
+        status.appendChild(document.createTextNode(t('Select items in the file list.')));
         el('paste').disabled = true;
         el('clear-clipboard').disabled = true;
         return;
       }
 
       const count = clipboard.entries.length;
-      title.textContent = (clipboard.verb === 'move' ? 'Move ' : 'Copy ') +
-        count + (count === 1 ? ' item' : ' items');
+      title.textContent = (clipboard.verb === 'move' ? t('Move ') : t('Copy ')) +
+        count + (count === 1 ? t(' item') : t(' items'));
       status.appendChild(title);
       const names = clipboard.entries.slice(0, 3)
         .map((entry) => displayFsText(entry.name)).join(', ');
       status.appendChild(document.createTextNode(
-        names + (count > 3 ? ' +' + (count - 3) + ' more' : '')
+        names + (count > 3 ? ' +' + (count - 3) + t(' more') : '')
       ));
       el('paste').disabled = false;
       el('clear-clipboard').disabled = false;
@@ -2479,7 +2512,7 @@
     function stageClipboard(verb) {
       const entries = selectedEntries();
       if (!entries.length) {
-        toast('Select files or folders first', 'err');
+        toast(t('Select files or folders first'), 'err');
         return;
       }
       state.clipboard = {
@@ -2493,8 +2526,8 @@
       state.selected.clear();
       drawList();
       updateClipboard();
-      toast((verb === 'move' ? 'Move' : 'Copy') +
-        ' ready. Open a destination and choose Paste Here.', 'ok');
+      toast((verb === 'move' ? t('Move') : t('Copy')) +
+        t(' ready. Open a destination and choose Paste Here.'), 'ok');
     }
 
     function clearClipboard() {
@@ -2515,7 +2548,7 @@
       const hasSelection = entries.length > 0;
       const operable = hasSelection && entries.every(entry => !entry.virtual);
       el('selection').textContent = hasSelection
-        ? entries.length + ' selected' : 'No selection';
+        ? entries.length + t(' selected') : t('No selection');
       setContextAction('open-folder', !!(one && one.dir));
       setContextAction('rename', !!one && !one.virtual);
       setContextAction('download', operable);
@@ -2526,7 +2559,7 @@
       const pkgCount = entries.filter((entry) => !entry.dir && isPkgName(entry.name)).length;
       const allPackages = hasSelection && pkgCount === entries.length;
       setContextAction('install-pkg', allPackages);
-      el('install-pkg').textContent = pkgCount > 1 ? 'Install ' + pkgCount + ' PKGs' : 'Install PKG';
+      el('install-pkg').textContent = pkgCount > 1 ? t('Install ') + pkgCount + t(' PKGs') : t('Install PKG');
       const onePkg = one && !one.dir && isPkgName(one.name);
       setContextAction('pkg-info', !!onePkg);
       el('chmod').disabled = entries.length === 0 || entries.some(entry => entry.remote);
@@ -2541,7 +2574,7 @@
         const isEditable = hasSelection && canEdit(entries[0]);
         const isViewable = hasSelection && canViewImage(entries[0]);
         setContextAction('edit-file', isEditable || isViewable);
-        el('edit-file').textContent = isViewable ? 'View' : 'Edit';
+        el('edit-file').textContent = isViewable ? t('View') : t('Edit');
       }
       el('context-actions').hidden = !Array.from(
         el('context-actions').querySelectorAll('button')
@@ -2550,10 +2583,10 @@
 
       const detail = el('detail');
       if (!entries.length) {
-        renderDetail('No selection', [
-          ['Path', state.search.active ? 'Search results' : displayFsText(state.path)],
-          ['Items', state.entries.length + ' visible']
-        ], 'Select a file or folder to see size and modified date.');
+        renderDetail(t('No selection'), [
+          [t('Path'), state.search.active ? t('Search results') : displayFsText(state.path)],
+          [t('Items'), state.entries.length + t(' visible')]
+        ], t('Select a file or folder to see size and modified date.'));
         return;
       }
 
@@ -2563,17 +2596,17 @@
         const entry = entries[0];
         const path = entryPath(entry);
         const rows = [
-          ['Kind', entry.dir ? 'Folder' : 'File'],
-          ['Size', exactSize(entry.size)],
-          ['Modified', formatDate(entry.mtime)],
-          ['Permissions', entry.remote ? 'SMB server ACL' : formatMode(entry.mode)],
-          ['Path', displayFsText(path)]
+          [t('Kind'), entry.dir ? t('Folder') : t('File')],
+          [t('Size'), exactSize(entry.size)],
+          [t('Modified'), formatDate(entry.mtime)],
+          [t('Permissions'), entry.remote ? t('SMB server ACL') : formatMode(entry.mode)],
+          [t('Path'), displayFsText(path)]
         ];
         let note = '';
         if (entry.virtual) {
-          note = 'Open this connection to browse its shared folders.';
+          note = t('Open this connection to browse its shared folders.');
         } else if (entry.dir) {
-          note = 'Calculating full folder size...';
+          note = t('Calculating full folder size...');
           loadFolderSize(path, token, entry);
         }
         renderDetail(displayFsText(entry.name), rows, note);
@@ -2583,12 +2616,12 @@
       const totalFileBytes = entries.reduce((sum, entry) => {
         return entry.dir || !Number.isFinite(entry.size) ? sum : sum + entry.size;
       }, 0);
-      renderDetail(entries.length + ' items', [
-        ['Files', String(files)],
-        ['Folders', String(dirs)],
-        ['File size', exactSize(totalFileBytes)],
-        ['Location', state.search.active ? 'Search results' : displayFsText(state.path)]
-      ], dirs ? 'Folder contents are not included in the total.' : '');
+      renderDetail(entries.length + t(' items'), [
+        [t('Files'), String(files)],
+        [t('Folders'), String(dirs)],
+        [t('File size'), exactSize(totalFileBytes)],
+        [t('Location'), state.search.active ? t('Search results') : displayFsText(state.path)]
+      ], dirs ? t('Folder contents are not included in the total.') : '');
     }
 
     function highlightPath(path, query) {
@@ -2636,7 +2669,7 @@
       const path = parent ? parentPath(state.path) : entryPath(entry);
       const key = entryKey(entry);
       const isSelected = !parent && state.selected.has(key);
-      const chkHtml = parent ? '<span class="chk-col"></span>' : `<span class="chk-col select-hit"><input type="checkbox" class="row-checkbox" aria-label="Select ${escHtml(displayFsText(entry.name || entry.path || 'item'))}" ${isSelected ? 'checked' : ''} style="cursor: pointer; pointer-events: auto;"></span>`;
+      const chkHtml = parent ? '<span class="chk-col"></span>' : `<span class="chk-col select-hit"><input type="checkbox" class="row-checkbox" aria-label="${escHtml(t('Select'))} ${escHtml(displayFsText(entry.name || entry.path || 'item'))}" ${isSelected ? 'checked' : ''} style="cursor: pointer; pointer-events: auto;"></span>`;
 
       const row = document.createElement('div');
       row.className = 'file-row ' + (entry.dir ? 'dir ' : '') +
@@ -2651,7 +2684,7 @@
         '<span class="muted-cell type-kind"></span><span class="muted-cell size"></span>' +
         '<span class="muted-cell mtime"></span><span class="muted-cell mode"></span>';
 
-      row.querySelector('.tag').textContent = entry.dir ? 'DIR' : 'FILE';
+      row.querySelector('.tag').textContent = entry.dir ? t('DIR') : t('FILE');
       const nameEl = row.querySelector('.name');
       nameEl.title = displayFsText(path);
       if (entry.path && state.search.query) {
@@ -2659,14 +2692,14 @@
       } else {
         nameEl.textContent = displayFsText(entry.displayName || (entry.path ? path : entry.name));
       }
-      row.querySelector('.type-kind').textContent = parent ? '' : fileType(entry);
+      row.querySelector('.type-kind').textContent = parent ? '' : entry.dir ? t('Folder') : fileType(entry) === 'file' ? t('File') : fileType(entry);
       row.querySelector('.size').textContent = parent || entry.dir ? '' : shortSize(entry.size || 0);
-      row.querySelector('.mtime').textContent = entry.mtime ? new Date(entry.mtime * 1000).toLocaleDateString() : '';
+      row.querySelector('.mtime').textContent = entry.mtime ? new Date(entry.mtime * 1000).toLocaleDateString(BFpilotI18n.locale) : '';
       const modeCol = row.querySelector('.mode');
-      modeCol.textContent = parent ? '' : entry.remote ? 'SMB ACL' : formatMode(entry.mode);
+      modeCol.textContent = parent ? '' : entry.remote ? t('SMB ACL') : formatMode(entry.mode);
       if (!parent && !entry.remote && entry.mode !== undefined) {
         modeCol.classList.add('mode-clickable');
-        modeCol.title = 'Click to edit permissions';
+        modeCol.title = t('Click to edit permissions');
       }
 
       if (!parent && state.selected.has(key)) {
@@ -2742,9 +2775,10 @@
           (state.sort.direction > 0 ? '\u25b2' : '\u25bc') + '">' + label + '</button>';
       };
       head.innerHTML = `<span class="chk-col select-all-hit"><input type="checkbox" id="select-all-checkbox" aria-label="Select all visible items" ${allSelected ? 'checked' : ''} style="cursor: pointer;"></span>` +
-        '<span>Kind</span>' + sortHeader('name', state.search.active ? 'Path' : 'Name') +
-        sortHeader('type', 'Type', 'type-kind') + sortHeader('size', 'Size', 'size') +
-        sortHeader('mtime', 'Modified', 'mtime') + sortHeader('mode', 'Permissions', 'mode');
+        '<span>Kind</span>' + sortHeader('name', state.search.active ? t('Path') : t('Name')) +
+        sortHeader('type', t('Type'), 'type-kind') + sortHeader('size', t('Size'), 'size') +
+        sortHeader('mtime', t('Modified'), 'mtime') + sortHeader('mode', t('Permissions'), 'mode');
+      BFpilotI18n.translateStatic(head);
       list.appendChild(head);
 
       head.querySelectorAll('[data-sort]').forEach((button) => {
@@ -2857,6 +2891,8 @@
       row.innerHTML = '<span class="chk-col"></span><span class="tag">...</span>' +
         '<span class="name">Loading</span><span class="type-kind"></span>' +
         '<span class="size"></span><span class="mtime"></span><span class="mode"></span>';
+      BFpilotI18n.translateStatic(head);
+      BFpilotI18n.translateStatic(row);
       list.appendChild(head);
       list.appendChild(row);
     }
@@ -2866,30 +2902,30 @@
       const system = root === 'system';
       if (!status || !status.indexed) {
         if (status && status.running) {
-          const parts = [system ? 'Indexing system' : 'Indexing detected mounts'];
-          parts.push(Number(status.entries || 0).toLocaleString() + ' seen');
+          const parts = [system ? t('Indexing system') : t('Indexing detected mounts')];
+          parts.push(Number(status.entries || 0).toLocaleString() + t(' seen'));
           if (status.rootsSucceeded || status.rootsTried) {
-            parts.push('roots ' + Number(status.rootsSucceeded || 0) + '/' +
+            parts.push(t('roots ') + Number(status.rootsSucceeded || 0) + '/' +
               Number(status.rootsTried || 0));
           }
           if (status.current) parts.push(status.current);
           return parts.join(' | ');
         }
-        return 'Index not built — press Index All';
+        return t('Index not built — press Index All');
       }
       const parts = [Number(status.entries || 0).toLocaleString() +
-        (status.running ? ' seen' : ' indexed')];
+        (status.running ? t(' seen') : t(' indexed'))];
       parts.push(system ? 'system' : 'multi-root');
       if (status.running) parts.push('indexing');
       if (status.rootsSucceeded || status.rootsTried) {
-        parts.push('roots ' + Number(status.rootsSucceeded || 0) + '/' +
+        parts.push(t('roots ') + Number(status.rootsSucceeded || 0) + '/' +
           Number(status.rootsTried || status.rootsSucceeded || 0));
       }
-      if (status.rootsFailed > 0) parts.push(status.rootsFailed + ' root fails');
+      if (status.rootsFailed > 0) parts.push(status.rootsFailed + t(' root fails'));
       if (status.stale) parts.push('stale');
       if (status.truncated) parts.push('truncated');
       if (status.elapsedMs > 0) parts.push((Number(status.elapsedMs) / 1000).toFixed(1) + 's');
-      if (status.lastQueryMs > 0) parts.push('query ' + Number(status.lastQueryMs).toFixed(0) + 'ms');
+      if (status.lastQueryMs > 0) parts.push(t('query ') + Number(status.lastQueryMs).toFixed(0) + 'ms');
       if (status.error) parts.push(status.error);
       return parts.join(' | ');
     }
@@ -2903,7 +2939,7 @@
         return status;
       } catch (err) {
         if (!quiet) toast('search status: ' + err.message, 'err');
-        el('search-status').textContent = 'Search status unavailable';
+        el('search-status').textContent = t('Search status unavailable');
         return null;
       }
     }
@@ -2925,7 +2961,7 @@
         state.search.root = status.root || 'all';
         el('search-status').textContent = searchStatusText(status);
         pollSearchStatus();
-        toast('Search indexing all storage', 'ok');
+        toast(t('Search indexing all storage'), 'ok');
       } catch (err) {
         toast('search index: ' + err.message, 'err');
       }
@@ -2965,14 +3001,14 @@
         drawList();
         const suffix = data.hasMore ? '+' : '';
         el('search-status').textContent = Number(data.matched || 0).toLocaleString() +
-          suffix + ' matches | ' + Number(data.elapsedMs || 0).toFixed(0) + 'ms' +
-          (data.stale ? ' | stale' : '');
+          suffix + t(' matches | ') + Number(data.elapsedMs || 0).toFixed(0) + 'ms' +
+          (data.stale ? t(' | stale') : '');
       } catch (err) {
         state.entries = [];
         state.search.active = true;
         drawList();
-        if ((err.message || '').includes('rebuild first') || (err.message || '').includes('empty')) {
-          el('search-status').innerHTML = 'Index empty — <a href="#" id="search-quick-index" style="color: #60a5fa; text-decoration: underline; font-weight: 600;">Index Storage Now</a>';
+        if ((err.message || '').includes(t('rebuild first')) || (err.message || '').includes('empty')) {
+          el('search-status').innerHTML = BFpilotI18n.staticHTML('Index empty — <a href="#" id="search-quick-index" style="color: #60a5fa; text-decoration: underline; font-weight: 600;">Index Storage Now</a>');
           const btn = el('search-quick-index');
           if (btn) btn.onclick = (e) => { e.preventDefault(); rebuildSearchIndex(); };
         } else {
@@ -3049,7 +3085,7 @@
     async function openPath(path, options) {
       options = options || {};
       if (pathNavigationBlocked()) {
-        toast('Finish or cancel the active task first', 'err');
+        toast(t('Finish or cancel the active task first'), 'err');
         return false;
       }
       const targetPath = cleanPath(path);
@@ -3063,7 +3099,7 @@
     function navigateParent() {
       if (state.path === '/') return;
       if (pathNavigationBlocked()) {
-        toast('Finish or cancel the active task first', 'err');
+        toast(t('Finish or cancel the active task first'), 'err');
         return;
       }
       if (state.historyReady && historyPath() === state.path &&
@@ -3093,11 +3129,11 @@
             throw failure;
           }
         } catch (err) {
-          if (err.errno === 17 || err.message === 'destination already exists') {
+          if (err.errno === 17 || err.message === t('destination already exists')) {
             const filename = entry.name;
             const isDir = entry.dir;
-            const typeStr = isDir ? 'Folder' : 'File';
-            const actionStr = isDir ? 'Merge' : 'Overwrite';
+            const typeStr = isDir ? t('Folder') : t('File');
+            const actionStr = isDir ? t('Merge') : t('Overwrite');
             if (confirm(`${typeStr} conflict: "${filename}" already exists in the target directory. ${actionStr}?`)) {
               try {
                 await postForm('/api/fs/' + verb, {
@@ -3134,7 +3170,7 @@
     function directTargetPath() {
       const raw = (el('target-path').value || '').trim();
       if (!raw || raw[0] !== '/') {
-        toast('Target must be an absolute path', 'err');
+        toast(t('Target must be an absolute path'), 'err');
         return null;
       }
       const target = cleanPath(raw);
@@ -3153,35 +3189,35 @@
     async function transferToTarget(verb) {
       const entries = selectedEntries();
       if (!entries.length) {
-        toast('Select files or folders first', 'err');
+        toast(t('Select files or folders first'), 'err');
         return;
       }
       const target = directTargetPath();
       if (!target) return;
       if (transferWouldRecurse(entries, target)) {
-        toast('Cannot transfer a folder into itself', 'err');
+        toast(t('Cannot transfer a folder into itself'), 'err');
         return;
       }
       if (!confirmShadowMountWrite(target, verb)) return;
 
       const completed = await executeTransfer(verb, entries, target);
       if (completed) {
-        toast((verb === 'move' ? 'Moved' : 'Copied') + ' to ' + target, 'ok');
+        toast((verb === 'move' ? t('Moved') : t('Copied')) + t(' to ') + target, 'ok');
       } else {
-        toast('Some selected items were not transferred', 'err');
+        toast(t('Some selected items were not transferred'), 'err');
       }
     }
 
     async function pasteClipboard() {
       const clipboard = state.clipboard;
       if (!clipboard || !clipboard.entries.length) {
-        toast('Clipboard is empty', 'err');
+        toast(t('Clipboard is empty'), 'err');
         return;
       }
 
       const target = state.path;
       if (transferWouldRecurse(clipboard.entries, target)) {
-        toast('Cannot paste a folder into itself', 'err');
+        toast(t('Cannot paste a folder into itself'), 'err');
         return;
       }
       if (!confirmShadowMountWrite(target, clipboard.verb)) return;
@@ -3189,11 +3225,11 @@
       const completed = await executeTransfer(
         clipboard.verb, clipboard.entries, target);
       if (completed) {
-        toast((clipboard.verb === 'move' ? 'Moved' : 'Copied') +
-          ' to ' + target, 'ok');
+        toast((clipboard.verb === 'move' ? t('Moved') : t('Copied')) +
+          t(' to ') + target, 'ok');
         if (clipboard.verb === 'move') clearClipboard();
       } else {
-        toast('Some clipboard items were not pasted', 'err');
+        toast(t('Some clipboard items were not pasted'), 'err');
       }
     }
 
@@ -3224,7 +3260,7 @@
         }
         if (job.error) return job;
         if (job.verb !== 'download' || Number(job.downloadId) !== Number(id)) {
-          throw new Error('Download status changed before completion; queue stopped');
+          throw new Error(t('Download status changed before completion; queue stopped'));
         }
         if (!job.busy) return job;
         await new Promise(resolve => setTimeout(resolve, 300));
@@ -3232,28 +3268,28 @@
     }
 
     async function makeFolder() {
-      const name = prompt('Folder name');
+      const name = prompt(t('Folder name'));
       if (!name) return;
       try {
         await api('/api/fs/mkdir?path=' + encodeURIComponent(joinPath(state.path, name)));
         await refreshCurrentView();
-        toast('Folder created', 'ok');
+        toast(t('Folder created'), 'ok');
       } catch (err) {
         toast('mkdir: ' + err.message, 'err');
       }
     }
 
     async function makeTextFile() {
-      const name = prompt('Text file name', 'new-file.txt');
+      const name = prompt(t('Text file name'), 'new-file.txt');
       if (!name) return;
-      if (!confirmShadowMountWrite(state.path, 'create text file')) return;
+      if (!confirmShadowMountWrite(state.path, t('create text file'))) return;
       try {
         const data = await postForm('/api/fs/text/create', {
           path: state.path,
           name
         });
         await refreshCurrentView();
-        toast('Text file created', 'ok');
+        toast(t('Text file created'), 'ok');
         openEditor(data.path || joinPath(state.path, name));
       } catch (err) {
         toast('create text: ' + err.message, 'err');
@@ -3263,10 +3299,10 @@
     async function renameOne() {
       const entries = selectedEntries();
       if (entries.length !== 1) {
-        toast('Select one item', 'err');
+        toast(t('Select one item'), 'err');
         return;
       }
-      const next = prompt('New name', displayFsText(entries[0].name));
+      const next = prompt(t('New name'), displayFsText(entries[0].name));
       if (!next || next === entries[0].name) return;
       const srcPath = entryPath(entries[0]);
       const dstPath = joinPath(parentPath(srcPath), next);
@@ -3275,7 +3311,7 @@
           encodeURIComponent(srcPath) +
           '&dst=' + encodeURIComponent(dstPath));
         await refreshCurrentView();
-        toast('Renamed', 'ok');
+        toast(t('Renamed'), 'ok');
       } catch (err) {
         toast('rename: ' + err.message, 'err');
       }
@@ -3285,7 +3321,7 @@
       if (state.downloadQueue) return;
       const entries = selectedEntries();
       if (!entries.length) {
-        toast('Select files or folders', 'err');
+        toast(t('Select files or folders'), 'err');
         return;
       }
       const individual = entries.length > 1 && el('download-mode').value === 'individual';
@@ -3326,10 +3362,10 @@
         }
         pollJob();
         const done = await waitDownloadIdle(data.id);
-        if (done.error && !state.downloadQueue.cancelled) throw new Error(done.error + (individual ? '. Allow multiple downloads in your browser and retry.' : ''));
+        if (done.error && !state.downloadQueue.cancelled) throw new Error(done.error + (individual ? t('. Allow multiple downloads in your browser and retry.') : ''));
        }
-       toast(state.downloadQueue.cancelled ? 'Download queue cancelled' :
-         individual ? groups.length + ' downloads sent to browser' : 'Download sent to browser', 'ok');
+       toast(state.downloadQueue.cancelled ? t('Download queue cancelled') :
+         individual ? groups.length + t(' downloads sent to browser') : t('Download sent to browser'), 'ok');
       } catch (err) {
         toast('download: ' + err.message, 'err');
       } finally {
@@ -3339,13 +3375,13 @@
     }
 
     function pkgProgressText(status) {
-      const parts = [status.message || status.state || 'PKG installation'];
+      const parts = [t(status.message || status.state || 'PKG installation')];
       const count = Number(status.packageCount || 0);
       if (count > 0) {
-        parts.push(Number(status.submitted || 0) + '/' + count + ' submitted');
+        parts.push(Number(status.submitted || 0) + '/' + count + t(' submitted'));
       }
       if (Number(status.totalBytes || 0) > 0) {
-        parts.push(shortSize(Number(status.totalBytes || 0)) + ' selected');
+        parts.push(shortSize(Number(status.totalBytes || 0)) + t(' selected'));
       }
       if (status.path) parts.push(displayFsText(status.path));
       if (status.result && status.resultHex) parts.push(status.resultHex);
@@ -3359,7 +3395,7 @@
         state.jobHideTimer = 0;
       }
       el('job').classList.add('show');
-      el('job-verb').textContent = 'install PKG';
+      el('job-verb').textContent = t('install PKG');
       el('job-cancel').disabled = true;
       let missed = 0;
 
@@ -3376,8 +3412,8 @@
           if (failed || accepted) {
             clearInterval(state.pkgTimer);
             state.pkgTimer = 0;
-            toast(failed ? ('PKG install: ' + (status.message || status.resultHex || 'failed')) :
-              'PKG queue accepted by AppInst; watch PS5 notifications',
+            toast(failed ? (t('PKG install: ') + t(status.message || status.resultHex || 'failed')) :
+              t('PKG queue accepted by AppInst; watch PS5 notifications'),
               failed ? 'err' : 'ok');
             state.jobHideTimer = setTimeout(() => {
               state.jobHideTimer = 0;
@@ -3404,13 +3440,13 @@
       const packages = (explicitEntries || selectedEntries()).filter(
         (entry) => !entry.dir && isPkgName(entry.name));
       if (!packages.length) {
-        toast('Select one or more .pkg files', 'err');
+        toast(t('Select one or more .pkg files'), 'err');
         return;
       }
       const names = packages.slice(0, 3)
         .map((entry) => displayFsText(entry.name)).join(', ');
-      if (!confirm('Install ' + packages.length + ' package(s)?\n\n' + names +
-        (packages.length > 3 ? '\n+' + (packages.length - 3) + ' more' : ''))) return;
+      if (!confirm(t('Install ') + packages.length + t(' package(s)?\n\n') + names +
+        (packages.length > 3 ? '\n+' + (packages.length - 3) + t(' more') : ''))) return;
       try {
         const body = new URLSearchParams();
         packages.forEach((entry) => body.append('path', entryPath(entry)));
@@ -3427,7 +3463,7 @@
         if (!response.ok || data.ok === false) {
           throw new Error(data.error || ('HTTP ' + response.status));
         }
-        toast('PKG installer started', 'ok');
+        toast(t('PKG installer started'), 'ok');
         pollPkgStatus();
       } catch (err) {
         toast('install PKG: ' + err.message, 'err');
@@ -3437,21 +3473,21 @@
     async function extractSelected() {
       const entries = selectedEntries();
       if (entries.length !== 1 || entries[0].dir) {
-        toast('Select one archive file', 'err');
+        toast(t('Select one archive file'), 'err');
         return;
       }
       if (!isArchiveName(entries[0].name)) {
-        toast('Select a RAR, 7z, ZIP, TAR or supported compressed archive', 'err');
+        toast(t('Select a RAR, 7z, ZIP, TAR or supported compressed archive'), 'err');
         return;
       }
 
       const source = entryPath(entries[0]);
       const target = cleanPath(el('target-path').value || '/data');
       const suggested = joinPath(target, archiveStem(entries[0].name));
-      const destination = cleanPath(prompt('Extract to folder', suggested) || '');
+      const destination = cleanPath(prompt(t('Extract to folder'), suggested) || '');
       if (!destination || destination === '/') return;
       if (!confirmShadowMountWrite(destination, 'extract')) return;
-      const password = prompt('Archive password (leave blank if none)', '');
+      const password = prompt(t('Archive password (leave blank if none)'), '');
       if (password === null) return;
 
       try {
@@ -3461,7 +3497,7 @@
           password,
           threads: '0'
         });
-        toast('Archive extraction started', 'ok');
+        toast(t('Archive extraction started'), 'ok');
         pollArchiveStatus();
       } catch (err) {
         toast('extract: ' + err.message, 'err');
@@ -3471,10 +3507,10 @@
     async function deleteSelected() {
       const paths = selectedPaths();
       if (!paths.length) {
-        toast('No selection', 'err');
+        toast(t('No selection'), 'err');
         return;
       }
-      if (!confirm('Delete ' + paths.length + ' item(s)?')) return;
+      if (!confirm(t('Delete ') + paths.length + t(' item(s)?'))) return;
 
       for (const path of paths) {
         try {
@@ -3523,11 +3559,11 @@
         };
         xhr.onerror = () => {
           clearXhr();
-          reject(new Error('network error'));
+          reject(new Error(t('network error')));
         };
         xhr.onabort = () => {
           clearXhr();
-          reject(new Error('upload cancelled'));
+          reject(new Error(t('upload cancelled')));
         };
         xhr.send(file);
       });
@@ -3555,7 +3591,7 @@
       /* Sequential single-stream: max LAN/PFS for one body; keep-alive cuts multi-file TCP setup cost.
        * Avoid parallel writers to /data — PFS crypto often serializes and can slow bulk. */
 
-      updateUploadJob(0, totalBytes, startedAt, 0, uploads.length, 'Preparing', failed, false);
+      updateUploadJob(0, totalBytes, startedAt, 0, uploads.length, t('Preparing'), failed, false);
 
       for (let index = 0; index < uploads.length; index++) {
         const file = uploads[index].file;
@@ -3572,10 +3608,10 @@
             index, uploads.length, file.name, failed, false);
           /* Toast only every 8 files or on last — PS5 browser UI thrash hurts multi-file speed */
           if (ok === uploads.length || (ok % 8) === 0) {
-            toast('Uploaded ' + ok + ' / ' + uploads.length, 'ok');
+            toast(t('Uploaded ') + ok + ' / ' + uploads.length, 'ok');
           }
         } catch (err) {
-          if (state.uploadAbort || err.message === 'upload cancelled') {
+          if (state.uploadAbort || err.message === t('upload cancelled')) {
             state.uploadAbort = true;
             updateUploadJob(uploadedBytes, totalBytes, startedAt,
               index, uploads.length, file.name, failed, true);
@@ -3592,9 +3628,9 @@
       state.uploadXhr = null;
       await refreshCurrentView();
       if (state.uploadAbort) {
-        toast('Upload cancelled after ' + ok + ' file(s)', 'err');
+        toast(t('Upload cancelled after ') + ok + t(' file(s)'), 'err');
       } else {
-        toast(ok + ' uploaded' + (failed ? ', ' + failed + ' failed' : ''), failed ? 'err' : 'ok');
+        toast(ok + t(' uploaded') + (failed ? ', ' + failed + t(' failed') : ''), failed ? 'err' : 'ok');
       }
       setTimeout(() => {
         if (!state.uploadBusy && !state.jobTimer && !state.jobHideTimer) {
@@ -3633,7 +3669,7 @@
         readNext();
       });
       if (!parent && entry.dir) {
-        row.title = 'Double-click to open folder';
+        row.title = t('Double-click to open folder');
       }
     }
 
@@ -3666,7 +3702,7 @@
       }
       box.classList.add('show');
       el('job-cancel').disabled = false;
-      text.textContent = 'Starting';
+      text.textContent = t('Starting');
       let missed = 0;
 
       state.jobTimer = setInterval(async () => {
@@ -3676,9 +3712,9 @@
           const pct = job.totalKnown !== false && job.totalBytes > 0 ?
             Math.max(0, Math.min(100, (job.copiedBytes / job.totalBytes) * 100)) : 0;
           fill.style.width = pct.toFixed(1) + '%';
-          verb.textContent = job.verb || 'Working';
+          verb.textContent = jobVerbLabel(job.verb);
           text.textContent = (state.downloadQueue && state.downloadQueue.total > 1 ?
-            state.downloadQueue.index + '/' + state.downloadQueue.total + ' downloads | ' : '') + jobProgressText(job);
+            state.downloadQueue.index + '/' + state.downloadQueue.total + t(' downloads | ') : '') + jobProgressText(job);
 
           if (!job.busy) {
             clearInterval(state.jobTimer);
@@ -3698,12 +3734,12 @@
           }
         } catch (err) {
           missed++;
-          text.textContent = 'Waiting for status...';
+          text.textContent = t('Waiting for status...');
           if (missed >= 600) {
             clearInterval(state.jobTimer);
             state.jobTimer = 0;
             box.classList.remove('show');
-            toast('Lost job status: ' + err.message, 'err');
+            toast(t('Lost job status: ') + err.message, 'err');
           }
         }
       }, 500);
@@ -3792,27 +3828,27 @@
 
     async function launchPayloadPath(path) {
       const name = path.split('/').pop();
-      if (!confirm('Load payload via elfldr (port 9021)?\n\n' + name)) return;
+      if (!confirm(t('Load payload via elfldr (port 9021)?\n\n') + name)) return;
       try {
         const data = await api('/api/fs/launch?path=' + encodeURIComponent(path));
         if (data && data.ok) {
-          toast('Sent to elfldr: ' + name);
+          toast(t('Sent to elfldr: ') + name);
         } else {
-          toast((data && data.error) || 'Launch failed', 'err');
+          toast((data && data.error) || t('Launch failed'), 'err');
         }
       } catch (err) {
-        toast('Launch failed: ' + (err.message || err), 'err');
+        toast(t('Launch failed: ') + (err.message || err), 'err');
       }
     }
 
     async function loadPayloadSelected() {
       const entries = selectedEntries().filter(canLaunchPayload);
       if (!entries.length) {
-        toast('Select an .elf / .bin / .js payload', 'err');
+        toast(t('Select an .elf / .bin / .js payload'), 'err');
         return;
       }
       if (entries.length > 1) {
-        toast('Select a single payload to load', 'err');
+        toast(t('Select a single payload to load'), 'err');
         return;
       }
       await launchPayloadPath(entryPath(entries[0]));
@@ -3824,7 +3860,7 @@
         await openPath(entryPath(entries[0]));
         return;
       }
-      toast('Select one folder to open', 'err');
+      toast(t('Select one folder to open'), 'err');
     }
 
     /* =========================================================================
@@ -3836,25 +3872,25 @@
       if (!path) return;
       pkgModalCurrentPath = path;
       el('pkg-modal-icon').src = '/icon.png';
-      el('pkg-modal-title').textContent = 'Loading ' + baseName(path) + '...';
+      el('pkg-modal-title').textContent = t('Loading ') + baseName(path) + '...';
       el('pkg-modal-subtitle').textContent = path;
       el('pkg-badge-platform').textContent = 'PKG';
-      el('pkg-badge-cat').textContent = 'Package';
+      el('pkg-badge-cat').textContent = t('Package');
       el('pkg-modal-tid').textContent = '--';
       el('pkg-modal-ver').textContent = '--';
       el('pkg-modal-minfw').textContent = '--';
       el('pkg-modal-size').textContent = '--';
       el('pkg-modal-cid').textContent = '--';
-      el('pkg-modal-fields').textContent = 'Loading fields...';
+      el('pkg-modal-fields').textContent = t('Loading fields...');
       el('pkg-overlay').style.display = 'flex';
 
       api('/api/fs/pkg/info?path=' + encodeURIComponent(path))
         .then(data => {
-          if (!data || !data.ok) throw new Error(data && data.error ? data.error : 'Invalid package');
+          if (!data || !data.ok) throw new Error(data && data.error ? data.error : t('Invalid package'));
           el('pkg-modal-title').textContent = data.title_name || baseName(path);
           el('pkg-modal-subtitle').textContent = (data.title_id ? data.title_id + ' · ' : '') + (data.platform || '');
           el('pkg-badge-platform').textContent = data.platform || 'PS4';
-          el('pkg-badge-cat').textContent = data.category || 'Game';
+          el('pkg-badge-cat').textContent = t(data.category || 'Game');
           el('pkg-modal-tid').textContent = data.title_id || '--';
           el('pkg-modal-ver').textContent = data.app_ver || '--';
           el('pkg-modal-minfw').textContent = data.min_fw || '--';
@@ -3890,13 +3926,13 @@
             });
             fieldsBox.appendChild(table);
           } else {
-            fieldsBox.textContent = 'No extra fields';
+            fieldsBox.textContent = t('No extra fields');
           }
         })
         .catch(err => {
           toast('PKG Info: ' + err.message, 'err');
           el('pkg-modal-title').textContent = baseName(path);
-          el('pkg-modal-fields').textContent = 'Could not load package details: ' + err.message;
+          el('pkg-modal-fields').textContent = t('Could not load package details: ') + err.message;
         });
     }
 
@@ -3943,7 +3979,7 @@
 
     function openChmodModal(entries) {
       if (!entries || !entries.length) {
-        toast('Select files or folders first', 'err');
+        toast(t('Select files or folders first'), 'err');
         return;
       }
       chmodCurrentEntries = entries;
@@ -3954,7 +3990,7 @@
         let modeStr = '0' + mode.toString(8);
         updateChmodCheckboxes(modeStr);
       } else {
-        targetEl.textContent = entries.length + ' items selected';
+        targetEl.textContent = entries.length + t(' items selected');
         updateChmodCheckboxes('0755');
       }
 
@@ -3972,13 +4008,13 @@
     async function applyChmodModal() {
       const mode = el('chmod-octal').value.trim();
       if (!/^[0-7]{3,4}$/.test(mode)) {
-        toast('Bad mode (use 0755, 0777, 0644, 0444...)', 'err');
+        toast(t('Bad mode (use 0755, 0777, 0644, 0444...)'), 'err');
         return;
       }
       const recursive = el('chmod-recursive').checked ? '1' : '0';
       const applyBtn = el('chmod-modal-apply');
       applyBtn.disabled = true;
-      applyBtn.textContent = 'Applying...';
+      applyBtn.textContent = t('Applying...');
 
       let ok = 0;
       let fail = 0;
@@ -3996,9 +4032,9 @@
         }
       }
       applyBtn.disabled = false;
-      applyBtn.textContent = 'Apply Permissions';
+      applyBtn.textContent = t('Apply Permissions');
       closeChmodModal();
-      toast('chmod ' + mode + ': ' + ok + ' ok' + (fail ? (', ' + fail + ' failed') : ''));
+      toast('chmod ' + mode + ': ' + ok + t(' ok') + (fail ? (', ' + fail + t(' failed')) : ''));
       await refreshCurrentView();
     }
 
@@ -4009,10 +4045,10 @@
     function openEditor(path) {
       editorCurrentPath = path;
       editorVersion = '';
-      el('editor-textarea').value = 'Loading...';
+      el('editor-textarea').value = t('Loading...');
       el('editor-textarea').disabled = true;
       el('editor-save').disabled = true;
-      el('editor-title').textContent = 'Loading: ' + baseName(path);
+      el('editor-title').textContent = t('Loading: ') + baseName(path);
       el('editor-overlay').style.display = 'flex';
 
       api('/api/fs/text?path=' + encodeURIComponent(path))
@@ -4023,11 +4059,11 @@
           el('editor-textarea').value = text;
           el('editor-textarea').disabled = false;
           el('editor-save').disabled = false;
-          el('editor-title').textContent = 'Editing: ' + path;
+          el('editor-title').textContent = t('Editing: ') + path;
           el('editor-textarea').focus();
         })
         .catch(err => {
-          toast('Failed to load file: ' + err.message, 'err');
+          toast(t('Failed to load file: ') + err.message, 'err');
           el('editor-overlay').style.display = 'none';
         });
     }
@@ -4041,7 +4077,7 @@
       } else if (canViewImage(entry)) {
         openImageViewer(entryPath(entry));
       } else {
-        toast('Select one editable text file under 5MB or an image', 'err');
+        toast(t('Select one editable text file under 5MB or an image'), 'err');
       }
     }
 
@@ -4053,7 +4089,7 @@
         '&version=' + encodeURIComponent(editorVersion);
 
       el('editor-save').disabled = true;
-      el('editor-save').textContent = 'Saving...';
+      el('editor-save').textContent = t('Saving...');
 
       try {
         const response = await fetch(url, {
@@ -4068,21 +4104,21 @@
         }
         editorVersion = data.version || editorVersion;
         editorOriginalContent = content;
-        toast('Saved successfully', 'ok');
+        toast(t('Saved successfully'), 'ok');
         el('editor-overlay').style.display = 'none';
         await refreshCurrentView();
       } catch (err) {
         toast('save: ' + err.message, 'err');
       } finally {
         el('editor-save').disabled = false;
-        el('editor-save').textContent = 'Save';
+        el('editor-save').textContent = t('Save');
       }
     }
 
     function closeEditor() {
       const content = el('editor-textarea').value;
       if (content !== editorOriginalContent) {
-        if (!confirm('Discard unsaved changes?')) {
+        if (!confirm(t('Discard unsaved changes?'))) {
           return;
         }
       }
@@ -4255,10 +4291,10 @@
               t = t.split('\n').filter(line => line.toLowerCase().includes(filter)).join('\n');
             }
             const autoScroll = (lc.scrollHeight - lc.scrollTop <= lc.clientHeight + 60);
-            lc.textContent = t || 'Live log buffer is empty.';
+            lc.textContent = t || t('Live log buffer is empty.');
             if (autoScroll) lc.scrollTop = lc.scrollHeight;
           } catch (err) {
-            lc.textContent = 'Error reading live logs: ' + err.message;
+            lc.textContent = t('Error reading live logs: ') + err.message;
           }
           return;
         }
@@ -4274,7 +4310,7 @@
             
             const latest = entries.slice(0, 20);
             if (latest.length === 0) {
-              lc.textContent = 'No PS5 error logs found.';
+              lc.textContent = t('No PS5 error logs found.');
               return;
             }
             
@@ -4288,8 +4324,8 @@
                 const cleanTxt = txt.replace(/^\uFEFF/, '');
                 const obj = JSON.parse(cleanTxt);
                 
-                const timeStr = item.mtime ? new Date(item.mtime * 1000).toLocaleString() : 'Unknown Time';
-                combinedText += `=== ERROR RECORD: ${obj.shortError || 'Unknown Code'} ===\n`;
+                const timeStr = item.mtime ? new Date(item.mtime * 1000).toLocaleString() : t('Unknown Time');
+                combinedText += `=== ERROR RECORD: ${obj.shortError || t('Unknown Code')} ===\n`;
                 combinedText += `Date/Time:       ${timeStr}\n`;
                 combinedText += `Title ID:        ${obj.titleId || 'N/A'}\n`;
                 combinedText += `App ID:          ${obj.__appId ?? 'N/A'}\n`;
@@ -4310,9 +4346,9 @@
             if (filter && combinedText) {
               combinedText = combinedText.split('\n').filter(l => l.toLowerCase().includes(filter)).join('\n');
             }
-            lc.textContent = combinedText || 'Failed to parse error history.';
+            lc.textContent = combinedText || t('Failed to parse error history.');
           } catch (err) {
-            lc.textContent = 'Error loading error history: ' + err.message;
+            lc.textContent = t('Error loading error history: ') + err.message;
           }
           return;
         }
@@ -4334,7 +4370,7 @@
             t = t.split('\n').filter(l => l.toLowerCase().includes(filter)).join('\n');
           }
           const autoScroll = (lc.scrollHeight - lc.scrollTop <= lc.clientHeight + 50);
-          lc.textContent = t || 'No logs found.';
+          lc.textContent = t || t('No logs found.');
           if (autoScroll) lc.scrollTop = lc.scrollHeight;
         } catch (err) {
           lc.textContent = `Error loading log: ` + err.message;
@@ -4361,7 +4397,7 @@
           } catch(e) {}
         }
         const lc = el('log-content');
-        if (lc) lc.textContent = 'Cleared.';
+        if (lc) lc.textContent = t('Cleared.');
         fetchLogs();
       });
 
@@ -4373,7 +4409,7 @@
 
       el('log-select').addEventListener('change', () => {
         const lc = el('log-content');
-        if (lc) lc.textContent = 'Loading...';
+        if (lc) lc.textContent = t('Loading...');
         fetchLogs();
       });
 
@@ -4465,7 +4501,7 @@
         if (!state.historyReady) return;
         if (pathNavigationBlocked()) {
           writeHistoryPath(state.path, false);
-          toast('Finish or cancel the active task first', 'err');
+          toast(t('Finish or cancel the active task first'), 'err');
           return;
         }
         const target = event.state && event.state.bfpilotPath
@@ -4510,7 +4546,7 @@
       });
       el('smb-remove').addEventListener('click', async () => {
         const id = el('smb-record').value;
-        if (!id || !confirm('Remove this saved SMB connection?')) return;
+        if (!id || !confirm(t('Remove this saved SMB connection?'))) return;
         try {
           await postForm('/api/fs/smb/remove', { id });
           closeSmbConnections();
@@ -4586,7 +4622,7 @@
           try {
             const response = await fetch('/api/fs/job/cancel');
             if (!response.ok) throw new Error('HTTP ' + response.status);
-            toast('Cancelling archive...');
+            toast(t('Cancelling archive...'));
           } catch (err) {
             cancel.disabled = false;
             toast('cancel: ' + err.message, 'err');
@@ -4596,7 +4632,7 @@
         if (state.uploadBusy) {
           state.uploadAbort = true;
           if (state.uploadXhr) state.uploadXhr.abort();
-          setJobBox('upload', 'Cancelling upload...', 0);
+          setJobBox('upload', t('Cancelling upload...'), 0);
           return;
         }
         fetch('/api/fs/job/cancel').catch(() => {});
@@ -4608,7 +4644,7 @@
       });
       el('upload-folder').addEventListener('click', () => {
         if (!('webkitdirectory' in document.createElement('input'))) {
-          toast('Folder picking is not available in this browser', 'err');
+          toast(t('Folder picking is not available in this browser'), 'err');
           return;
         }
         el('folder-picker').value = '';
@@ -4620,7 +4656,7 @@
       el('folder-picker').addEventListener('change', (event) => {
         const files = Array.from(event.target.files || []);
         if (!files.length) {
-          toast('Folder picker returned no files; try the drop area', 'err');
+          toast(t('Folder picker returned no files; try the drop area'), 'err');
           return;
         }
         uploadFiles(files);
@@ -4635,7 +4671,7 @@
       let dragDepth = 0;
       const hasDroppedFiles = (event) => {
         const types = event.dataTransfer && event.dataTransfer.types;
-        return types && Array.prototype.indexOf.call(types, 'Files') >= 0;
+        return types && Array.prototype.indexOf.call(types, t('Files')) >= 0;
       };
       if (browser) {
         browser.addEventListener('dragenter', (event) => {
@@ -4665,7 +4701,7 @@
           if (drop) drop.classList.remove('active');
           const files = await droppedUploads(event.dataTransfer);
           if (!files.length) {
-            toast('Dropped item contained no readable files', 'err');
+            toast(t('Dropped item contained no readable files'), 'err');
             return;
           }
           uploadFiles(files);
@@ -4698,7 +4734,7 @@
         if (drop) drop.classList.remove('active');
         const files = await droppedUploads(event.dataTransfer);
         if (!files.length) {
-          toast('Dropped item contained no readable files', 'err');
+          toast(t('Dropped item contained no readable files'), 'err');
           return;
         }
         uploadFiles(files);
@@ -4776,10 +4812,10 @@
       api('/api/status').then((info) => {
         const status = el('status');
         status.classList.add('ready');
-        status.querySelector('span:last-child').textContent = 'Ready';
-        el('build').textContent = (info.tag || 'bfpilot') + ' / port 5905';
+        status.querySelector('span:last-child').textContent = t('Ready');
+        el('build').textContent = (info.tag || 'bfpilot') + t(' / port 5905');
       }).catch(() => {
-        el('status').querySelector('span:last-child').textContent = 'Offline';
+        el('status').querySelector('span:last-child').textContent = t('Offline');
       });
 
       api('/api/fs/job/status').then((job) => {
@@ -4802,12 +4838,12 @@
 
     async function requestShutdown() {
       const btn = el('terminate-top');
-      if (!confirm('Terminate BFpilot now?\n\nThis will safely exit the payload and return to the PS5 home screen.')) {
+      if (!confirm(t('Terminate BFpilot now?\n\nThis will safely exit the payload and return to the PS5 home screen.'))) {
         return;
       }
       if (btn) {
         btn.disabled = true;
-        btn.textContent = 'Exiting...';
+        btn.textContent = t('Exiting...');
       }
 
       try {
@@ -4818,7 +4854,7 @@
         window.location.href = 'psbase:shell?c=play_go_resume';
       } catch (e) {}
 
-      document.body.innerHTML = '<div style="padding: 40px; text-align: center; font-size: 18px; color: #8593a1;">BFpilot terminated. Returning to home screen...</div>';
+      document.body.innerHTML = BFpilotI18n.staticHTML('<div style="padding: 40px; text-align: center; font-size: 18px; color: #8593a1;">BFpilot terminated. Returning to home screen...</div>');
       setTimeout(() => {
         try { window.location.href = 'psbase:shell?c=play_go_resume'; } catch(e) {}
       }, 300);
