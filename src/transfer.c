@@ -1825,6 +1825,19 @@ typedef struct fs_total_info {
 
 static void
 fs_totals(const char *path, fs_total_info_t *info);
+static void fs_total_values(fs_total_info_t *info, unsigned long long total,
+                             unsigned long long free_bytes,
+                             unsigned long long available) {
+  memset(info,0,sizeof(*info));
+  info->total=total;info->free_bytes=free_bytes;info->available=available;
+  info->reserved=free_bytes>available?free_bytes-available:0;
+  info->used=total>free_bytes?total-free_bytes:0;
+  info->usable_total=total>info->reserved?total-info->reserved:total;
+  info->usable_used=info->usable_total>available?info->usable_total-available:0;
+  info->used_pct=total?((double)info->used*100)/total:0;
+  info->usable_used_pct=info->usable_total?((double)info->usable_used*100)/info->usable_total:0;
+  info->ok=1;
+}
 
 
 static int
@@ -1835,14 +1848,20 @@ stat_request(const http_request_t *req) {
     return serve_error(req, 400, "missing or unsafe path");
   }
   struct stat st;
+  fs_total_info_t fs = {0};
   if(bfpilot_smb_path(path)) {
     bfpilot_io_t *endpoint=NULL;int rc=bfpilot_io_endpoint(path,&endpoint);
-    if(!rc)rc=bfpilot_io_lstat(endpoint,path,&st);bfpilot_io_end(endpoint);
+    if(!rc)rc=bfpilot_io_lstat(endpoint,path,&st);
+    if(!rc) {
+      bfpilot_io_space_t space;
+      if(!bfpilot_io_space(endpoint,path,&space))
+        fs_total_values(&fs,space.total,space.free_bytes,space.available);
+    }
+    bfpilot_io_end(endpoint);
     if(rc)return serve_error(req,rc==-ENOENT?404:502,strerror(-rc));
   } else if(lstat(path, &st) != 0) return serve_error(req, 404, strerror(errno));
 
   json_buf_t b = {0};
-  fs_total_info_t fs = {0};
   if(!bfpilot_smb_path(path))fs_totals(path, &fs);
   if(json_append(&b, "{\"ok\":true,\"path\":") != 0 ||
      json_string(&b, path) != 0 ||

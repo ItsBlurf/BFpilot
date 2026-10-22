@@ -28,6 +28,11 @@ static int remote_upload_request(const http_request_t *req, const char *dir,
   int rc = bfpilot_io_endpoint(final, &endpoint);
   if (!rc) rc = bfpilot_io_mkdirs(endpoint, dir, 0777);
   if (!rc) {
+    bfpilot_io_space_t space;
+    if(!bfpilot_io_space(endpoint,dir,&space) && content_size>space.available)
+      rc=-ENOSPC;
+  }
+  if (!rc) {
     int got = bfpilot_io_lstat(endpoint, final, &old);
     if (!got) { exists = 1; if (!S_ISREG(old.st_mode)) rc = -EEXIST; }
     else if (got != -ENOENT) rc = got;

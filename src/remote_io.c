@@ -13,6 +13,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <sys/statvfs.h>
 #include <unistd.h>
 
 // libsmb2 public headers require time_t and SMB protocol types first.
@@ -98,6 +99,32 @@ int bfpilot_io_remote(const bfpilot_io_t *endpoint) {
 }
 const char *bfpilot_io_root(const bfpilot_io_t *endpoint) {
   return endpoint && endpoint->smb ? endpoint->prefix : "/";
+}
+int bfpilot_io_space(bfpilot_io_t *endpoint, const char *path,
+                     bfpilot_io_space_t *out) {
+  if(!endpoint || !path || !out)return -EINVAL;
+  memset(out,0,sizeof(*out));
+  uint64_t block,blocks,free_blocks,available_blocks;
+  if(endpoint->smb) {
+    const char *relative;int rc=remote_path(endpoint,path,&relative);
+    if(rc)return rc;
+    struct smb2_statvfs vfs;
+    rc=smb2_statvfs(endpoint->smb,relative,&vfs);if(rc)return rc;
+    block=vfs.f_frsize?vfs.f_frsize:vfs.f_bsize;
+    blocks=vfs.f_blocks;free_blocks=vfs.f_bfree;available_blocks=vfs.f_bavail;
+  } else {
+    struct statvfs vfs;if(statvfs(path,&vfs))return -errno;
+    block=vfs.f_frsize?vfs.f_frsize:vfs.f_bsize;
+    blocks=vfs.f_blocks;free_blocks=vfs.f_bfree;available_blocks=vfs.f_bavail;
+  }
+  if(!block)return -EIO;
+  if(blocks>UINT64_MAX/block || free_blocks>UINT64_MAX/block ||
+     available_blocks>UINT64_MAX/block)return -EOVERFLOW;
+  out->total=blocks*block;
+  out->free_bytes=free_blocks>blocks?out->total:free_blocks*block;
+  out->available=available_blocks*block;
+  if(out->available>out->free_bytes)out->available=out->free_bytes;
+  return 0;
 }
 int bfpilot_io_mkdirs(bfpilot_io_t *endpoint,const char *path,mode_t mode) {
   if(!endpoint||!path||strlen(path)>=1024||!bfpilot_path_is_safe(path))return -EINVAL;

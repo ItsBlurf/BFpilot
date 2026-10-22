@@ -11,6 +11,8 @@ struct remote_copy {
   int moving, stage_owned;
   struct remote_record *records;
   size_t count, capacity, names;
+  int space_checked, space_known;
+  unsigned long long space_available;
 };
 static int remote_cancelled(void *context) {
   (void)context;
@@ -81,7 +83,22 @@ static int remote_copy_file(struct remote_copy *copy, const char *source,
     return -EOVERFLOW;
   atomic_fetch_add(&g_job.total_files, 1);
   atomic_fetch_add(&g_job.total_bytes, (long)expected->st_size);
-  if (!bfpilot_io_remote(copy->destination)) {
+  if (bfpilot_io_remote(copy->destination)) {
+    /* Query once per owned job, then account for newly staged bytes. Avoid a
+       network capacity round trip for every small file. Writes still enforce
+       concurrent server changes and quotas when statvfs is unavailable. */
+    if(!copy->space_checked) {
+      bfpilot_io_space_t space;
+      copy->space_checked=1;
+      if(!bfpilot_io_space(copy->destination,bfpilot_io_root(copy->destination),&space)) {
+        copy->space_known=1;copy->space_available=space.available;
+      }
+    }
+    if(copy->space_known) {
+      if((unsigned long long)expected->st_size>copy->space_available)return -ENOSPC;
+      copy->space_available-=(unsigned long long)expected->st_size;
+    }
+  } else {
     char parent[1024];
     snprintf(parent, sizeof(parent), "%s", destination);
     char *slash = strrchr(parent, '/');

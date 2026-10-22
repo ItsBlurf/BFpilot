@@ -1,6 +1,7 @@
 #ifndef BFPILOT_REMOTE_IO_H
 #define BFPILOT_REMOTE_IO_H
 #include <stddef.h>
+#include <stdint.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 typedef struct bfpilot_io bfpilot_io_t;
@@ -11,6 +12,11 @@ int bfpilot_io_endpoint(const char *path, bfpilot_io_t **out);
 void bfpilot_io_end(bfpilot_io_t *endpoint);
 int bfpilot_io_remote(const bfpilot_io_t *endpoint);
 const char *bfpilot_io_root(const bfpilot_io_t *endpoint);
+typedef struct bfpilot_io_space {
+  uint64_t total, free_bytes, available;
+} bfpilot_io_space_t;
+/* Report server/user-available capacity; unsupported queries remain errors. */
+int bfpilot_io_space(bfpilot_io_t *, const char *, bfpilot_io_space_t *);
 int bfpilot_io_mkdirs(bfpilot_io_t *, const char *, mode_t);
 int bfpilot_io_lstat(bfpilot_io_t *, const char *, struct stat *);
 int bfpilot_io_open(bfpilot_io_t *, const char *, int flags, mode_t,

@@ -1,5 +1,5 @@
 /*
- * Launch local .elf / .bin payloads through elfldr (127.0.0.1:9021).
+ * Launch local/SMB .elf / .bin / .js payloads through elfldr (127.0.0.1:9021).
  */
 
 #pragma once
