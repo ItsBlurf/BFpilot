@@ -2085,7 +2085,7 @@ static int RunFullArchive(const std::string &source, const std::string &stage,
 
 static bool
 RunZipExtract(const std::string &archive_path, const std::string &dest_path,
-              const std::string &password, std::string &error) {
+              const std::string &password, bool automatic, std::string &error) {
   ZipMultiVolume mv;
   if(!mv.Open(archive_path, error)) {
     return false;
@@ -2139,6 +2139,11 @@ RunZipExtract(const std::string &archive_path, const std::string &dest_path,
   if(!CheckDestinationSpace(dest_path, g_status.total_bytes, "zip", error)) {
     return false;
   }
+  // Keep the central-directory limits and capacity preflight above. The full
+  // engine overlaps bounded read-ahead, decoding and output writes; explicit
+  // manual requests retain the original integrated decoder and telemetry.
+  if(automatic)
+    return RunFullArchive(archive_path, dest_path, password, error) == 0;
   WriteStatus(true);
 
   if(!MkdirAll(dest_path)) {
@@ -2171,6 +2176,8 @@ RunArchive(const ArchiveConfig &cfg, ArchiveType type, std::string &error) {
   if(type == ARCHIVE_FULL || type == ARCHIVE_UNKNOWN)
     return RunFullArchive(cfg.source, g_status.stage, cfg.password, error);
   if(type == ARCHIVE_RAR) {
+    if(cfg.threads == 0)
+      return RunFullArchive(cfg.source, g_status.stage, cfg.password, error);
     g_status.effective_threads =
         EffectiveArchiveThreadsForType(cfg.threads, type);
     g_status.total_bytes = 0;
@@ -2234,6 +2241,9 @@ RunArchive(const ArchiveConfig &cfg, ArchiveType type, std::string &error) {
       return RARX_FATAL;
     }
     WriteStatus(true);
+    // Probe/entry/space/expansion checks remain common to both engines.
+    if(cfg.threads == 0)
+      return RunFullArchive(cfg.source, g_status.stage, cfg.password, error);
     errno = 0;
     SevenZExtractResult result =
         Run7zExtract(cfg.source, g_status.stage, cfg.password,
@@ -2253,7 +2263,8 @@ RunArchive(const ArchiveConfig &cfg, ArchiveType type, std::string &error) {
   if(type == ARCHIVE_ZIP) {
     g_status.effective_threads = 1;
     errno = 0;
-    bool ok = RunZipExtract(cfg.source, g_status.stage, cfg.password, error);
+    bool ok = RunZipExtract(cfg.source, g_status.stage, cfg.password,
+                            cfg.threads == 0, error);
     return ok ? 0 : error == "archive: cancelled" ? RARX_USERBREAK : RARX_FATAL;
   }
 

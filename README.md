@@ -51,12 +51,12 @@ Development version **v0.4.5-dev.6**. Tested on PS5 FW **11.60**.
 - Case-insensitive multi-word search, match highlighting
 
 **Archives** (built into `bfpilot.elf`)
-- ZIP (stored/deflate/ZIP64, ZipCrypto only — no AES zip)
+- ZIP (stored/deflate/ZIP64, ZipCrypto and AES), ZIPX and broader 7-Zip formats
 - RAR4/RAR5 + passwords + multipart
 - 7z + passwords + `.7z.001` splits
 - Extract only under `/data` and USB/ext mounts
 - Password prompt, progress/ETA, cancellation with partial-output cleanup
-- RAR/7z use an automatic four-thread cap proven fastest on PS5; manual tuning remains available up to eight threads
+- Automatic extraction uses the embedded 7-Zip service with bounded read-ahead and output buffering; explicit manual RAR/7z requests retain the integrated decoders and tuning up to eight threads
 
 **Viewers**
 - Images: png/jpg/gif/bmp/webp/ico/svg — pan, zoom, rotate

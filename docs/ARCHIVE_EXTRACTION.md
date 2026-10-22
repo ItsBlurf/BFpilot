@@ -1,6 +1,7 @@
 # Archive extraction
 
-Extraction runs inside `bfpilot.elf`; no standalone archive payload is built or distributed.
+Extraction is managed by `bfpilot.elf`, which embeds and starts its private
+7-Zip service when needed. No separate archive payload installation is needed.
 
 ## Path
 
@@ -12,22 +13,30 @@ Job/status/log: `job.ini`, `status.json`, `archive-worker.log`, `daemon.lock`.
 
 From `/api/fs/archive/support`:
 
-* **RAR** — RAR4/5, passwords, multipart (`.partN.rar` / `.rNN`). Decoder
-  threads default to the hardware-tested automatic cap of four, can be set
-  manually up to eight, and are reported in archive telemetry.
-* **7z** — LZMA/LZMA2, passwords, `.7z.001` splits; the same four-thread auto
-  cap and eight-thread manual limit apply
-* **ZIP** — stored/deflate/ZIP64, ZipCrypto only (AES zip is rejected). Split zip not enabled.
+* **RAR** — RAR4/5, passwords, multipart (`.partN.rar` / `.rNN`).
+* **7z** — LZMA/LZMA2, passwords and `.7z.001` splits.
+* **ZIP/ZIPX** — stored/deflate/ZIP64, ZipCrypto, AES and supported additional methods.
+* TAR, gzip, bzip2, xz, zstd, Unix Compress, LZMA, PPMd, ARJ, CPIO,
+  LZH/LHA, CAB and XAR/XIP are handled by the private service, including
+  supported compound TAR forms and numbered splits.
 
-ZIP extraction uses page-aligned 16 MiB input and 64 MiB output buffers,
+Automatic extraction uses the full engine's bounded read-ahead and two-slot
+4 MiB output pipeline. Decoder thread counts are controlled by the decoder;
+telemetry reports `threadMode: decoder-default` and does not invent a thread
+count or include helper CPU in coordinator-only CPU counters. Explicit
+`threads=1..8` requests retain the integrated RAR/7z decoders; ZIP is serial.
+The original ZIP central-directory and 7z entry/space/expansion checks still
+apply before automatic dispatch. Integrated ZIP uses page-aligned16 MiB input and64 MiB output buffers,
 sequential input hints, known-size output preallocation, and a 256 MiB
 writeback checkpoint for sustained large members. RAR and 7z keep their
-existing bounded decoder thread selection and output buffering.
+existing bounded manual decoder thread selection and output buffering.
 
 ## Limits
 
 * Destination must be under `/data`, `/mnt/usb0-7`, or `/mnt/ext0-7`
 * Stages to a temp name, renames on success
+* Direct SMB extraction is unavailable; copy the archive locally, extract,
+  then copy the result back if needed
 * Free-space check with a margin
 * Partial cleanup on failure when enabled
 * Browser cancellation is supported while an extraction is prepared, running,
@@ -42,3 +51,4 @@ Select archive → set Target → Extract → optional password → watch `/api/
 * UnRAR — `third_party/unrar-ps5/`
 * 7z/LZMA — `third_party/unrar-ps5/lzma2601/`
 * miniz — `third_party/miniz/`
+* Full extraction service — `third_party/wfm-7zip-helper/` (7-Zip/WFM attribution retained)
