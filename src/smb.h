@@ -14,6 +14,7 @@ typedef struct bfpilot_smb_entry {
 } bfpilot_smb_entry_t;
 typedef struct bfpilot_smb_session bfpilot_smb_session_t;
 int bfpilot_smb_path(const char *path);
+int bfpilot_smb_validate_path(const char *path);
 /* Record callbacks receive a scrubbed copy: no password leaves this module. */
 int bfpilot_smb_records(int (*entry)(const bfpilot_smb_record_t *,void *),void *context);
 int bfpilot_smb_save(bfpilot_smb_record_t *record,int replace_password);

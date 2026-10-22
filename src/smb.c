@@ -25,6 +25,7 @@ typedef struct {char magic[16];uint32_t count,checksum;bfpilot_smb_record_t reco
 static pthread_mutex_t records_lock=PTHREAD_MUTEX_INITIALIZER;
 /* libsmb2's active-context registry is global; serialize its mutations. */
 static pthread_mutex_t context_lock=PTHREAD_MUTEX_INITIALIZER;
+static unsigned context_count;
 struct bfpilot_smb_session {struct smb2_context *smb;char relative[1024];};
 static void scrub(void *data,size_t length){volatile unsigned char *p=data;while(length--)*p++=0;}
 static int text_valid(const char *s,size_t capacity,int empty){
@@ -167,18 +168,25 @@ static int get_record(const char *id,bfpilot_smb_record_t *record){
  if(!rc&&i==data->count)rc=-ENOENT;
  if(!rc)*record=data->records[i];scrub(data,sizeof(*data));free(data);return rc;
 }
+int bfpilot_smb_validate_path(const char *path){
+ char id[24],share[256],relative[1024];return split_path(path,id,share,relative);
+}
 static int connect_record(const char *id,const char *share,bfpilot_smb_session_t **out){
  bfpilot_smb_record_t record={0};int rc=get_record(id,&record);if(rc)return rc;
  bfpilot_smb_session_t *session=calloc(1,sizeof(*session));if(!session){scrub(&record,sizeof(record));return -ENOMEM;}
- pthread_mutex_lock(&context_lock);session->smb=smb2_init_context();pthread_mutex_unlock(&context_lock);
+ pthread_mutex_lock(&context_lock);
+ if(context_count>=4){pthread_mutex_unlock(&context_lock);scrub(&record,sizeof(record));free(session);return -EBUSY;}
+ session->smb=smb2_init_context();if(session->smb)context_count++;
+ pthread_mutex_unlock(&context_lock);
  if(!session->smb){scrub(&record,sizeof(record));free(session);return -ENOMEM;}
  struct smb2_context *s=session->smb;
  smb2_set_user(s,record.user);smb2_set_domain(s,record.domain);smb2_set_password(s,record.password);
  smb2_set_timeout(s,10);smb2_set_version(s,(enum smb2_negotiate_version)record.dialect);
+ smb2_set_directory_limits(s,100002,64U*1024U*1024U);
  smb2_set_security_mode(s,SMB2_NEGOTIATE_SIGNING_ENABLED|SMB2_NEGOTIATE_SIGNING_REQUIRED);
  smb2_set_sign(s,!record.encrypt);smb2_set_seal(s,record.encrypt);
  rc=smb2_connect_share(s,record.server,share,NULL);scrub(&record,sizeof(record));
- if(rc){pthread_mutex_lock(&context_lock);smb2_destroy_context(s);pthread_mutex_unlock(&context_lock);free(session);return rc;}
+ if(rc){pthread_mutex_lock(&context_lock);smb2_destroy_context(s);context_count--;pthread_mutex_unlock(&context_lock);free(session);return rc;}
  *out=session;return 0;
 }
 int bfpilot_smb_connect(const char *path,bfpilot_smb_session_t **out){
@@ -188,7 +196,7 @@ int bfpilot_smb_connect(const char *path,bfpilot_smb_session_t **out){
 }
 void bfpilot_smb_disconnect(bfpilot_smb_session_t *session){
  if(!session)return;(void)smb2_disconnect_share(session->smb);
- pthread_mutex_lock(&context_lock);smb2_destroy_context(session->smb);pthread_mutex_unlock(&context_lock);free(session);
+ pthread_mutex_lock(&context_lock);smb2_destroy_context(session->smb);context_count--;pthread_mutex_unlock(&context_lock);free(session);
 }
 const char *bfpilot_smb_relative(bfpilot_smb_session_t *session){return session->relative;}
 void *bfpilot_smb_context(bfpilot_smb_session_t *session){return session->smb;}

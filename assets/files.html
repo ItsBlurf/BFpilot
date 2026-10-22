@@ -28,6 +28,12 @@
     * {
       box-sizing: border-box;
     }
+    #smb-form label { display:block; }
+    #smb-form input:not([type="checkbox"]), #smb-form select {
+      display:block; margin-top:5px; width:100%; min-width:0; min-height:36px; padding:7px 9px;
+      color:var(--ink); background:var(--paper); border:1px solid #3b4d60;
+      border-radius:4px; font:inherit;
+    }
 
     html,
     body {
@@ -2360,10 +2366,10 @@
           ['Size', exactSize(du.size)],
           ['Files', String(du.files || 0)],
           ['Folders', String(Math.max(0, (du.dirs || 0) - 1))],
-          ['Permissions', formatMode(entry.mode)],
+          ['Permissions', entry.remote ? 'SMB server ACL' : formatMode(entry.mode)],
           ['Path', displayFsText(path)]
         ];
-        const note = 'Full folder size calculated without following symbolic links or crossing mounts.';
+        const note = entry.remote ? 'Full remote folder size calculated.' : 'Full folder size calculated without following symbolic links or crossing mounts.';
         renderDetail(displayFsText(entry.name), rows, note);
       } catch (err) {
         if (token !== state.detailToken) return;
@@ -2371,7 +2377,7 @@
           ['Kind', 'Folder'],
           ['Size', exactSize(entry.size)],
           ['Modified', formatDate(entry.mtime)],
-          ['Permissions', formatMode(entry.mode)],
+          ['Permissions', entry.remote ? 'SMB server ACL' : formatMode(entry.mode)],
           ['Path', displayFsText(path)]
         ];
         renderDetail(displayFsText(entry.name), rows,
@@ -2459,13 +2465,14 @@
       const entries = selectedEntries();
       const one = entries.length === 1 ? entries[0] : null;
       const hasSelection = entries.length > 0;
+      const operable = hasSelection && entries.every(entry => !entry.virtual);
       el('selection').textContent = hasSelection
         ? entries.length + ' selected' : 'No selection';
       setContextAction('open-folder', !!(one && one.dir));
-      setContextAction('rename', !!one);
-      setContextAction('download', hasSelection);
-      setContextAction('download-mode', entries.length > 1);
-      el('download').disabled = !hasSelection || Boolean(state.downloadQueue);
+      setContextAction('rename', !!one && !one.virtual);
+      setContextAction('download', operable);
+      setContextAction('download-mode', entries.length > 1 && operable);
+      el('download').disabled = !operable || Boolean(state.downloadQueue);
       el('download-mode').disabled = Boolean(state.downloadQueue);
       setContextAction('load-payload', !!(one && canLaunchPayload(one)));
       const pkgCount = entries.filter((entry) => !entry.dir && isPkgName(entry.name)).length;
@@ -2474,13 +2481,13 @@
       el('install-pkg').textContent = pkgCount > 1 ? 'Install ' + pkgCount + ' PKGs' : 'Install PKG';
       const onePkg = one && !one.dir && isPkgName(one.name);
       setContextAction('pkg-info', !!onePkg);
-      el('chmod').disabled = entries.length === 0;
+      el('chmod').disabled = entries.length === 0 || entries.some(entry => entry.remote);
       setContextAction('extract', !!(one && !one.dir && isArchiveName(one.name)));
-      setContextAction('delete', hasSelection);
-      el('copy').disabled = entries.length === 0;
-      el('move').disabled = entries.length === 0;
-      el('copy-target').disabled = entries.length === 0;
-      el('move-target').disabled = entries.length === 0;
+      setContextAction('delete', operable);
+      el('copy').disabled = !operable;
+      el('move').disabled = !operable;
+      el('copy-target').disabled = !operable;
+      el('move-target').disabled = !operable;
       if (el('edit-file')) {
         const hasSelection = entries.length === 1;
         const isEditable = hasSelection && canEdit(entries[0]);
@@ -2511,11 +2518,13 @@
           ['Kind', entry.dir ? 'Folder' : 'File'],
           ['Size', exactSize(entry.size)],
           ['Modified', formatDate(entry.mtime)],
-          ['Permissions', formatMode(entry.mode)],
+          ['Permissions', entry.remote ? 'SMB server ACL' : formatMode(entry.mode)],
           ['Path', displayFsText(path)]
         ];
         let note = '';
-        if (entry.dir) {
+        if (entry.virtual) {
+          note = 'Open this connection to browse its shared folders.';
+        } else if (entry.dir) {
           note = 'Calculating full folder size...';
           loadFolderSize(path, token, entry);
         }
@@ -2606,8 +2615,8 @@
       row.querySelector('.size').textContent = parent || entry.dir ? '' : shortSize(entry.size || 0);
       row.querySelector('.mtime').textContent = entry.mtime ? new Date(entry.mtime * 1000).toLocaleDateString() : '';
       const modeCol = row.querySelector('.mode');
-      modeCol.textContent = parent ? '' : formatMode(entry.mode);
-      if (!parent && entry.mode !== undefined) {
+      modeCol.textContent = parent ? '' : entry.remote ? 'SMB ACL' : formatMode(entry.mode);
+      if (!parent && !entry.remote && entry.mode !== undefined) {
         modeCol.classList.add('mode-clickable');
         modeCol.title = 'Click to edit permissions';
       }

@@ -142,6 +142,10 @@ struct smb2_context {
         const struct addrinfo *next_addrinfo;
 
         int timeout;
+        /* Optional BFpilot directory prefetch limits, zero means unlimited. */
+        uint32_t directory_entry_limit;
+        size_t directory_memory_limit;
+        size_t directory_memory_used;
 
         enum smb2_sec sec;
 
@@ -342,6 +346,8 @@ struct smb2dir {
         struct smb2_dirent_internal *entries;
         struct smb2_dirent_internal *current_entry;
         int index;
+        uint32_t decoded_entries;
+        size_t allocation_bytes;
 };
 
         

@@ -656,6 +656,37 @@ int smb2_stat(struct smb2_context *smb2, const char *path,
 	return rc;
 }
 
+int smb2_lstat(struct smb2_context *smb2, const char *path,
+              struct smb2_stat_64 *st)
+{
+        struct sync_cb_data *cb_data;
+        int rc = 0;
+
+        cb_data = calloc(1, sizeof(struct sync_cb_data));
+        if (cb_data == NULL) {
+                smb2_set_error(smb2, "Failed to allocate sync_cb_data");
+                return -ENOMEM;
+        }
+
+	rc = smb2_lstat_async(smb2, path, st,
+                             generic_status_cb, cb_data);
+        if (rc < 0) {
+                goto out;
+	}
+
+	rc = wait_for_reply(smb2, cb_data);
+        if (rc < 0) {
+                cb_data->status = SMB2_STATUS_CANCELLED;
+                return rc;
+	}
+
+        rc = cb_data->status;
+ out:
+        free(cb_data);
+
+	return rc;
+}
+
 int smb2_rename(struct smb2_context *smb2, const char *oldpath,
                 const char *newpath)
 {
@@ -669,6 +700,37 @@ int smb2_rename(struct smb2_context *smb2, const char *oldpath,
         }
 
 	rc = smb2_rename_async(smb2, oldpath, newpath,
+                               generic_status_cb, cb_data);
+        if (rc < 0) {
+                goto out;
+	}
+
+	rc = wait_for_reply(smb2, cb_data);
+        if (rc < 0) {
+                cb_data->status = SMB2_STATUS_CANCELLED;
+                return rc;
+	}
+
+        rc = cb_data->status;
+ out:
+        free(cb_data);
+
+	return rc;
+}
+
+int smb2_rename_replace(struct smb2_context *smb2, const char *oldpath,
+                const char *newpath)
+{
+        struct sync_cb_data *cb_data;
+        int rc = 0;
+
+        cb_data = calloc(1, sizeof(struct sync_cb_data));
+        if (cb_data == NULL) {
+                smb2_set_error(smb2, "Failed to allocate sync_cb_data");
+                return -ENOMEM;
+        }
+
+	rc = smb2_rename_replace_async(smb2, oldpath, newpath,
                                generic_status_cb, cb_data);
         if (rc < 0) {
                 goto out;

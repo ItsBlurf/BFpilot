@@ -24,8 +24,8 @@ PYTHON ?= python3
 # Ship / daily use must stay 5905.
 WEB_PORT ?= 5905
 
-VERSION_TAG := bfpilot-v0.4.5-dev.10
-BUILD_VERSION ?= v0.4.5-dev.10
+VERSION_TAG := bfpilot-v0.4.5-dev.11
+BUILD_VERSION ?= v0.4.5-dev.11
 
 LLVM_CONFIG ?= $(if $(wildcard $(PS5_PAYLOAD_SDK)/bin/prospero-llvm-config),$(PS5_PAYLOAD_SDK)/bin/prospero-llvm-config,$(CURDIR)/build-tools/llvm-config)
 LLVM_BINDIR ?= $(shell "$(LLVM_CONFIG)" --bindir 2>/dev/null || dirname "$$(command -v clang 2>/dev/null || command -v clang.exe 2>/dev/null || command -v llvm-strip 2>/dev/null || command -v llvm-strip.exe 2>/dev/null || echo clang)" 2>/dev/null || echo .)
@@ -35,7 +35,7 @@ export LLVM_CONFIG
 BFPILOT_BIN := bfpilot.elf
 FULL_ARCHIVE_BIN := build/internal/bfpilot-full-archive.elf
 SMB_LIBRARY := build/internal/libsmb2.a
-SMB_INPUTS := $(wildcard third_party/libsmb2/lib/*.[ch] third_party/libsmb2/include/smb2/*.h third_party/libsmb2/ps5/*.h) third_party/libsmb2/lib/Makefile.am
+SMB_INPUTS := $(wildcard third_party/libsmb2/lib/*.[ch] third_party/libsmb2/include/*.h third_party/libsmb2/include/smb2/*.h third_party/libsmb2/ps5/*.h) third_party/libsmb2/lib/Makefile.am
 FULL_ARCHIVE_INPUTS := $(shell find third_party/wfm-7zip-helper -path '*/_o_*' -prune -o -type f ! -name '*.elf' -print)
 PKG_WORKER_BIN := build/internal/bfpilot-pkg-worker.elf
 PKG_WORKER_OBJ := build/internal/pkg_worker_main.o
@@ -63,6 +63,8 @@ WEB_SRCS += src/fs_at.c
 WEB_SRCS += src/url_codec.c
 WEB_SRCS += src/full_archive_client.c
 WEB_SRCS += src/smb.c
+WEB_SRCS += src/remote_io.c
+WEB_SRCS += src/remote_walk.c
 WEB_SRCS += src/pkg_install.c
 WEB_SRCS += src/pkg_file.c
 WEB_SRCS += src/pkg_worker_client.c

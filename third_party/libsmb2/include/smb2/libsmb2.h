@@ -266,6 +266,10 @@ int smb2_service_fd(struct smb2_context *smb2, t_socket fd, int revents);
  * Default is 0: No timeout.
  */
 void smb2_set_timeout(struct smb2_context *smb2, int seconds);
+/* BFpilot extension: cap retained directory entries and aggregate context
+ * prefetch bytes. Zero keeps the upstream unlimited default. */
+void smb2_set_directory_limits(struct smb2_context *, uint32_t entries, size_t bytes);
+size_t smb2_get_directory_bytes(struct smb2_context *);
 
 /*
  * Set passthrough-enable.  Passthrough allows command packers
@@ -1079,6 +1083,12 @@ int smb2_fstat(struct smb2_context *smb2, struct smb2fh *fh,
  *      0 : Success. Command_data is struct smb2_stat_64
  * -errno : An error occurred.
  */
+/* BFpilot extensions: explicit no-follow metadata and atomic replacement.
+ * Original stat and non-replacing rename APIs retain their behavior. */
+int smb2_lstat_async(struct smb2_context *, const char *, struct smb2_stat_64 *, smb2_command_cb, void *);
+int smb2_lstat(struct smb2_context *, const char *, struct smb2_stat_64 *);
+int smb2_rename_replace_async(struct smb2_context *, const char *, const char *, smb2_command_cb, void *);
+int smb2_rename_replace(struct smb2_context *, const char *, const char *);
 int smb2_stat_async(struct smb2_context *smb2, const char *path,
                     struct smb2_stat_64 *st,
                     smb2_command_cb cb, void *cb_data);

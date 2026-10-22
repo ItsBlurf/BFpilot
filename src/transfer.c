@@ -30,6 +30,7 @@
 #include "archive_worker.h"
 #include "fs.h"
 #include "smb.h"
+#include "remote_io.h"
 #include "path_ops.h"
 #include "tree_chmod.h"
 #include "tree_walk.h"
@@ -1300,10 +1301,13 @@ struct copy_arg {
   int  overwrite;
 };
 
+#include "remote_jobs.inc"
+
 
 static void *
 copy_worker(void *arg) {
   struct copy_arg *a = arg;
+  if(bfpilot_smb_path(a->src)||bfpilot_smb_path(a->dst))return remote_copy_worker(arg);
   struct stat src_st, dst_st, final_st;
   char final_dst[1024];
   char staging_dst[1024];
@@ -1505,6 +1509,12 @@ struct delete_arg {
 static void *
 delete_worker(void *arg) {
   struct delete_arg *a = arg;
+  if(bfpilot_smb_path(a->path)) {
+    bfpilot_io_t *endpoint=NULL;int rc=bfpilot_io_endpoint(a->path,&endpoint);
+    if(!rc&&(!strcmp(a->path,bfpilot_io_root(endpoint))))rc=-EPERM;
+    if(!rc){atomic_store(&g_job.total_known,0);rc=remote_remove_tree(endpoint,a->path,1,NULL);}
+    bfpilot_io_end(endpoint);if(rc)errno=-rc;job_end(rc,rc?strerror(-rc):NULL);free(a);return NULL;
+  }
   long items = 0, bytes = 0;
   struct stat root_st;
   if(lstat(a->path, &root_st) != 0) {
@@ -1693,7 +1703,7 @@ pkg_icon_request(const http_request_t *req) {
   return send_rc;
 }
 
-struct smb_json_entries {json_buf_t *buffer;int first;};
+struct smb_json_entries {json_buf_t *buffer;int first,virtual_entries;};
 static int smb_json_record(const bfpilot_smb_record_t *record,void *context) {
   struct smb_json_entries *list=context;json_buf_t *b=list->buffer;
   if(!list->first&&json_append(b,",")!=0)return -ENOMEM;
@@ -1709,7 +1719,7 @@ static int smb_json_record(const bfpilot_smb_record_t *record,void *context) {
 static int smb_records_request(const http_request_t *req) {
   json_buf_t b={0};
   if(json_append(&b,"{\"ok\":true,\"connections\":[")!=0)return -1;
-  struct smb_json_entries list={&b,1};int rc=bfpilot_smb_records(smb_json_record,&list);
+  struct smb_json_entries list={&b,1,0};int rc=bfpilot_smb_records(smb_json_record,&list);
   if(rc){free(b.data);return serve_error(req,500,"cannot read SMB connections; preserve the existing configuration for inspection");}
   if(json_append(&b,"]}")!=0){free(b.data);return -1;}
   return serve_owned(req,200,b.data,b.len);
@@ -1721,8 +1731,9 @@ static int smb_json_entry(const bfpilot_smb_entry_t *entry,void *context) {
   list->first=0;
   if(json_append(b,"{\"name\":")!=0 || json_string(b,entry->name)!=0 ||
      (entry->display_name && (json_append(b,",\"displayName\":")!=0 || json_string(b,entry->display_name)!=0)) ||
-     json_appendf(b,",\"dir\":%s,\"link\":%s,\"remote\":true,\"mode\":0,\"size\":%llu,\"mtime\":%llu}",
+     json_appendf(b,",\"dir\":%s,\"link\":%s,\"remote\":true,\"virtual\":%s,\"mode\":0,\"size\":%llu,\"mtime\":%llu}",
        entry->directory?"true":"false",entry->link?"true":"false",
+       list->virtual_entries?"true":"false",
        (unsigned long long)entry->size,(unsigned long long)entry->mtime)!=0)return -ENOMEM;
   return 0;
 }
@@ -1730,8 +1741,8 @@ static int smb_list_request(const http_request_t *req,const char *path) {
   json_buf_t b={0};
   if(json_append(&b,"{\"ok\":true,\"remote\":true,\"path\":")!=0 ||
      json_string(&b,path)!=0 || json_append(&b,",\"entries\":[")!=0){free(b.data);return -1;}
-  struct smb_json_entries list={&b,1};int rc=bfpilot_smb_list(path,smb_json_entry,&list);
-  if(rc){free(b.data);return serve_error(req,rc==-EINVAL?400:rc==-ENOENT?404:rc==-EACCES?403:502,strerror(-rc));}
+  struct smb_json_entries list={&b,1,!strcmp(path,"/smb")||!strcmp(path,"/smb/")};int rc=bfpilot_smb_list(path,smb_json_entry,&list);
+  if(rc){free(b.data);return serve_error(req,rc==-EINVAL?400:rc==-ENOENT?404:rc==-EACCES?403:rc==-EBUSY?409:502,strerror(-rc));}
   if(json_append(&b,"]}")!=0){free(b.data);return -1;}
   return serve_owned(req,200,b.data,b.len);
 }
@@ -1821,24 +1832,28 @@ stat_request(const http_request_t *req) {
     return serve_error(req, 400, "missing or unsafe path");
   }
   struct stat st;
-  if(lstat(path, &st) != 0) return serve_error(req, 404, strerror(errno));
+  if(bfpilot_smb_path(path)) {
+    bfpilot_io_t *endpoint=NULL;int rc=bfpilot_io_endpoint(path,&endpoint);
+    if(!rc)rc=bfpilot_io_lstat(endpoint,path,&st);bfpilot_io_end(endpoint);
+    if(rc)return serve_error(req,rc==-ENOENT?404:502,strerror(-rc));
+  } else if(lstat(path, &st) != 0) return serve_error(req, 404, strerror(errno));
 
   json_buf_t b = {0};
   fs_total_info_t fs = {0};
-  fs_totals(path, &fs);
+  if(!bfpilot_smb_path(path))fs_totals(path, &fs);
   if(json_append(&b, "{\"ok\":true,\"path\":") != 0 ||
      json_string(&b, path) != 0 ||
      json_appendf(&b,
-                  ",\"dir\":%s,\"mode\":%u,\"size\":%ld,\"mtime\":%ld,\"dev\":%lu,"
+                  ",\"remote\":%s,\"dir\":%s,\"mode\":%u,\"size\":%ld,\"mtime\":%ld,\"dev\":%lu,"
                   "\"statvfs\":%s,\"totalBytes\":%llu,\"freeBytes\":%llu,"
                   "\"availableBytes\":%llu,\"reservedBytes\":%llu,"
                   "\"usedBytes\":%llu,\"usedPercent\":%.2f,"
                   "\"usableTotalBytes\":%llu,\"usableUsedBytes\":%llu,"
                   "\"usableUsedPercent\":%.2f}",
-                  S_ISDIR(st.st_mode) ? "true" : "false",
-                  (unsigned)(st.st_mode & 07777),
+                  bfpilot_smb_path(path)?"true":"false",S_ISDIR(st.st_mode) ? "true" : "false",
+                  bfpilot_smb_path(path)?0:(unsigned)(st.st_mode & 07777),
                   (long)st.st_size, (long)st.st_mtime,
-                  (unsigned long)st.st_dev, fs.ok ? "true" : "false",
+                  bfpilot_smb_path(path)?0:(unsigned long)st.st_dev, fs.ok ? "true" : "false",
                   fs.total, fs.free_bytes, fs.available, fs.reserved,
                   fs.used, fs.used_pct, fs.usable_total, fs.usable_used,
                   fs.usable_used_pct) != 0) {
@@ -1888,8 +1903,12 @@ static int du_entry(const char *path, const char *relative,
 }
 static void *du_worker(void *context) {
   struct du_arg *arg = context;
-  int rc = bfpilot_tree_walk(arg->path, arg->device, du_entry, du_cancelled,
-                            &g_du.counts);
+  int rc;
+  if(bfpilot_smb_path(arg->path)) {
+    bfpilot_io_t *endpoint=NULL;rc=bfpilot_io_endpoint(arg->path,&endpoint);
+    if(!rc)rc=bfpilot_io_walk(endpoint,arg->path,0,du_entry,du_cancelled,&g_du.counts);
+    bfpilot_io_end(endpoint);
+  } else rc = bfpilot_tree_walk(arg->path, arg->device, du_entry, du_cancelled,&g_du.counts);
   pthread_mutex_lock(&g_du.lock);
   g_du.error = rc ? -rc : 0;
   atomic_store(&g_du.busy, 0);
@@ -1919,6 +1938,7 @@ static int du_request(const http_request_t *req) {
   int asynchronous = websrv_get_query_arg(req, "async", async_s, sizeof(async_s)) &&
                      !strcmp(async_s, "1");
   if(!asynchronous) {
+    if(bfpilot_smb_path(path))return serve_error(req,400,"remote folder size requires async=1");
     /* Preserve quick legacy queries, but never monopolize an HTTP thread for
      * an unbounded crawl. Large callers must use the background/poll API. */
     struct stat st;
@@ -1949,8 +1969,8 @@ static int du_request(const http_request_t *req) {
       return serve_error(req, 409, "folder size is unavailable during a transfer");
     }
     struct du_arg *arg = calloc(1, sizeof(*arg));
-    struct stat st;
-    if(!arg || lstat(path, &st) != 0) {
+    struct stat st={0};
+    if(!arg || (!bfpilot_smb_path(path)&&lstat(path, &st) != 0)) {
       int error = arg ? errno : ENOMEM;
       free(arg); pthread_mutex_unlock(&g_du.lock);
       return serve_error(req, 500, strerror(error));
@@ -2460,7 +2480,12 @@ delete_handler_values(const http_request_t *req, const char *path,
   }
 
   struct stat st;
-  if(lstat(path, &st) != 0) return serve_error(req, 404, strerror(errno));
+  if(bfpilot_smb_path(path)) {
+    bfpilot_io_t *endpoint=NULL;int rc=bfpilot_io_endpoint(path,&endpoint);
+    if(!rc&&!strcmp(path,bfpilot_io_root(endpoint)))rc=-EPERM;
+    if(!rc)rc=bfpilot_io_lstat(endpoint,path,&st);
+    bfpilot_io_end(endpoint);if(rc)return serve_error(req,rc==-EPERM?403:404,strerror(-rc));
+  } else if(lstat(path, &st) != 0) return serve_error(req, 404, strerror(errno));
   if(S_ISDIR(st.st_mode) && !recursive) {
     return serve_error(req, 400, "directory delete needs recursive=1");
   }
@@ -2513,7 +2538,11 @@ mkdir_handler(const http_request_t *req) {
      !path_is_safe(path)) {
     return serve_error(req, 400, "bad path");
   }
-  if(mkdirs(path) != 0) return serve_error(req, 500, strerror(errno));
+  if(bfpilot_smb_path(path)) {
+    bfpilot_io_t *endpoint=NULL;int rc=bfpilot_io_endpoint(path,&endpoint);
+    if(!rc)rc=bfpilot_io_mkdirs(endpoint,path,0777);bfpilot_io_end(endpoint);
+    if(rc)return serve_error(req,500,strerror(-rc));
+  } else if(mkdirs(path) != 0) return serve_error(req, 500, strerror(errno));
   bfpilot_search_mark_stale("mkdir");
 
   json_buf_t b = {0};
@@ -2535,7 +2564,12 @@ rename_handler(const http_request_t *req) {
      !path_is_safe(src) || !path_is_safe(dst)) {
     return serve_error(req, 400, "bad src/dst");
   }
-  if(rename(src, dst) != 0) return serve_error(req, 500, strerror(errno));
+  if(bfpilot_smb_path(src)||bfpilot_smb_path(dst)) {
+    if(!bfpilot_smb_path(src)||!bfpilot_smb_path(dst))return serve_error(req,400,"use Move for transfers between filesystems");
+    bfpilot_io_t *endpoint=NULL;int rc=bfpilot_io_endpoint(src,&endpoint);
+    if(!rc)rc=bfpilot_io_rename(endpoint,src,dst,0);bfpilot_io_end(endpoint);
+    if(rc)return serve_error(req,rc==-EEXIST?409:500,strerror(-rc));
+  } else if(rename(src, dst) != 0) return serve_error(req, 500, strerror(errno));
   bfpilot_search_mark_stale("rename");
 
   json_buf_t b = {0};

@@ -204,6 +204,9 @@ static void
 free_smb2dir(struct smb2_context *smb2, struct smb2dir *dir)
 {
         SMB2_LIST_REMOVE(&smb2->dirs, dir);
+        if (smb2->directory_memory_used >= dir->allocation_bytes)
+                smb2->directory_memory_used -= dir->allocation_bytes;
+        else smb2->directory_memory_used = 0;
         while (dir->entries) {
                 struct smb2_dirent_internal *e = dir->entries->next;
 
@@ -285,6 +288,15 @@ smb2_closedir(struct smb2_context *smb2, struct smb2dir *dir)
         free_smb2dir(smb2, dir);
 }
 
+void smb2_set_directory_limits(struct smb2_context *smb2, uint32_t entries, size_t bytes)
+{
+        if (!smb2) return;
+        smb2->directory_entry_limit = entries;
+        smb2->directory_memory_limit = bytes;
+}
+size_t smb2_get_directory_bytes(struct smb2_context *smb2)
+{ return smb2 ? smb2->directory_memory_used : 0; }
+
 static int
 decode_dirents(struct smb2_context *smb2, struct smb2dir *dir,
                struct smb2_iovec *vec)
@@ -302,6 +314,12 @@ decode_dirents(struct smb2_context *smb2, struct smb2dir *dir,
                         return -1;
                 }
 
+                if (smb2->directory_entry_limit &&
+                    dir->decoded_entries >= smb2->directory_entry_limit) {
+                        smb2_set_nterror(smb2, SMB2_STATUS_INSUFFICIENT_RESOURCES,
+                                         "Directory prefetch entry limit exceeded");
+                        return -E2BIG;
+                }
                 ent = calloc(1, sizeof(struct smb2_dirent_internal));
                 if (ent == NULL) {
                         smb2_set_error(smb2, "Failed to allocate "
@@ -318,6 +336,18 @@ decode_dirents(struct smb2_context *smb2, struct smb2dir *dir,
                                                            &tmp_vec);
                 /* steal the name */
                 ent->dirent.name = fs.name;
+                size_t bytes = sizeof(*ent) + (fs.name ? strlen(fs.name) + 1 : 0);
+                if (bytes > SIZE_MAX - smb2->directory_memory_used ||
+                    (smb2->directory_memory_limit &&
+                     (smb2->directory_memory_used > smb2->directory_memory_limit ||
+                      bytes > smb2->directory_memory_limit - smb2->directory_memory_used))) {
+                        smb2_set_nterror(smb2, SMB2_STATUS_INSUFFICIENT_RESOURCES,
+                                         "Directory prefetch memory limit exceeded");
+                        return -E2BIG;
+                }
+                smb2->directory_memory_used += bytes;
+                dir->allocation_bytes += bytes;
+                dir->decoded_entries++;
                 ent->dirent.st.smb2_type = SMB2_TYPE_FILE;
                 if (fs.file_attributes & SMB2_FILE_ATTRIBUTE_DIRECTORY) {
                         ent->dirent.st.smb2_type = SMB2_TYPE_DIRECTORY;
@@ -378,8 +408,9 @@ query_cb(struct smb2_context *smb2, int status,
                 vec.buf = rep->output_buffer;
                 vec.len = rep->output_buffer_length;
 
-                if (decode_dirents(smb2, dir, &vec) < 0) {
-                        dir->cb(smb2, -ENOMEM, NULL, dir->cb_data);
+                int decode_rc = decode_dirents(smb2, dir, &vec);
+                if (decode_rc < 0) {
+                        dir->cb(smb2, decode_rc == -E2BIG ? -E2BIG : -ENOMEM, NULL, dir->cb_data);
                         free_smb2dir(smb2, dir);
                         return;
                 }
@@ -1216,6 +1247,14 @@ smb2_open_async_with_oplock_or_lease(struct smb2_context *smb2, const char *path
 
         /* create options */
         create_options |= SMB2_FILE_NON_DIRECTORY_FILE;
+#ifdef O_NOFOLLOW
+        if (flags & O_NOFOLLOW) {
+                create_options |= SMB2_FILE_OPEN_REPARSE_POINT;
+                /* A caller requesting no-follow must be able to verify the
+                 * opened object's type without requesting read-data access. */
+                desired_access |= SMB2_FILE_READ_ATTRIBUTES;
+        }
+#endif
 
 
         if (flags & O_SYNC) {
@@ -2005,10 +2044,10 @@ getinfo_cb_1(struct smb2_context *smb2, int status,
         }
 }
 
-static int
-smb2_getinfo_async(struct smb2_context *smb2, const char *path,
+static static int
+smb2_getinfo_async_flags(struct smb2_context *smb2, const char *path,
                    uint8_t info_type, uint8_t file_info_class,
-                   void *st,
+                   void *st, uint32_t create_options,
                    smb2_command_cb cb, void *cb_data)
 {
         struct stat_cb_data *stat_data;
@@ -2041,7 +2080,7 @@ smb2_getinfo_async(struct smb2_context *smb2, const char *path,
         cr_req.file_attributes = 0;
         cr_req.share_access = SMB2_FILE_SHARE_READ | SMB2_FILE_SHARE_WRITE;
         cr_req.create_disposition = SMB2_FILE_OPEN;
-        cr_req.create_options = 0;
+        cr_req.create_options = create_options;
         cr_req.name = path;
 
         pdu = smb2_cmd_create_async(smb2, &cr_req, getinfo_cb_1, stat_data);
@@ -2090,6 +2129,15 @@ smb2_getinfo_async(struct smb2_context *smb2, const char *path,
 }
 
 int
+smb2_getinfo_async(struct smb2_context *smb2, const char *path,
+                   uint8_t info_type, uint8_t file_info_class,
+                   void *st,
+                   smb2_command_cb cb, void *cb_data)
+{
+        return smb2_getinfo_async_flags(smb2, path, info_type, file_info_class, st, 0, cb, cb_data);
+}
+
+int
 smb2_stat_async(struct smb2_context *smb2, const char *path,
                 struct smb2_stat_64 *st,
                 smb2_command_cb cb, void *cb_data)
@@ -2098,6 +2146,17 @@ smb2_stat_async(struct smb2_context *smb2, const char *path,
                                   SMB2_0_INFO_FILE,
                                   SMB2_FILE_ALL_INFORMATION,
                                   st, cb, cb_data);
+}
+
+int
+smb2_lstat_async(struct smb2_context *smb2, const char *path,
+                struct smb2_stat_64 *st,
+                smb2_command_cb cb, void *cb_data)
+{
+        return smb2_getinfo_async_flags(smb2, path,
+                                  SMB2_0_INFO_FILE,
+                                  SMB2_FILE_ALL_INFORMATION,
+                                  st, SMB2_FILE_OPEN_REPARSE_POINT, cb, cb_data);
 }
 
 int
@@ -2289,9 +2348,9 @@ rename_cb_1(struct smb2_context *smb2, int status,
         }
 }
 
-int
-smb2_rename_async(struct smb2_context *smb2, const char *oldpath,
-                  const char *newpath, smb2_command_cb cb, void *cb_data)
+static int
+smb2_rename_async_flags(struct smb2_context *smb2, const char *oldpath,
+                  const char *newpath, int replace_existing, smb2_command_cb cb, void *cb_data)
 {
         struct rename_cb_data *rename_data;
         struct smb2_create_request cr_req;
@@ -2344,7 +2403,7 @@ smb2_rename_async(struct smb2_context *smb2, const char *oldpath,
         }
 
         /* SET INFO command */
-        rn_info.replace_if_exist = 0;
+        rn_info.replace_if_exist = replace_existing != 0;
         rn_info.file_name = rename_data->newpath;
 
         memset(&si_req, 0, sizeof(struct smb2_set_info_request));
@@ -2383,6 +2442,13 @@ smb2_rename_async(struct smb2_context *smb2, const char *oldpath,
 
         return 0;
 }
+
+int smb2_rename_async(struct smb2_context *smb2, const char *oldpath,
+                      const char *newpath, smb2_command_cb cb, void *cb_data)
+{ return smb2_rename_async_flags(smb2, oldpath, newpath, 0, cb, cb_data); }
+int smb2_rename_replace_async(struct smb2_context *smb2, const char *oldpath,
+                      const char *newpath, smb2_command_cb cb, void *cb_data)
+{ return smb2_rename_async_flags(smb2, oldpath, newpath, 1, cb, cb_data); }
 
 static void
 ftrunc_cb_1(struct smb2_context *smb2, int status,
