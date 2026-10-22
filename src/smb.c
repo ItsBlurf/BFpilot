@@ -43,7 +43,7 @@ static int record_valid(const bfpilot_smb_record_t *r){
  if(!text_valid(r->id,sizeof(r->id),0)||!id_valid(r->id)||
     !text_valid(r->label,sizeof(r->label),0)||!text_valid(r->server,sizeof(r->server),0)||
     !text_valid(r->user,sizeof(r->user),1)||!text_valid(r->domain,sizeof(r->domain),1)||
-    !text_valid(r->password,sizeof(r->password),1)||r->encrypt>1 ||
+    !text_valid(r->password,sizeof(r->password),1)||r->encrypt>2 ||
     !(r->dialect==0||r->dialect==2||r->dialect==3))return 0;
  if(strpbrk(r->server,"/\\@?#; \t"))return 0;
  return 1;
@@ -174,20 +174,28 @@ int bfpilot_smb_validate_path(const char *path){
 static int connect_record(const char *id,const char *share,bfpilot_smb_session_t **out){
  bfpilot_smb_record_t record={0};int rc=get_record(id,&record);if(rc)return rc;
  bfpilot_smb_session_t *session=calloc(1,sizeof(*session));if(!session){scrub(&record,sizeof(record));return -ENOMEM;}
+ /* Only explicitly compatible, empty-password records may retry anonymous
+  * authentication. Default signed/encrypted policies never silently downgrade. */
+ int attempts=record.encrypt==2&&!record.password[0]?2:1;
+ for(int attempt=0;attempt<attempts;attempt++) {
  pthread_mutex_lock(&context_lock);
  if(context_count>=4){pthread_mutex_unlock(&context_lock);scrub(&record,sizeof(record));free(session);return -EBUSY;}
  session->smb=smb2_init_context();if(session->smb)context_count++;
  pthread_mutex_unlock(&context_lock);
  if(!session->smb){scrub(&record,sizeof(record));free(session);return -ENOMEM;}
  struct smb2_context *s=session->smb;
- smb2_set_user(s,record.user);smb2_set_domain(s,record.domain);smb2_set_password(s,record.password);
+ smb2_set_user(s,record.user);smb2_set_domain(s,record.domain);smb2_set_password(s,attempt?NULL:record.password);
  smb2_set_timeout(s,10);smb2_set_version(s,(enum smb2_negotiate_version)record.dialect);
  smb2_set_directory_limits(s,100002,64U*1024U*1024U);
- smb2_set_security_mode(s,SMB2_NEGOTIATE_SIGNING_ENABLED|SMB2_NEGOTIATE_SIGNING_REQUIRED);
- smb2_set_sign(s,!record.encrypt);smb2_set_seal(s,record.encrypt);
- rc=smb2_connect_share(s,record.server,share,NULL);scrub(&record,sizeof(record));
- if(rc){pthread_mutex_lock(&context_lock);smb2_destroy_context(s);context_count--;pthread_mutex_unlock(&context_lock);free(session);return rc;}
- *out=session;return 0;
+ smb2_set_security_mode(s,SMB2_NEGOTIATE_SIGNING_ENABLED|
+                         (record.encrypt==2?0:SMB2_NEGOTIATE_SIGNING_REQUIRED));
+ smb2_set_sign(s,record.encrypt==0);smb2_set_seal(s,record.encrypt==1);
+ rc=smb2_connect_share(s,record.server,share,NULL);
+ if(!rc){scrub(&record,sizeof(record));*out=session;return 0;}
+ pthread_mutex_lock(&context_lock);smb2_destroy_context(s);context_count--;pthread_mutex_unlock(&context_lock);
+ session->smb=NULL;
+ }
+ scrub(&record,sizeof(record));free(session);return rc;
 }
 int bfpilot_smb_connect(const char *path,bfpilot_smb_session_t **out){
  *out=NULL;char id[24],share[256],relative[1024];int rc=split_path(path,id,share,relative);

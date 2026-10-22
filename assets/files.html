@@ -1241,6 +1241,7 @@
       <label><input id="smb-keep-password" type="checkbox"> Keep saved password when editing</label>
       <label>Protocol <select id="smb-dialect"><option value="0">SMB2 / SMB3 automatic</option><option value="2">SMB2</option><option value="3">SMB3</option></select></label>
       <label><input id="smb-encrypt" type="checkbox"> Require SMB3 encryption</label>
+      <label><input id="smb-unsigned" type="checkbox"> Allow unsigned guest / older NAS connections</label>
       <p class="muted">Saved credentials stay on the PS5. Connections require signing or SMB3 encryption. Choose a saved connection to browse its shared folders.</p>
       <p id="smb-message" role="status" aria-live="polite"></p>
       <div style="display:flex;gap:8px;flex-wrap:wrap;">
@@ -1939,6 +1940,7 @@
       el('smb-keep-password').disabled = !record;
       el('smb-dialect').value = String(record ? record.dialect : 0);
       el('smb-encrypt').checked = Boolean(record && record.encrypt);
+      el('smb-unsigned').checked = Boolean(record && record.allowUnsigned);
       el('smb-remove').disabled = !record;
     }
 
@@ -1971,6 +1973,7 @@
       for (const field of ['label', 'server', 'user', 'domain', 'password']) fields[field] = el('smb-' + field).value;
       fields.dialect = el('smb-dialect').value;
       fields.encrypt = el('smb-encrypt').checked ? '1' : '0';
+      fields.allowUnsigned = el('smb-unsigned').checked ? '1' : '0';
       fields.replacePassword = el('smb-keep-password').checked ? '0' : '1';
       el('smb-save').disabled = true;
       try {
@@ -4444,6 +4447,12 @@
       el('smb-record').addEventListener('change', selectSmbRecord);
       el('smb-form').addEventListener('submit', saveSmbConnection);
       el('smb-close').addEventListener('click', closeSmbConnections);
+      el('smb-encrypt').addEventListener('change', () => {
+        if (el('smb-encrypt').checked) el('smb-unsigned').checked = false;
+      });
+      el('smb-unsigned').addEventListener('change', () => {
+        if (el('smb-unsigned').checked) el('smb-encrypt').checked = false;
+      });
       el('smb-overlay').addEventListener('keydown', event => {
         if (event.key === 'Escape') { event.stopPropagation(); closeSmbConnections(); }
         if (event.key === 'Tab') {

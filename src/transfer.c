@@ -1714,7 +1714,9 @@ static int smb_json_record(const bfpilot_smb_record_t *record,void *context) {
      json_append(b,",\"server\":")!=0||json_string(b,record->server)!=0||
      json_append(b,",\"user\":")!=0||json_string(b,record->user)!=0||
      json_append(b,",\"domain\":")!=0||json_string(b,record->domain)!=0||
-     json_appendf(b,",\"dialect\":%u,\"encrypt\":%s}",record->dialect,record->encrypt?"true":"false")!=0)return -ENOMEM;
+     json_appendf(b,",\"dialect\":%u,\"encrypt\":%s,\"allowUnsigned\":%s}",
+                  record->dialect,record->encrypt==1?"true":"false",
+                  record->encrypt==2?"true":"false")!=0)return -ENOMEM;
   return 0;
 }
 static int smb_records_request(const http_request_t *req) {
@@ -3834,8 +3836,12 @@ transfer_action_post_request(const http_request_t *req, const char *url,
     int valid=form_get_arg(body,"id",record.id,sizeof(record.id));
     if(!strcmp(url,"/api/fs/smb/remove"))rc=valid?bfpilot_smb_remove(record.id):-EINVAL;
     else {
-      char dialect[8],encrypt[8],replace[8];
-      valid=valid && form_get_arg(body,"label",record.label,sizeof(record.label)) &&
+      char dialect[8],encrypt[8],replace[8],allow_unsigned[8]="0";
+      errno=0;
+      int have_unsigned=form_get_arg(body,"allowUnsigned",allow_unsigned,sizeof(allow_unsigned));
+      int optional_valid=have_unsigned||!errno;
+      if(!have_unsigned)snprintf(allow_unsigned,sizeof(allow_unsigned),"0");
+      valid=valid && optional_valid && form_get_arg(body,"label",record.label,sizeof(record.label)) &&
           form_get_arg(body,"server",record.server,sizeof(record.server)) &&
           form_get_arg(body,"user",record.user,sizeof(record.user)) &&
           form_get_arg(body,"domain",record.domain,sizeof(record.domain)) &&
@@ -3844,8 +3850,10 @@ transfer_action_post_request(const http_request_t *req, const char *url,
           form_get_arg(body,"encrypt",encrypt,sizeof(encrypt)) &&
           form_get_arg(body,"replacePassword",replace,sizeof(replace));
       if(valid)valid=(!strcmp(dialect,"0")||!strcmp(dialect,"2")||!strcmp(dialect,"3")) &&
-          (!strcmp(encrypt,"0")||!strcmp(encrypt,"1")) && (!strcmp(replace,"0")||!strcmp(replace,"1"));
-      if(valid){record.dialect=atoi(dialect);record.encrypt=atoi(encrypt);}
+          (!strcmp(encrypt,"0")||!strcmp(encrypt,"1")) && (!strcmp(replace,"0")||!strcmp(replace,"1")) &&
+          (!strcmp(allow_unsigned,"0")||!strcmp(allow_unsigned,"1")) &&
+          !(atoi(encrypt)&&atoi(allow_unsigned));
+      if(valid){record.dialect=atoi(dialect);record.encrypt=atoi(allow_unsigned)?2:atoi(encrypt);}
       rc=valid?bfpilot_smb_save(&record,atoi(replace)):-EINVAL;
     }
     free(body);memset(record.password,0,sizeof(record.password));
@@ -4685,6 +4693,15 @@ transfer_archive_prepare_request(const http_request_t *req,
     snprintf(cleanup_partial, sizeof(cleanup_partial), "%s", "0");
   }
   free(body);
+
+  if(bfpilot_smb_path(src) || bfpilot_smb_path(dst)) {
+#if BFPILOT_ENABLE_INTEGRATED_ARCHIVE
+    atomic_store(&g_archive_busy, 0);
+#endif
+    return serve_error(req,400,bfpilot_smb_path(src)
+        ? "copy the archive to local storage before extracting"
+        : "extract to local storage, then copy the completed folder to SMB");
+  }
 
   int src_allowed = archive_path_allowed(src);
   int dst_allowed = archive_path_allowed(dst);

@@ -4,6 +4,8 @@
 #include <stdint.h>
 typedef struct bfpilot_smb_record {
  char id[24],label[128],server[256],user[128],domain[128],password[256];
+ /* V1 wire layout retained. Protection word:0 required signing,1 required
+  * encryption,2 explicit unsigned/guest compatibility. Not a boolean. */
  uint32_t dialect,encrypt;
 } bfpilot_smb_record_t;
 typedef struct bfpilot_smb_entry {
