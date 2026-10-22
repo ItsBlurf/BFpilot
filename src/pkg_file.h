@@ -63,3 +63,14 @@ typedef struct bfpilot_pkg_details {
 int bfpilot_pkg_parse_details(const char *path, bfpilot_pkg_details_t *details);
 int bfpilot_pkg_read_icon(const char *path, void **icon_buf, size_t *icon_size);
 
+/* One request owns the reader. read_at must fill the complete bounded range
+ * and return zero, or a negative errno; no global fd or backend interposition. */
+typedef struct bfpilot_pkg_reader {
+  void *context;
+  uint64_t size;
+  int (*read_at)(void *, void *, size_t, uint64_t);
+} bfpilot_pkg_reader_t;
+int bfpilot_pkg_validate_reader(const bfpilot_pkg_reader_t *, bfpilot_pkg_file_info_t *);
+int bfpilot_pkg_parse_reader(const bfpilot_pkg_reader_t *, bfpilot_pkg_details_t *);
+int bfpilot_pkg_icon_reader(const bfpilot_pkg_reader_t *, void **, size_t *);
+

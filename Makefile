@@ -24,8 +24,8 @@ PYTHON ?= python3
 # Ship / daily use must stay 5905.
 WEB_PORT ?= 5905
 
-VERSION_TAG := bfpilot-v0.4.5-dev.19
-BUILD_VERSION ?= v0.4.5-dev.19
+VERSION_TAG := bfpilot-v0.4.5-dev.20
+BUILD_VERSION ?= v0.4.5-dev.20
 
 LLVM_CONFIG ?= $(if $(wildcard $(PS5_PAYLOAD_SDK)/bin/prospero-llvm-config),$(PS5_PAYLOAD_SDK)/bin/prospero-llvm-config,$(CURDIR)/build-tools/llvm-config)
 LLVM_BINDIR ?= $(shell "$(LLVM_CONFIG)" --bindir 2>/dev/null || dirname "$$(command -v clang 2>/dev/null || command -v clang.exe 2>/dev/null || command -v llvm-strip 2>/dev/null || command -v llvm-strip.exe 2>/dev/null || echo clang)" 2>/dev/null || echo .)
@@ -67,6 +67,7 @@ WEB_SRCS += src/remote_io.c
 WEB_SRCS += src/remote_walk.c
 WEB_SRCS += src/pkg_install.c
 WEB_SRCS += src/pkg_file.c
+WEB_SRCS += src/pkg_remote.c
 WEB_SRCS += src/pkg_worker_client.c
 WEB_SRCS += src/appinst_direct.c
 
@@ -151,6 +152,7 @@ COMMON_CFLAGS += -DBFPILOT_SDK_PATH=\"$(PS5_PAYLOAD_SDK)\"
 ENABLE_ARCHIVE := 1
 
 BFPILOT_CFLAGS := $(COMMON_CFLAGS)
+BFPILOT_CFLAGS += -DBFPILOT_ENABLE_REMOTE_PKG=1
 BFPILOT_CFLAGS += -DBFPILOT_PAYLOAD_NAME=\"bfpilot\"
 BFPILOT_CFLAGS += -DBFPILOT_BUILD_MODE=\"file-manager\"
 BFPILOT_CFLAGS += -DBFPILOT_WEB_PORT=$(WEB_PORT)

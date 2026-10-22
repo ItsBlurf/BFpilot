@@ -1623,7 +1623,10 @@ pkg_info_request(const http_request_t *req) {
      !path_is_safe(path_in)) {
     return serve_error(req, 400, "missing or unsafe path");
   }
-  if(path_for_list(path_in, resolved, sizeof(resolved)) != 0) {
+  if(bfpilot_smb_path(path_in)) {
+    if(bfpilot_smb_validate_path(path_in))return serve_error(req,400,"unsafe SMB package path");
+    snprintf(resolved,sizeof(resolved),"%s",path_in);
+  } else if(path_for_list(path_in, resolved, sizeof(resolved)) != 0) {
     return serve_error(req, 404, "path not found");
   }
 
@@ -1684,7 +1687,10 @@ pkg_icon_request(const http_request_t *req) {
      !path_is_safe(path_in)) {
     return serve_error(req, 400, "missing or unsafe path");
   }
-  if(path_for_list(path_in, resolved, sizeof(resolved)) != 0) {
+  if(bfpilot_smb_path(path_in)) {
+    if(bfpilot_smb_validate_path(path_in))return serve_error(req,400,"unsafe SMB package path");
+    snprintf(resolved,sizeof(resolved),"%s",path_in);
+  } else if(path_for_list(path_in, resolved, sizeof(resolved)) != 0) {
     return serve_error(req, 404, "path not found");
   }
 

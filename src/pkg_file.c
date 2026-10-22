@@ -12,6 +12,10 @@
 
 #include "path_ops.h"
 #include "pkg_file.h"
+#ifdef BFPILOT_ENABLE_REMOTE_PKG
+#include "pkg_remote.h"
+#include "smb.h"
+#endif
 
 #if defined(_WIN32)
 #define lstat stat
@@ -137,6 +141,9 @@ bfpilot_pkg_file_is_system(const bfpilot_pkg_file_info_t *info) {
 int
 bfpilot_pkg_file_validate(const char *path, bfpilot_pkg_file_info_t *info,
                           char *error, size_t error_size) {
+#ifdef BFPILOT_ENABLE_REMOTE_PKG_INSTALL
+  if(bfpilot_smb_path(path))return bfpilot_pkg_remote_validate(path,info,error,error_size);
+#endif
   unsigned char header[PKG_PROBE_SIZE];
   struct stat before;
   struct stat opened;
@@ -498,10 +505,27 @@ parse_param_json(const char *json, size_t size, bfpilot_pkg_details_t *details) 
   }
 }
 
-static int
-pkg_parse_fd(int fd, uint64_t file_size, bfpilot_pkg_details_t *details) {
+static int pkg_reader_read(const bfpilot_pkg_reader_t *reader, void *buffer,
+                            size_t size, uint64_t offset) {
+  if(!reader || !reader->read_at || !range_valid(offset,size,reader->size))return -EINVAL;
+  return reader->read_at(reader->context,buffer,size,offset);
+}
+
+int bfpilot_pkg_validate_reader(const bfpilot_pkg_reader_t *reader,
+                                bfpilot_pkg_file_info_t *info) {
+  unsigned char header[PKG_PROBE_SIZE];
+  if(!info)return -EINVAL;
+  int rc=pkg_reader_read(reader,header,sizeof(header),0);
+  return rc?rc:bfpilot_pkg_header_validate(header,sizeof(header),reader->size,info);
+}
+
+int
+bfpilot_pkg_parse_reader(const bfpilot_pkg_reader_t *reader, bfpilot_pkg_details_t *details) {
+  if(!reader || !reader->read_at || !details)return -EINVAL;
+  memset(details,0,sizeof(*details));
+  uint64_t file_size=reader->size;
   unsigned char header[PKG_HEADER_SIZE];
-  if(file_size < PKG_HEADER_SIZE || read_at(fd, header, sizeof(header), 0) != 0) {
+  if(file_size < PKG_HEADER_SIZE || pkg_reader_read(reader, header, sizeof(header), 0) != 0) {
     return -EINVAL;
   }
 
@@ -519,7 +543,7 @@ pkg_parse_fd(int fd, uint64_t file_size, bfpilot_pkg_details_t *details) {
 
   if(container_offset > 0) {
     if(!range_valid(container_offset, sizeof(header), file_size) ||
-       read_at(fd, header, sizeof(header), container_offset) != 0 ||
+       pkg_reader_read(reader, header, sizeof(header), container_offset) != 0 ||
        read_be32(header) != PKG_MAGIC_CNT) {
       return -EINVAL;
     }
@@ -540,7 +564,7 @@ pkg_parse_fd(int fd, uint64_t file_size, bfpilot_pkg_details_t *details) {
 
   unsigned char *table = malloc(table_size);
   if(!table) return -ENOMEM;
-  if(read_at(fd, table, table_size, container_offset + table_offset) != 0) {
+  if(pkg_reader_read(reader, table, table_size, container_offset + table_offset) != 0) {
     free(table);
     return -EIO;
   }
@@ -573,16 +597,17 @@ pkg_parse_fd(int fd, uint64_t file_size, bfpilot_pkg_details_t *details) {
 
   if(details->icon_size >= 8) {
     unsigned char png_magic[8];
-    if(read_at(fd, png_magic, sizeof(png_magic), details->icon_offset) == 0 &&
-       memcmp(png_magic, "\x89PNG\r\n\x1a\n", 8) == 0) {
+    if(pkg_reader_read(reader, png_magic, sizeof(png_magic), details->icon_offset))return -EIO;
+    if(memcmp(png_magic, "\x89PNG\r\n\x1a\n", 8) == 0) {
       details->has_icon = 1;
     }
   }
 
   if(param_size > 0) {
     unsigned char *param_buf = malloc(param_size + 1);
-    if(param_buf) {
-      if(read_at(fd, param_buf, param_size, param_offset) == 0) {
+    if(!param_buf)return -ENOMEM;
+    {
+      if(pkg_reader_read(reader, param_buf, param_size, param_offset) == 0) {
         param_buf[param_size] = 0;
         if(is_param_json) {
           strncpy(details->platform, "PS5", sizeof(details->platform) - 1);
@@ -591,7 +616,7 @@ pkg_parse_fd(int fd, uint64_t file_size, bfpilot_pkg_details_t *details) {
           strncpy(details->platform, "PS4", sizeof(details->platform) - 1);
           parse_sfo(param_buf, param_size, details);
         }
-      }
+      } else {free(param_buf);return -EIO;}
       free(param_buf);
     }
   }
@@ -602,8 +627,28 @@ pkg_parse_fd(int fd, uint64_t file_size, bfpilot_pkg_details_t *details) {
   return 0;
 }
 
+static int pkg_fd_read(void *context,void *buffer,size_t size,uint64_t offset) {
+  return read_at((int)(intptr_t)context,buffer,size,offset)==0?0:-(errno?errno:EIO);
+}
+
+int bfpilot_pkg_icon_reader(const bfpilot_pkg_reader_t *reader,
+                             void **icon_buf,size_t *icon_size) {
+  if(!icon_buf || !icon_size)return -EINVAL;
+  *icon_buf=NULL;*icon_size=0;
+  bfpilot_pkg_details_t details;int rc=bfpilot_pkg_parse_reader(reader,&details);
+  if(rc || !details.has_icon || details.icon_size<8 || details.icon_size>PKG_ICON_MAX)
+    return rc?rc:-ENOENT;
+  void *buffer=malloc(details.icon_size);if(!buffer)return -ENOMEM;
+  rc=pkg_reader_read(reader,buffer,details.icon_size,details.icon_offset);
+  if(rc){free(buffer);return rc;}
+  *icon_buf=buffer;*icon_size=details.icon_size;return 0;
+}
+
 int
 bfpilot_pkg_parse_details(const char *path, bfpilot_pkg_details_t *details) {
+#ifdef BFPILOT_ENABLE_REMOTE_PKG
+  if(bfpilot_smb_path(path))return bfpilot_pkg_remote_details(path,details);
+#endif
   if(!path || !details || !bfpilot_path_is_safe(path)) return -EINVAL;
   memset(details, 0, sizeof(*details));
 
@@ -619,13 +664,17 @@ bfpilot_pkg_parse_details(const char *path, bfpilot_pkg_details_t *details) {
   int fd = open(path, flags);
   if(fd < 0) return -errno;
 
-  int rc = pkg_parse_fd(fd, (uint64_t)st.st_size, details);
+  bfpilot_pkg_reader_t reader={(void *)(intptr_t)fd,(uint64_t)st.st_size,pkg_fd_read};
+  int rc = bfpilot_pkg_parse_reader(&reader,details);
   close(fd);
   return rc;
 }
 
 int
 bfpilot_pkg_read_icon(const char *path, void **icon_buf, size_t *icon_size) {
+#ifdef BFPILOT_ENABLE_REMOTE_PKG
+  if(bfpilot_smb_path(path))return bfpilot_pkg_remote_icon(path,icon_buf,icon_size);
+#endif
   if(!path || !icon_buf || !icon_size || !bfpilot_path_is_safe(path)) return -EINVAL;
   *icon_buf = NULL;
   *icon_size = 0;
@@ -642,29 +691,9 @@ bfpilot_pkg_read_icon(const char *path, void **icon_buf, size_t *icon_size) {
   int fd = open(path, flags);
   if(fd < 0) return -errno;
 
-  bfpilot_pkg_details_t details;
-  memset(&details, 0, sizeof(details));
-  int rc = pkg_parse_fd(fd, (uint64_t)st.st_size, &details);
-  if(rc != 0 || !details.has_icon || details.icon_size < 8 || details.icon_size > PKG_ICON_MAX) {
-    close(fd);
-    return rc != 0 ? rc : -ENOENT;
-  }
-
-  void *buf = malloc(details.icon_size);
-  if(!buf) {
-    close(fd);
-    return -ENOMEM;
-  }
-
-  if(read_at(fd, buf, details.icon_size, details.icon_offset) != 0) {
-    free(buf);
-    close(fd);
-    return -EIO;
-  }
+  bfpilot_pkg_reader_t reader={(void *)(intptr_t)fd,(uint64_t)st.st_size,pkg_fd_read};
+  int rc=bfpilot_pkg_icon_reader(&reader,icon_buf,icon_size);
   close(fd);
-
-  *icon_buf = buf;
-  *icon_size = details.icon_size;
-  return 0;
+  return rc;
 }
 

@@ -1325,25 +1325,25 @@
 
         <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; background: #101720; padding: 12px; border-radius: 8px; border: 1px solid #1f2a36;">
           <div>
-            <span style="display: block; font-size: 11px; color: #6b7a8a; text-transform: uppercase; letter-spacing: 0.5px;">Title ID</span>
+            <span style="display: block; font-size: 11px; color: #9babbc; text-transform: uppercase; letter-spacing: 0.5px;">Title ID</span>
             <strong id="pkg-modal-tid" style="font-family: Consolas, monospace; font-size: 14px; color: #e3e8ed;">--</strong>
           </div>
           <div>
-            <span style="display: block; font-size: 11px; color: #6b7a8a; text-transform: uppercase; letter-spacing: 0.5px;">App Version</span>
+            <span style="display: block; font-size: 11px; color: #9babbc; text-transform: uppercase; letter-spacing: 0.5px;">App Version</span>
             <strong id="pkg-modal-ver" style="font-family: Consolas, monospace; font-size: 14px; color: #e3e8ed;">--</strong>
           </div>
           <div>
-            <span style="display: block; font-size: 11px; color: #6b7a8a; text-transform: uppercase; letter-spacing: 0.5px;">Min Firmware</span>
+            <span style="display: block; font-size: 11px; color: #9babbc; text-transform: uppercase; letter-spacing: 0.5px;">Min Firmware</span>
             <strong id="pkg-modal-minfw" style="font-family: Consolas, monospace; font-size: 14px; color: #e3e8ed;">--</strong>
           </div>
           <div>
-            <span style="display: block; font-size: 11px; color: #6b7a8a; text-transform: uppercase; letter-spacing: 0.5px;">Size</span>
+            <span style="display: block; font-size: 11px; color: #9babbc; text-transform: uppercase; letter-spacing: 0.5px;">Size</span>
             <strong id="pkg-modal-size" style="font-size: 14px; color: #e3e8ed;">--</strong>
           </div>
         </div>
 
         <div style="background: #101720; padding: 10px 12px; border-radius: 8px; border: 1px solid #1f2a36;">
-          <span style="display: block; font-size: 11px; color: #6b7a8a; text-transform: uppercase; margin-bottom: 2px;">Content ID</span>
+          <span style="display: block; font-size: 11px; color: #9babbc; text-transform: uppercase; margin-bottom: 2px;">Content ID</span>
           <code id="pkg-modal-cid" style="font-family: Consolas, monospace; font-size: 12px; color: #8593a1; word-break: break-all;">--</code>
         </div>
 
@@ -1453,6 +1453,10 @@
       uploadXhr: null,
       downloadQueue: null,
       smbRecords: [],
+      networkSpace: null,
+      networkSpaceRequest: 0,
+      networkSpacePending: false,
+      networkSpaceFetchedAt: 0,
       placesTimer: 0,
       jobTimer: 0,
       jobHideTimer: 0,
@@ -1829,6 +1833,10 @@
         seen.add(key);
         items.push(place);
       }
+      const share = currentShareRoot();
+      if (share && state.networkSpace && state.networkSpace.path === share) {
+        items.push({ ...state.networkSpace, kind: 'smb' });
+      }
       if (!items.length) {
         const empty = document.createElement('span');
         empty.textContent = 'Storage: waiting for data';
@@ -1842,7 +1850,7 @@
         const title = document.createElement('strong');
         title.textContent = place.kind === 'internal'
           ? 'Data'
-          : cleanPath(place.path);
+          : place.kind === 'smb' ? 'SMB ' + displayFsText(place.path.split('/').pop()) : cleanPath(place.path);
         item.appendChild(title);
         item.appendChild(document.createTextNode(': ' + (storageSummary(place) || 'unknown')));
         item.title = 'Go to ' + cleanPath(place.path);
@@ -1851,6 +1859,43 @@
         });
         box.appendChild(item);
       }
+    }
+
+    function currentShareRoot() {
+      const parts = cleanPath(state.path).split('/');
+      return parts[1] === 'smb' && parts[2] && parts[3]
+        ? parts.slice(0, 4).join('/') : '';
+    }
+
+    async function refreshShareCapacity() {
+      const share = currentShareRoot();
+      if (!share) {
+        state.networkSpace = null;
+        renderStorageSummary();
+        return;
+      }
+      const cached = state.networkSpace && state.networkSpace.path === share;
+      if (!cached) {
+        state.networkSpace = { path: share, statvfs: false };
+        state.networkSpaceFetchedAt = 0;
+        renderStorageSummary();
+      }
+      if (state.networkSpacePending || (cached && Date.now() - state.networkSpaceFetchedAt < 3000)) return;
+      state.networkSpacePending = true;
+      const request = ++state.networkSpaceRequest;
+      try {
+        const space = await api('/api/fs/stat?path=' + encodeURIComponent(share));
+        if (request !== state.networkSpaceRequest || currentShareRoot() !== share) return;
+        state.networkSpace = { ...space, path: share };
+      } catch (err) {
+        if (request !== state.networkSpaceRequest || currentShareRoot() !== share) return;
+        state.networkSpace = { path: share, statvfs: false };
+      } finally {
+        state.networkSpacePending = false;
+        if (currentShareRoot() !== share) refreshShareCapacity();
+      }
+      state.networkSpaceFetchedAt = Date.now();
+      renderStorageSummary();
     }
 
     function targetButton(place, path) {
@@ -2973,6 +3018,7 @@
         state.entries = sortEntries(data.entries || []);
         state.selected.clear();
         drawList();
+        refreshShareCapacity();
         if (options.historyMode === 'chain') {
           seedHistoryPath(state.path);
         } else if (options.historyMode) {
