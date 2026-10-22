@@ -5,11 +5,11 @@
 #pragma once
 
 #ifndef VERSION_TAG
-#define VERSION_TAG "bfpilot-v0.4.5-dev.13"
+#define VERSION_TAG "bfpilot-v0.4.5-dev.14"
 #endif
 
 #ifndef BUILD_VERSION
-#define BUILD_VERSION "v0.4.5-dev.13"
+#define BUILD_VERSION "v0.4.5-dev.14"
 #endif
 
 #ifndef BFPILOT_SDK_PATH

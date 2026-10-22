@@ -4024,9 +4024,13 @@ text_version_hash(const unsigned char *data, size_t size) {
 }
 
 
+#include "remote_text.inc"
+
 static int
 read_edit_text(const char *path, char **data_out, size_t *size_out,
-               mode_t *mode_out) {
+               mode_t *mode_out, struct stat *identity_out) {
+  if(bfpilot_smb_path(path))
+    return remote_text_read(path, data_out, size_out, mode_out, identity_out);
   struct stat path_st, st;
   if(lstat(path, &path_st) != 0) return -1;
   if(!S_ISREG(path_st.st_mode)) {
@@ -4111,6 +4115,7 @@ read_edit_text(const char *path, char **data_out, size_t *size_out,
   *data_out = data;
   *size_out = used;
   if(mode_out) *mode_out = st.st_mode;
+  if(identity_out) *identity_out = st;
   return 0;
 }
 
@@ -4171,7 +4176,7 @@ text_read_request(const http_request_t *req) {
 
   char *data = NULL;
   size_t size = 0;
-  if(read_edit_text(path, &data, &size, NULL) != 0) {
+  if(read_edit_text(path, &data, &size, NULL, NULL) != 0) {
     int saved_errno = errno;
     if(saved_errno == EFBIG) return serve_error(req, 413, "text file is too large");
     if(saved_errno == ENOENT) return serve_error(req, 404, "file not found");
@@ -4235,6 +4240,18 @@ transfer_text_create_request(const http_request_t *req,
   snprintf(g_job.destination, sizeof(g_job.destination), "%s", path);
   pthread_mutex_unlock(&g_job.lock);
 
+  if(bfpilot_smb_path(path)) {
+    int remote_rc = remote_text_write(path, "", 0, NULL);
+    if(remote_rc) {
+      int error = errno;
+      job_end(-1, "text create failed");
+      return serve_error(req, error == EEXIST ? 409 : error == ENOENT ? 404 :
+                         error == EACCES || error == EPERM || error == EROFS ? 403 : 500,
+                         error == EEXIST ? "file already exists" : strerror(error));
+    }
+    goto text_created;
+  }
+
   int dir_flags = O_RDONLY | O_DIRECTORY;
 #ifdef O_NOFOLLOW
   dir_flags |= O_NOFOLLOW;
@@ -4287,6 +4304,7 @@ transfer_text_create_request(const http_request_t *req,
     return serve_error(req, 500, strerror(errno));
   }
 
+text_created:;
   char version[24];
   snprintf(version, sizeof(version), "%016llx",
            (unsigned long long)text_version_hash(NULL, 0));
@@ -4361,7 +4379,8 @@ transfer_text_save_request(const http_request_t *req,
   size_t current_size = 0;
   size_t formatted_size = 0;
   mode_t current_mode = 0;
-  int rc = read_edit_text(path, &current, &current_size, &current_mode);
+  struct stat current_identity;
+  int rc = read_edit_text(path, &current, &current_size, &current_mode, &current_identity);
   int saved_errno = errno;
   if(rc == 0) {
     char actual[24];
@@ -4377,7 +4396,9 @@ transfer_text_save_request(const http_request_t *req,
       saved_errno = errno;
       rc = -1;
     } else {
-      rc = write_edit_text_atomic(path, formatted, formatted_size, current_mode);
+      rc = bfpilot_smb_path(path)
+          ? remote_text_write(path, formatted, formatted_size, &current_identity)
+          : write_edit_text_atomic(path, formatted, formatted_size, current_mode);
       saved_errno = errno;
     }
   }
@@ -4401,6 +4422,7 @@ transfer_text_save_request(const http_request_t *req,
                          "text file is too large after newline conversion");
     }
     if(saved_errno == ENOENT) return serve_error(req, 404, "file not found");
+    if(saved_errno == EAGAIN) return serve_error(req, 409, "file changed during save; reload before saving");
     return serve_error(req, 500, strerror(saved_errno));
   }
 
