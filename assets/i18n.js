@@ -4,6 +4,7 @@
   'use strict';
   const zh = Object.freeze({
     'Language':'语言', 'File Manager':'文件管理器', 'Connecting':'连接中',
+    '{kind} conflict: "{name}" already exists in the target directory. {action}?':'{kind}冲突：目标目录中已存在“{name}”。是否{action}？',
     'Network':'网络', 'USB Drive ':'USB 存储 ', 'Game / App':'游戏 / 应用',
     'Logs':'日志', 'View System Logs':'查看系统日志', 'Exit':'退出', 'Terminate Payload':'退出程序',
     'Places':'位置', 'Files':'文件', 'Root':'根目录', 'Homebrew':'自制程序', 'Mounts':'挂载点', 'User':'用户', 'Data':'数据',
@@ -153,7 +154,12 @@
   if (valid(requested)) preference = requested;
   const browser = (navigator.languages && navigator.languages[0]) || navigator.language || 'en';
   const locale = preference === 'auto' ? (/^zh\b/i.test(browser) ? 'zh-CN' : 'en') : preference;
-  const t = value => locale === 'zh-CN' && Object.prototype.hasOwnProperty.call(zh, value) ? zh[value] : value;
+  const t = (value, parameters) => {
+    const translated = locale === 'zh-CN' && Object.prototype.hasOwnProperty.call(zh, value) ? zh[value] : value;
+    if (!parameters || typeof translated !== 'string') return translated;
+    return translated.replace(/\{([a-zA-Z][a-zA-Z0-9_]*)\}/g, (match, key) =>
+      Object.prototype.hasOwnProperty.call(parameters, key) ? String(parameters[key]) : match);
+  };
   function translateStatic(root) {
     if (locale !== 'zh-CN') return;
     const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
