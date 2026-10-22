@@ -5,6 +5,7 @@
  */
 
 #include "archive_worker.h"
+#include "tree_chmod.h"
 #include "rar.hpp"
 #include "ps5_7z.hpp"
 
@@ -2223,6 +2224,17 @@ bfpilot_archive_run_prepared_job_impl(void) {
           cfg.threads == 0 ? "auto" : "manual");
 
   int rc = RunArchive(cfg, type, error);
+  if(rc == 0) {
+    SetStatus("finalizing", "setting extracted permissions", true);
+    int permission_rc = bfpilot_tree_chmod(g_status.stage.c_str(), 0777,
+        [](void *) -> int { return __atomic_load_n(&g_archive_cancel, __ATOMIC_RELAXED); }, NULL);
+    if(permission_rc != 0) {
+      errno = -permission_rc;
+      error = permission_rc == -ECANCELED ? "archive: cancelled" :
+              std::string("archive permissions: ") + strerror(-permission_rc);
+      rc = 1;
+    }
+  }
   if(rc != 0) {
     g_status.state = "error";
     g_status.error = error.empty() ? "archive extraction failed" : error;

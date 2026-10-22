@@ -24,8 +24,8 @@ PYTHON ?= python3
 # Ship / daily use must stay 5905.
 WEB_PORT ?= 5905
 
-VERSION_TAG := bfpilot-v0.4.4
-BUILD_VERSION ?= v0.4.4
+VERSION_TAG := bfpilot-v0.4.5-dev.2
+BUILD_VERSION ?= v0.4.5-dev.2
 
 LLVM_CONFIG ?= $(if $(wildcard $(PS5_PAYLOAD_SDK)/bin/prospero-llvm-config),$(PS5_PAYLOAD_SDK)/bin/prospero-llvm-config,$(CURDIR)/build-tools/llvm-config)
 LLVM_BINDIR ?= $(shell "$(LLVM_CONFIG)" --bindir 2>/dev/null || dirname "$$(command -v clang 2>/dev/null || command -v clang.exe 2>/dev/null || command -v llvm-strip 2>/dev/null || command -v llvm-strip.exe 2>/dev/null || echo clang)" 2>/dev/null || echo .)
@@ -129,6 +129,7 @@ BFPILOT_ARCHIVE_OBJS := $(patsubst %.cpp,build/bfpilot-archive/%.o,$(ARCHIVE_WOR
 BFPILOT_ARCHIVE_OBJS += $(patsubst %.c,build/bfpilot-archive/%.o,$(ARCHIVE_SEVENZ_C_SRCS))
 
 COMMON_CFLAGS := -Os -Wall -Werror -Isrc
+COMMON_CFLAGS += -MMD -MP
 COMMON_CFLAGS += -ffunction-sections -fdata-sections
 COMMON_CFLAGS += -DVERSION_TAG=\"$(VERSION_TAG)\"
 COMMON_CFLAGS += -DBUILD_VERSION=\"$(BUILD_VERSION)\"
@@ -161,12 +162,14 @@ ARCHIVE_SEVENZ_DEFINES += -DZ7_EXTRACT_ONLY -DZ7_PROG_VARIANT_R -DZ7_AFFINITY_DI
 ARCHIVE_WORKER_INCLUDES := -Isrc -I$(UNRAR_SRC_DIR) -I$(MINIZ_DIR)
 ARCHIVE_WORKER_INCLUDES += -I$(LZMA_C_DIR) -I$(LZMA_CPP_DIR) -I$(SEVENZ_DIR)
 ARCHIVE_WORKER_CXXFLAGS := -O3 -std=c++11 -Wall -fexceptions
+ARCHIVE_WORKER_CXXFLAGS += -MMD -MP
 ARCHIVE_WORKER_CXXFLAGS += -Wno-logical-op-parentheses -Wno-switch
 ARCHIVE_WORKER_CXXFLAGS += -Wno-dangling-else -Wno-unused-parameter -Wno-reorder
 ARCHIVE_WORKER_CXXFLAGS += -Wno-unused-function
 ARCHIVE_WORKER_CXXFLAGS += -Wno-unused-variable -Wno-unused-but-set-variable
 ARCHIVE_WORKER_CXXFLAGS += -Wno-missing-braces -Wno-nontrivial-memcall
 ARCHIVE_WORKER_CFLAGS := -O3 -Wall -Wno-unused-parameter
+ARCHIVE_WORKER_CFLAGS += -MMD -MP
 ARCHIVE_WORKER_LDFLAGS := -pthread -lSceNotification
 
 CC_CMD := $(PYTHON) compile_wrapper.py "$(CC)"
@@ -294,4 +297,5 @@ clean:
 	$(call run,rm -rf $(BFPILOT_BIN) $(LEGACY_HELPER_BINS) build gen)
 
 .SECONDARY: $(GEN_SRCS)
+-include $(BFPILOT_OBJS:.o=.d) $(BFPILOT_ARCHIVE_OBJS:.o=.d) $(PKG_WORKER_OBJ:.o=.d)
 .PHONY: all bfpilot inspect-imports clean deploy-bfpilot ps5-diag ps5-smoke ps5-storage-audit ps5-archive-perf ps5-transfer-perf

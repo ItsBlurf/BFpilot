@@ -976,6 +976,9 @@ static int RunUnrarExtract(const std::string &ArchivePath,const std::string &Des
   Cmd->FileArgs.AddString(MASKALL);
   Cmd->AllYes=true;
   Cmd->Overwrite=OVERWRITE_ALL;
+  /* Windows/read-only archive attributes must not remove execute/search bits
+   * from PS5 game dumps. The caller normalizes every format before publish. */
+  Cmd->IgnoreGeneralAttr=true;
   Cmd->DisableCopyright=true;
   Cmd->DisableDone=true;
   Cmd->DisableNames=true;
