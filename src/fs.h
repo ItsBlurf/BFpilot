@@ -18,7 +18,7 @@ typedef struct bfpilot_download_stats {
   unsigned int  buffer_size;
   int           buffer_aligned;
   int           error_code;
-  char          path[512];
+  char          path[1024];
 } bfpilot_download_stats_t;
 
 
@@ -27,3 +27,4 @@ int fs_request(const http_request_t *req, const char *url);
 uint8_t *fs_readfile(const char *path, size_t *size);
 
 void bfpilot_fs_get_download_stats(bfpilot_download_stats_t *out);
+void bfpilot_fs_record_download_stats(const bfpilot_download_stats_t *stats);

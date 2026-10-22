@@ -17,6 +17,7 @@ int bfpilot_io_open(bfpilot_io_t *, const char *, int flags, mode_t,
                     bfpilot_io_file_t **);
 ssize_t bfpilot_io_read(bfpilot_io_file_t *, void *, size_t);
 ssize_t bfpilot_io_write(bfpilot_io_file_t *, const void *, size_t);
+int bfpilot_io_seek(bfpilot_io_file_t *, off_t offset);
 int bfpilot_io_fstat(bfpilot_io_file_t *, struct stat *);
 int bfpilot_io_sync(bfpilot_io_file_t *);
 int bfpilot_io_chmod_file(bfpilot_io_file_t *,mode_t);

@@ -3038,9 +3038,13 @@
           });
           pollJob();
           const done = await waitJobIdle();
-          if (done.error) throw new Error(done.error);
+          if (done.error) {
+            const failure = new Error(done.error);
+            failure.errno = Number(done.errno || 0);
+            throw failure;
+          }
         } catch (err) {
-          if (err.message === 'destination already exists') {
+          if (err.errno === 17 || err.message === 'destination already exists') {
             const filename = entry.name;
             const isDir = entry.dir;
             const typeStr = isDir ? 'Folder' : 'File';

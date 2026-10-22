@@ -10,6 +10,7 @@
 
 
 int transfer_request(const http_request_t *req, const char *url);
+int transfer_remote_file_request(const http_request_t *req, const char *path);
 
 int transfer_upload_request(const http_request_t *req, const char *initial_data,
                             size_t initial_size, size_t content_size);

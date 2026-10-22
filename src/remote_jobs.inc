@@ -177,6 +177,8 @@ static int remote_copy_file(struct remote_copy *copy, const char *source,
       rc = closed;
   }
   free(buffer);
+  if (rc == -EAGAIN)
+    job_set_error("source changed during transfer: %s", source);
   if (rc) {
     atomic_fetch_add(&g_job.failed_files, 1);
     if (created)
@@ -219,12 +221,16 @@ static int remote_remove_entry(const char *path, const char *relative,
   int rc = bfpilot_io_lstat(remove->endpoint, path, &current);
   if (rc)
     return rc;
-  if (!remote_identity(st, &current, S_ISREG(st->st_mode)))
+  if (!remote_identity(st, &current, S_ISREG(st->st_mode))) {
+    job_set_error("source changed before removal: %s", path);
     return -EAGAIN;
+  }
   if (remove->verify) {
     const struct stat *old = remote_record_find(remove->copy, relative);
-    if (!old || !remote_identity(old, &current, S_ISREG(old->st_mode)))
+    if (!old || !remote_identity(old, &current, S_ISREG(old->st_mode))) {
+      job_set_error("source changed before removal: %s", path);
       return -EAGAIN;
+    }
   }
   if (remove->progress)
     job_set_current(path);
@@ -243,11 +249,12 @@ static int remote_remove_tree(bfpilot_io_t *endpoint, const char *path,
 }
 static int remote_verify_source(const char *path, const char *relative,
                                 const struct stat *st, void *context) {
-  (void)path;
   struct remote_copy *copy = context;
   const struct stat *old = remote_record_find(copy, relative);
-  if (!old || !remote_identity(old, st, 1))
+  if (!old || !remote_identity(old, st, 1)) {
+    job_set_error("source changed before move cleanup: %s", path);
     return -EAGAIN;
+  }
   return 0;
 }
 static int remote_merge_entry(const char *path, const char *relative,

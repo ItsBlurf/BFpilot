@@ -29,6 +29,7 @@
 #include "notify.h"
 #include "archive_worker.h"
 #include "fs.h"
+#include "mime.h"
 #include "smb.h"
 #include "remote_io.h"
 #include "path_ops.h"
@@ -2886,9 +2887,22 @@ download_collect_paths(const char *body, char ***paths_out,
          return -1;
        }
        (void)bfpilot_path_decode_byte_tokens(decoded);
-       if(!path_is_safe(decoded) ||
-          path_for_list(decoded, resolved, sizeof(resolved)) != 0 ||
-         lstat(resolved, &st) != 0 ||
+       bfpilot_io_t *endpoint = NULL;
+       int path_rc = -EINVAL;
+       /* SMB paths are virtual and cannot be resolved with local lstat/CI. */
+       int resolved_rc = -EINVAL;
+       if(path_is_safe(decoded)) {
+         if(bfpilot_smb_path(decoded)) {
+           resolved_rc = bfpilot_smb_validate_path(decoded);
+           if(!resolved_rc) snprintf(resolved, sizeof(resolved), "%s", decoded);
+         } else resolved_rc = path_for_list(decoded, resolved, sizeof(resolved));
+       }
+       if(!resolved_rc) {
+         path_rc = bfpilot_io_endpoint(resolved, &endpoint);
+         if(!path_rc) path_rc = bfpilot_io_lstat(endpoint, resolved, &st);
+         bfpilot_io_end(endpoint);
+       }
+       if(path_rc ||
          (!S_ISREG(st.st_mode) && !S_ISDIR(st.st_mode))) {
         download_free_paths(paths, count);
         errno = count >= BFPILOT_DOWNLOAD_MAX_PATHS ? E2BIG : EINVAL;
@@ -3659,6 +3673,8 @@ download_stream_regular(const http_request_t *req, const char *path,
 }
 
 
+#include "remote_download.inc"
+
 static int
 download_stream_request(const http_request_t *req) {
   char id_text[32];
@@ -3690,6 +3706,14 @@ download_stream_request(const http_request_t *req) {
   if(!buffer) {
     saved_errno = ENOMEM;
     goto done;
+  }
+
+  for(size_t i = 0; i < count; i++) {
+    if(bfpilot_smb_path(paths[i])) {
+      rc = remote_download_request(req, paths, count, buffer);
+      saved_errno = rc ? (errno ? errno : EIO) : 0;
+      goto done;
+    }
   }
 
   if(count == 1 && lstat(paths[0], &first) == 0 && S_ISREG(first.st_mode)) {
@@ -4924,6 +4948,8 @@ sync_writeback_checkpoint(int fd, unsigned long long *bytes_since_sync,
 }
 
 
+#include "remote_upload.inc"
+
 int
 transfer_upload_request(const http_request_t *req, const char *initial_data,
                         size_t initial_size, size_t content_size) {
@@ -4972,6 +4998,9 @@ transfer_upload_request(const http_request_t *req, const char *initial_data,
     drain_body(req->fd, initial_size, content_size);
     return serve_error(req, 400, "upload path too long");
   }
+  if(bfpilot_smb_path(final_path))
+    return remote_upload_request(req, dir, final_path, initial_data,
+                                  initial_size, content_size);
   if(!job_begin("upload")) {
     drain_body(req->fd, initial_size, content_size);
     return serve_error(req, 409, "another file-manager job is running");

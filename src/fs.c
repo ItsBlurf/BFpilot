@@ -22,6 +22,8 @@
 #include "fs.h"
 #include "mime.h"
 #include "path_ops.h"
+#include "smb.h"
+#include "transfer.h"
 #include "websrv.h"
 
 
@@ -65,6 +67,13 @@ bfpilot_fs_get_download_stats(bfpilot_download_stats_t *out) {
   pthread_mutex_unlock(&g_download_lock);
 }
 
+
+void bfpilot_fs_record_download_stats(const bfpilot_download_stats_t *stats) {
+  if (!stats) return;
+  pthread_mutex_lock(&g_download_lock);
+  g_download_stats = *stats;
+  pthread_mutex_unlock(&g_download_lock);
+}
 
 static void
 record_download(const char *path, const struct stat *st, size_t bytes,
@@ -441,6 +450,8 @@ fs_request(const http_request_t *req, const char *url) {
   if(!bfpilot_path_is_safe(path)) {
     return websrv_send_error_json(req->fd, 400, "unsafe path");
   }
+
+  if(bfpilot_smb_path(path)) return transfer_remote_file_request(req, path);
 
   if(stat(path, &st) != 0) {
     return websrv_send_error_json(req->fd, 404, strerror(errno));

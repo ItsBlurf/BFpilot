@@ -37,6 +37,15 @@ struct bfpilot_io_dir {
   struct smb2dir *remote;
   unsigned count;
 };
+int bfpilot_io_seek(bfpilot_io_file_t *file, off_t offset) {
+  if (!file || offset < 0) return -EINVAL;
+  if (file->remote) {
+    int64_t rc = smb2_lseek(file->endpoint->smb, file->remote, offset,
+                            SEEK_SET, NULL);
+    return rc < 0 ? (int)rc : 0;
+  }
+  return lseek(file->fd, offset, SEEK_SET) < 0 ? -errno : 0;
+}
 static int remote_path(bfpilot_io_t *endpoint, const char *path,
                        const char **relative) {
   if (!endpoint || !path || !endpoint->smb)
