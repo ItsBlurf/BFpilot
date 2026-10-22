@@ -27,40 +27,16 @@
 #include <ps5/kernel.h>
 #include <ps5/payload.h>
 #include "pkg_protocol.h"
+#include "appinst_pkg_abi.h"
+#include "pkg_worker_uri.h"
 
 #define PKG_WORKER_PORT 9041
-#define PKG_WORKER_PROTOCOL "BFPKG/1"
+#define PKG_WORKER_PROTOCOL "BFPKG/2"
 #define PKG_PATH_CAPACITY 1040
 #define INIT_TIMEOUT_SECONDS 10
 #define INIT_TIMEOUT_SENTINEL (-0xDEAD)
 #define PS5_SHELLCORE_AUTHID UINT64_C(0x3800000000000010)
 #define PS5_SYSTEM_INSTALL_AUTHID UINT64_C(0x4801000000000013)
-
-typedef struct appinst_metadata {
-  const char *uri;
-  const char *ex_uri;
-  const char *playgo_scenario_id;
-  const char *content_id;
-  const char *content_name;
-  const char *icon_url;
-} appinst_metadata_t;
-
-typedef struct appinst_pkg_info {
-  char content_id[48];
-  int32_t content_type;
-  int32_t content_platform;
-} appinst_pkg_info_t;
-
-typedef struct appinst_playgo_info {
-  char languages[30][8];
-  char playgo_scenario_ids[64][3];
-  char content_ids[64][48];
-  unsigned char unknown[6480];
-} appinst_playgo_info_t;
-
-_Static_assert(sizeof(appinst_pkg_info_t) == 56, "AppInst pkg-info ABI");
-_Static_assert(sizeof(appinst_playgo_info_t) == 9984,
-               "AppInst PlayGo ABI");
 
 int sceAppInstUtilInitialize(void);
 int sceAppInstUtilInstallByPackage(const appinst_metadata_t *,
@@ -232,29 +208,40 @@ map_install_path(const char *path, char *output, size_t output_size) {
 }
 
 static int
-install_package(const char *path, char content_id[48]) {
-  char install_path[PKG_PATH_CAPACITY];
-  if(!path_is_safe(path) ||
-     map_install_path(path, install_path, sizeof(install_path)) != 0) {
-    return -EINVAL;
-  }
-
+install_metadata(const char *uri, const char *cid, const char *name,
+                   char content_id[48]) {
   appinst_pkg_info_t pkg_info;
   appinst_playgo_info_t playgo;
   memset(&pkg_info, 0, sizeof(pkg_info));
   memset(&playgo, 0, sizeof(playgo));
   appinst_metadata_t metadata = {
-      .uri = install_path,
+      .uri = uri,
       .ex_uri = "",
       .playgo_scenario_id = "",
-      .content_id = "",
-      .content_name = "",
+      .content_id = cid,
+      .content_name = name,
       .icon_url = "",
+      .slot = 0,
+      .is_playgo_enabled = 0,
   };
   int rc = sceAppInstUtilInstallByPackage(&metadata, &pkg_info, &playgo);
   pkg_info.content_id[sizeof(pkg_info.content_id) - 1] = 0;
   snprintf(content_id, 48, "%s", pkg_info.content_id);
   return rc;
+}
+static int
+install_package(const char *path, char content_id[48]) {
+  char install_path[PKG_PATH_CAPACITY];
+  if(!path_is_safe(path) ||
+     map_install_path(path, install_path, sizeof(install_path)) != 0)
+    return -EINVAL;
+  return install_metadata(install_path, "", "", content_id);
+}
+static int
+install_uri(char *text, char content_id[48]) {
+  char *uri, *cid, *name;
+  if (!bfpilot_pkg_parse_uri_request(text, &uri, &cid, &name)) return -EINVAL;
+  return install_metadata(uri, cid, name, content_id);
 }
 
 int
@@ -316,14 +303,16 @@ main(void) {
       } else if(!strcmp(request, "STOP")) {
         snprintf(response, sizeof(response), "OK STOP");
         stop = 1;
-      } else if(!strncmp(request, "INSTALL ", 8)) {
+      } else if(!strncmp(request, "INSTALL ", 8) || !strncmp(request, "INSTALLURL ", 11)) {
         int init_rc = wait_for_appinst_initialize(INIT_TIMEOUT_SECONDS);
         if(init_rc != 0) {
           snprintf(response, sizeof(response), "ERR INIT 0x%08X",
                    (unsigned)init_rc);
         } else {
           char content_id[48] = {0};
-          int rc = install_package(request + 8, content_id);
+          int rc = !strncmp(request, "INSTALLURL ", 11)
+              ? install_uri(request + 11, content_id)
+              : install_package(request + 8, content_id);
           if(rc == 0) {
             snprintf(response, sizeof(response), "OK INSTALL %.47s",
                      content_id);

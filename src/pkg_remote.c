@@ -65,3 +65,20 @@ int bfpilot_pkg_remote_icon(const char *path,void **buffer,size_t *size) {
   if(rc){free(*buffer);*buffer=NULL;*size=0;}
   return rc;
 }
+int bfpilot_pkg_remote_stamp(const char *path, bfpilot_pkg_source_stamp_t *stamp,
+                             bfpilot_pkg_file_info_t *info) {
+  if (!stamp || !info) return -EINVAL;
+  memset(stamp, 0, sizeof(*stamp));
+  remote_pkg_t source; bfpilot_pkg_reader_t reader;
+  int rc = open_reader(path, &source, &reader);
+  if (!rc && (!S_ISREG(source.before.st_mode) || reader.size < sizeof(stamp->header))) rc = -EINVAL;
+  if (!rc) rc = read_at(&source, stamp->header, sizeof(stamp->header), 0);
+  if (!rc) rc = bfpilot_pkg_header_validate(stamp->header, sizeof(stamp->header), reader.size, info);
+  if (!rc && bfpilot_pkg_file_is_system(info)) rc = -ENOTSUP;
+  if (!rc) {
+    stamp->size = reader.size; stamp->inode = (uint64_t)source.before.st_ino;
+    stamp->mtime_sec = source.before.st_mtim.tv_sec;
+    stamp->mtime_nsec = source.before.st_mtim.tv_nsec;
+  }
+  return close_reader(&source, rc);
+}

@@ -239,7 +239,7 @@ pkg_worker(void *argument) {
     unsigned int percent = (unsigned int)(((i + 1) * 100U) / job->count);
     (void)write_status("submitting", job->items[i].path,
                        last_result == 0 ? "AppInst accepted this package"
-                                        : "AppInst rejected this package",
+                                        : "package submission failed or is unconfirmed; check PS5 notifications before retrying",
                        reported_content_id, reported_title_id, job->count,
                        submitted_count, failed_count, job->total_bytes,
                        percent, &last_submit, last_result);
@@ -251,8 +251,8 @@ pkg_worker(void *argument) {
   const char *message = failed_count == 0
       ? "AppInst accepted the queue; monitor PS5 notifications"
       : submitted_count == 0
-          ? "AppInst rejected the package queue"
-          : "some packages were accepted and some were rejected";
+          ? "package submissions failed or are unconfirmed; check PS5 notifications before retrying"
+          : "some packages were accepted; others failed or are unconfirmed; check PS5 notifications before retrying";
   size_t last = job->count - 1;
   const char *reported_content_id = job->items[last].info.content_id[0]
       ? job->items[last].info.content_id : last_submit.content_id;

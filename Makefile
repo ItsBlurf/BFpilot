@@ -24,8 +24,8 @@ PYTHON ?= python3
 # Ship / daily use must stay 5905.
 WEB_PORT ?= 5905
 
-VERSION_TAG := bfpilot-v0.4.5-dev.20
-BUILD_VERSION ?= v0.4.5-dev.20
+VERSION_TAG := bfpilot-v0.4.5-dev.21
+BUILD_VERSION ?= v0.4.5-dev.21
 
 LLVM_CONFIG ?= $(if $(wildcard $(PS5_PAYLOAD_SDK)/bin/prospero-llvm-config),$(PS5_PAYLOAD_SDK)/bin/prospero-llvm-config,$(CURDIR)/build-tools/llvm-config)
 LLVM_BINDIR ?= $(shell "$(LLVM_CONFIG)" --bindir 2>/dev/null || dirname "$$(command -v clang 2>/dev/null || command -v clang.exe 2>/dev/null || command -v llvm-strip 2>/dev/null || command -v llvm-strip.exe 2>/dev/null || echo clang)" 2>/dev/null || echo .)
@@ -39,6 +39,8 @@ SMB_INPUTS := $(wildcard third_party/libsmb2/lib/*.[ch] third_party/libsmb2/incl
 FULL_ARCHIVE_INPUTS := $(shell find third_party/wfm-7zip-helper -path '*/_o_*' -prune -o -type f ! -name '*.elf' -print)
 PKG_WORKER_BIN := build/internal/bfpilot-pkg-worker.elf
 PKG_WORKER_OBJ := build/internal/pkg_worker_main.o
+PKG_SOURCE_BIN := build/internal/bf-pkg-source.elf
+PKG_SOURCE_INPUTS := $(wildcard src/pkg_source*.[ch]) src/remote_io.c src/remote_io.h src/smb.c src/smb.h src/path_ops.c src/path_ops.h src/fs_at.c src/fs_at.h src/pkg_file.c src/pkg_file.h src/paths.h
 LEGACY_HELPER_BINS := bfpilot-launcher-installer.elf
 LEGACY_HELPER_BINS += bfpilot-archive-worker.elf bfpilot-pkg-installer.elf
 
@@ -69,6 +71,7 @@ WEB_SRCS += src/pkg_install.c
 WEB_SRCS += src/pkg_file.c
 WEB_SRCS += src/pkg_remote.c
 WEB_SRCS += src/pkg_worker_client.c
+WEB_SRCS += src/pkg_source_client.c src/pkg_source_codec.c src/pkg_source_wire_io.c
 WEB_SRCS += src/appinst_direct.c
 
 ARCHIVE_WORKER_SRCS := src/archive_worker.cpp
@@ -153,6 +156,8 @@ ENABLE_ARCHIVE := 1
 
 BFPILOT_CFLAGS := $(COMMON_CFLAGS)
 BFPILOT_CFLAGS += -DBFPILOT_ENABLE_REMOTE_PKG=1
+BFPILOT_CFLAGS += -DBFPILOT_ENABLE_REMOTE_PKG_INSTALL=1
+BFPILOT_CFLAGS += -DBFPILOT_PKG_SOURCE_EMBED=1
 BFPILOT_CFLAGS += -DBFPILOT_PAYLOAD_NAME=\"bfpilot\"
 BFPILOT_CFLAGS += -DBFPILOT_BUILD_MODE=\"file-manager\"
 BFPILOT_CFLAGS += -DBFPILOT_WEB_PORT=$(WEB_PORT)
@@ -253,9 +258,9 @@ build/bfpilot/%.o: %.c Makefile
 
 # The worker is embedded as bytes in the public bfpilot.elf. It is never a
 # release artifact and exists in build/ only long enough to feed .incbin.
-$(PKG_WORKER_OBJ): src/pkg_worker_main.c Makefile
+$(PKG_WORKER_OBJ): src/pkg_worker_main.c src/pkg_protocol.h src/appinst_pkg_abi.h src/pkg_worker_uri.h src/pkg_source_wire.h Makefile
 	$(call run,mkdir -p $(dir $@))
-	$(call run,$(CC_CMD) -Os -Wall -Wextra -Werror -Isrc -c $< -o $@)
+	$(call run,$(CC_CMD) -Os -Wall -Wextra -Werror -MMD -MP -Isrc -c $< -o $@)
 
 ifeq ($(HOST_IS_WINDOWS),1)
 $(PKG_WORKER_BIN): $(PKG_WORKER_OBJ)
@@ -268,6 +273,11 @@ $(PKG_WORKER_BIN): $(PKG_WORKER_OBJ)
 endif
 
 build/bfpilot/src/pkg_worker_client.o: $(PKG_WORKER_BIN)
+
+$(PKG_SOURCE_BIN): $(PKG_SOURCE_INPUTS) $(SMB_LIBRARY) scripts/build_pkg_source.py Makefile
+	$(call run,$(PYTHON) scripts/build_pkg_source.py)
+
+build/bfpilot/src/pkg_source_client.o: $(PKG_SOURCE_BIN)
 
 $(FULL_ARCHIVE_BIN): $(FULL_ARCHIVE_INPUTS) scripts/build_full_archive_helper.py src/fs_at.c src/fs_at.h
 	$(call run,$(PYTHON) scripts/build_full_archive_helper.py)

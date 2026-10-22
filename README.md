@@ -159,6 +159,13 @@ Third-party code under `third_party/` keeps its own licenses.
 The upstream audit and adopt/reject rationale are documented in
 [docs/UPSTREAM_FILE_MANAGER_COMPARISON.md](docs/UPSTREAM_FILE_MANAGER_COMPARISON.md).
 
+SMB PKG sources stream through an embedded loopback service and stay available
+across ordinary BFpilot exit/reload. Keep the SMB server and source files
+available until the PS5 finishes installing. Queue progress reports accepted
+submissions, not completed installations. If a submission response is lost,
+check PS5 notifications before retrying; its source is retained because Sony
+may already have accepted it. Sources expire after 24 hours without activity.
+
 The controller-friendly layout and PKG installation implementation were inspired by
 [owendswang/ps5-web-file-manager](https://github.com/owendswang/ps5-web-file-manager).
 

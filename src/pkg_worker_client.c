@@ -15,9 +15,14 @@
 #include "diag.h"
 #include "payload_launch.h"
 #include "pkg_file.h"
+#include "pkg_remote.h"
+#include "pkg_source_client.h"
+#include "pkg_worker_uri.h"
+#include "path_ops.h"
+#include "smb.h"
 
 #define PKG_WORKER_PORT 9041
-#define PKG_WORKER_PROTOCOL "BFPKG/1"
+#define PKG_WORKER_PROTOCOL "BFPKG/2"
 #define PKG_WORKER_INIT_PENDING (-0xDEAD)
 
 #define INCASSET(name, file)                                                   \
@@ -112,6 +117,8 @@ worker_ping(bfpilot_appinst_result_t *result) {
   if(sscanf(response, "READY " PKG_WORKER_PROTOCOL
                      " fw=%d init=0x%x identity=%d",
             &major, &init, &identity) != 3) {
+    if (sscanf(response, "READY BFPKG/1 fw=%d init=0x%x identity=%d", &major, &init, &identity) == 3)
+      return -EPROTONOSUPPORT;
     bfpilot_log("pkg worker: unexpected handshake: %s", response);
     return -EPROTO;
   }
@@ -154,6 +161,11 @@ launch_worker(bfpilot_appinst_result_t *result) {
 
 int
 bfpilot_pkg_worker_stop(void) {
+  bfpilot_appinst_result_t identity;
+  result_init(&identity);
+  int ping = worker_ping(&identity);
+  if (worker_is_absent(ping)) return 0;
+  if (ping == -EPROTO) return ping;
   char response[64];
   int rc = worker_request("STOP", response, sizeof(response));
   if(worker_is_absent(rc)) return 0;
@@ -173,6 +185,9 @@ ensure_worker(bfpilot_appinst_result_t *result) {
 
   if(worker_is_absent(rc)) return launch_worker(result);
 
+  /* Do not send STOP to an unidentified service occupying our private port. */
+  if (rc == -EPROTO) return rc;
+
   /* A reachable worker with a failed init/identity or stale protocol must not
      poison every later install. Retire it once, then start the embedded copy. */
   int stop_rc = bfpilot_pkg_worker_stop();
@@ -188,37 +203,63 @@ ensure_worker(bfpilot_appinst_result_t *result) {
 int
 bfpilot_appinst_install_pkg(const char *path, const char *content_name,
                             bfpilot_appinst_result_t *result) {
-  (void)content_name;
   if(!path || !path[0] || !result) return -EINVAL;
   result_init(result);
 
   bfpilot_pkg_file_info_t info;
   char validation_error[256];
-  int rc = bfpilot_pkg_file_validate(path, &info, validation_error,
-                                     sizeof(validation_error));
+  int remote = bfpilot_smb_path(path);
+  bfpilot_pkg_source_stamp_t stamp;
+  int rc = remote ? bfpilot_pkg_remote_stamp(path, &stamp, &info)
+      : bfpilot_pkg_file_validate(path, &info, validation_error,
+                                  sizeof(validation_error));
   if(rc != 0) return rc;
   if(bfpilot_pkg_file_is_system(&info)) return -ENOTSUP;
 
   rc = ensure_worker(result);
+  char source_uri[128] = "";
+  if (!rc && remote) rc = bfpilot_pkg_source_register(path, &stamp, source_uri, sizeof(source_uri));
   if(rc == 0) {
     char request[1050];
     char response[192];
-    int length = snprintf(request, sizeof(request), "INSTALL %s", path);
+    int length;
+    if (remote) {
+      char name[256]; size_t used = 0;
+      const unsigned char *text = (const unsigned char *)(content_name && *content_name ? content_name : "Package");
+      size_t remaining = strlen((const char *)text);
+      while (remaining) {
+        size_t n = bfpilot_utf8_sequence_length(text);
+        if (!n || n > remaining || used + n >= sizeof(name) || *text < 32 || *text == 127) break;
+        memcpy(name + used, text, n); used += n; text += n; remaining -= n;
+      }
+      name[used] = 0;
+      if (!used) snprintf(name, sizeof(name), "Package");
+      length = snprintf(request, sizeof(request), "INSTALLURL %s\t%s\t%s", source_uri, info.content_id[0] ? info.content_id : "-", name);
+      /* Validate the exact command before any bytes can be submitted. */
+      char copy[1050], *uri, *cid, *title;
+      snprintf(copy, sizeof(copy), "%s", request + 11);
+      if (!bfpilot_pkg_parse_uri_request(copy, &uri, &cid, &title)) length = -1;
+    } else length = snprintf(request, sizeof(request), "INSTALL %s", path);
     if(length < 0 || (size_t)length >= sizeof(request)) {
       rc = -ENAMETOOLONG;
+      if (source_uri[0]) (void)bfpilot_pkg_source_drop(source_uri);
     } else {
       rc = worker_request(request, response, sizeof(response));
-      if(rc == 0 && !strncmp(response, "OK INSTALL", 10)) {
+      if(rc == 0 && !strncmp(response, "OK INSTALL", 10) &&
+         (response[10] == 0 || response[10] == ' ')) {
         const char *content_id = response + 10;
         while(*content_id == ' ') content_id++;
         snprintf(result->content_id, sizeof(result->content_id), "%s",
                  content_id);
         rc = 0;
       } else if(rc == 0) {
-        unsigned int sony_rc = 0;
-        if(sscanf(response, "ERR INSTALL 0x%x", &sony_rc) == 1 ||
-           sscanf(response, "ERR INIT 0x%x", &sony_rc) == 1) {
+        unsigned int sony_rc = 0; int consumed = 0;
+        if((sscanf(response, "ERR INSTALL 0x%x%n", &sony_rc, &consumed) == 1 && response[consumed] == 0 && sony_rc) ||
+           (sscanf(response, "ERR INIT 0x%x%n", &sony_rc, &consumed) == 1 && response[consumed] == 0 && sony_rc)) {
           rc = (int32_t)sony_rc;
+          /* Only an explicit negative response proves non-acceptance. A lost
+           * response can follow successful submission and retains its source. */
+          if (source_uri[0] && rc) (void)bfpilot_pkg_source_drop(source_uri);
         } else {
           rc = -EPROTO;
         }
