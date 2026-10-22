@@ -24,8 +24,8 @@ PYTHON ?= python3
 # Ship / daily use must stay 5905.
 WEB_PORT ?= 5905
 
-VERSION_TAG := bfpilot-v0.4.5-dev.6
-BUILD_VERSION ?= v0.4.5-dev.6
+VERSION_TAG := bfpilot-v0.4.5-dev.8
+BUILD_VERSION ?= v0.4.5-dev.8
 
 LLVM_CONFIG ?= $(if $(wildcard $(PS5_PAYLOAD_SDK)/bin/prospero-llvm-config),$(PS5_PAYLOAD_SDK)/bin/prospero-llvm-config,$(CURDIR)/build-tools/llvm-config)
 LLVM_BINDIR ?= $(shell "$(LLVM_CONFIG)" --bindir 2>/dev/null || dirname "$$(command -v clang 2>/dev/null || command -v clang.exe 2>/dev/null || command -v llvm-strip 2>/dev/null || command -v llvm-strip.exe 2>/dev/null || echo clang)" 2>/dev/null || echo .)
@@ -33,6 +33,8 @@ export LLVM_BINDIR
 export LLVM_CONFIG
 
 BFPILOT_BIN := bfpilot.elf
+FULL_ARCHIVE_BIN := build/internal/bfpilot-full-archive.elf
+FULL_ARCHIVE_INPUTS := $(shell find third_party/wfm-7zip-helper -path '*/_o_*' -prune -o -type f ! -name '*.elf' -print)
 PKG_WORKER_BIN := build/internal/bfpilot-pkg-worker.elf
 PKG_WORKER_OBJ := build/internal/pkg_worker_main.o
 LEGACY_HELPER_BINS := bfpilot-launcher-installer.elf
@@ -57,6 +59,7 @@ WEB_SRCS += src/tree_walk.c
 WEB_SRCS += src/staging.c
 WEB_SRCS += src/fs_at.c
 WEB_SRCS += src/url_codec.c
+WEB_SRCS += src/full_archive_client.c
 WEB_SRCS += src/pkg_install.c
 WEB_SRCS += src/pkg_file.c
 WEB_SRCS += src/pkg_worker_client.c
@@ -148,6 +151,7 @@ BFPILOT_CFLAGS += -DBFPILOT_BUILD_MODE=\"file-manager\"
 BFPILOT_CFLAGS += -DBFPILOT_WEB_PORT=$(WEB_PORT)
 BFPILOT_CFLAGS += -DBFPILOT_DEBUG_NOTIFICATIONS=0
 BFPILOT_CFLAGS += -DBFPILOT_BOOT_NOTIFY=0
+BFPILOT_CFLAGS += -DBFPILOT_FULL_ARCHIVE_EMBED=1
 # Tile registration and the embedded PKG worker are always in this one file.
 # Match established PS5 payloads by linking AppInst together with SceIpmi.
 BFPILOT_CFLAGS += -DBFPILOT_ENABLE_INTEGRATED_ARCHIVE=$(ENABLE_ARCHIVE)
@@ -256,6 +260,11 @@ $(PKG_WORKER_BIN): $(PKG_WORKER_OBJ)
 endif
 
 build/bfpilot/src/pkg_worker_client.o: $(PKG_WORKER_BIN)
+
+$(FULL_ARCHIVE_BIN): $(FULL_ARCHIVE_INPUTS) scripts/build_full_archive_helper.py src/fs_at.c src/fs_at.h
+	$(call run,$(PYTHON) scripts/build_full_archive_helper.py)
+
+build/bfpilot/src/full_archive_client.o: $(FULL_ARCHIVE_BIN)
 
 build/bfpilot-archive/%.o: %.cpp Makefile
 	$(call run,mkdir -p $(dir $@))

@@ -1,0 +1,81 @@
+PROG := wfm-7zip-helper-linux
+BUILD_DIR := _o_linux
+SOURCES := Main.cpp WfmProtocol.cpp
+OBJECTS := $(SOURCES:%.cpp=$(BUILD_DIR)/%.o)
+include EngineObjects.mk
+OBJECTS += $(ENGINE_OBJECTS)
+OBJECTS += $(BUILD_DIR)/engine/BfpilotFsAt.o
+
+CC ?= cc
+CXX ?= c++
+STRIP ?= strip
+CPPFLAGS := -I. -DWFM_DEBUG=1 -DWFM_PERF=1 -DWFM_RAR_LARGE_OUTPUT=1 -DZ7_EXTRACT_ONLY=1
+CFLAGS := -Os -Wall -Wextra -Werror -ffunction-sections -fdata-sections -pthread
+CXXFLAGS := $(CFLAGS) -fno-exceptions -fno-rtti
+ENGINE_CXXFLAGS := $(CFLAGS) -fno-rtti
+LDFLAGS := -pthread -Wl,--gc-sections
+LDLIBS :=
+
+.PHONY: all clean test-output test-input test-input-release
+
+$(BUILD_DIR)/engine/BfpilotFsAt.o: ../../../../../../src/fs_at.c ../../../../../../src/fs_at.h
+	@mkdir -p $(dir $@)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
+
+all: $(PROG)
+
+$(BUILD_DIR)/EngineExtractTest: tests/EngineExtractTest.cpp WfmEngine.h $(ENGINE_OBJECTS)
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(LDFLAGS) $< $(ENGINE_OBJECTS) -o $@
+
+test-input: $(BUILD_DIR)/ReadAheadTest
+	timeout 30s $<
+
+test-input-release: $(BUILD_DIR)/ReadAheadReleaseTest
+	timeout 30s $<
+
+$(BUILD_DIR)/ReadAheadReleaseTest: tests/ReadAheadTest.cpp WfmReadAhead.cpp WfmReadAhead.h WfmPerf.cpp WfmPerf.h EngineGuids.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) -std=c++11 -DWFM_DEBUG=0 -O1 -g -fno-rtti -fsanitize=address,undefined \
+	  -ffunction-sections -fdata-sections -pthread -Wl,--gc-sections \
+	  -Wl,--wrap=pthread_create $< WfmReadAhead.cpp WfmPerf.cpp -o $@
+
+PERF_TEST_OBJECTS := $(addprefix $(BUILD_DIR)/engine/,Aes.o AesOpt.o CpuArch.o)
+
+$(BUILD_DIR)/ReadAheadTest: tests/ReadAheadTest.cpp WfmReadAhead.cpp WfmReadAhead.h WfmPerf.cpp WfmPerf.h EngineGuids.cpp $(PERF_TEST_OBJECTS)
+	@mkdir -p $(dir $@)
+	$(CXX) -std=c++11 -O1 -g -fno-rtti -fsanitize=address,undefined \
+	  -ffunction-sections -fdata-sections -pthread -Wl,--gc-sections \
+	  -Wl,--wrap=pthread_create $< WfmReadAhead.cpp WfmPerf.cpp $(PERF_TEST_OBJECTS) -o $@
+
+$(BUILD_DIR)/engine/WfmEngine.o $(BUILD_DIR)/engine/WfmPerf.o $(BUILD_DIR)/engine/FileStreams.o: WfmPerf.h
+$(BUILD_DIR)/engine/WfmEngine.o $(BUILD_DIR)/engine/WfmReadAhead.o: WfmReadAhead.h
+$(BUILD_DIR)/engine/WfmReadAhead.o: WfmPerf.h
+$(BUILD_DIR)/engine/Rar5Decoder.o $(BUILD_DIR)/engine/WfmPerf.o: makefile.linux
+
+test-output: $(BUILD_DIR)/OutputStreamTest
+	timeout 30s $<
+
+$(BUILD_DIR)/OutputStreamTest: tests/OutputStreamTest.cpp WfmEngine.cpp WfmEngine.h WfmPerf.cpp WfmPerf.h EngineGuids.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) -std=c++11 -O1 -g -fno-rtti -fsanitize=address,undefined \
+	  -ffunction-sections -fdata-sections -pthread -Wl,--gc-sections \
+	  -Wl,--wrap=write -Wl,--wrap=pthread_create -Wl,--wrap=malloc $< WfmPerf.cpp -o $@
+
+$(PROG): $(OBJECTS)
+	$(CXX) $(LDFLAGS) -o $@ $^ $(LDLIBS)
+	$(STRIP) $@
+
+$(BUILD_DIR)/%.o: %.cpp WfmProtocol.h
+	@mkdir -p $(dir $@)
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/engine/%.o: %.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(CPPFLAGS) $(ENGINE_CXXFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/engine/%.o: %.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
+
+clean:
+	rm -rf $(BUILD_DIR) $(PROG)

@@ -1,0 +1,7 @@
+# Helper build outputs copied to the repository root.
+/wfm-7zip-helper.elf
+/wfm-7zip-helper-linux
+_o_ps5/
+_o_linux/
+# Standalone 7-Zip build output.
+/CPP/7zip/Bundles/Alone2/_o/

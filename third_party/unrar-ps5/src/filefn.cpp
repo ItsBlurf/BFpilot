@@ -195,11 +195,15 @@ bool FileExist(const std::wstring &Name)
 {
 #ifdef _WIN_ALL
   return GetFileAttr(Name)!=0xffffffff;
-#elif defined(ENABLE_ACCESS)
+#elif defined(ENABLE_ACCESS) && !defined(PS5_PAYLOAD)
   std::string NameA;
   WideToChar(Name,NameA);
   return access(NameA.c_str(),0)==0;
 #else
+  // PS5 payloads can have a real UID different from their effective UID.
+  // access(F_OK) checks the real UID and falsely rejects an existing entry
+  // below our private 0700 stage. Metadata lookup matches extraction's actual
+  // effective permissions and does not weaken the stage's access mode.
   FindData FD;
   return FindFile::FastFind(Name,&FD);
 #endif

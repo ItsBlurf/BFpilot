@@ -5,6 +5,7 @@
  */
 
 #include "archive_worker.h"
+#include "full_archive_client.h"
 #include "tree_chmod.h"
 #include "tree_walk.h"
 #include "staging.h"
@@ -56,6 +57,8 @@ extern "C" int posix_fallocate(int fd, off_t offset, off_t len);
 #define BFPILOT_ARCHIVE_STATUS_TMP BFPILOT_ARCHIVE_DIR "/status.tmp"
 #define BFPILOT_ARCHIVE_LOG BFPILOT_ARCHIVE_DIR "/archive-worker.log"
 #define BFPILOT_ARCHIVE_DAEMON_LOCK BFPILOT_ARCHIVE_DIR "/daemon.lock"
+#define BFPILOT_FULL_ACTIVE BFPILOT_ARCHIVE_DIR "/full-active.ini"
+#define BFPILOT_FULL_ACTIVE_TMP BFPILOT_ARCHIVE_DIR "/full-active.tmp"
 
 #define ZIP_SIG_LOCAL 0x04034b50U
 #define ZIP_SIG_CENTRAL 0x02014b50U
@@ -100,6 +103,11 @@ struct WorkerStatus {
   unsigned long long total_files = 0;
   unsigned threads = 0;
   unsigned effective_threads = 0;
+  bool full_engine = false;
+  bool helper_quiescent = true;
+  bool helper_task_admitted = false;
+  unsigned long long helper_task_id = 0;
+  unsigned long long decoder_done = 0, decoder_total = 0;
   int percent = 0;
   int errno_code = 0;
   int archive_exit_code = 0;
@@ -312,6 +320,7 @@ IsAllowedArchivePath(const std::string &path) {
 }
 
 static bool g_stage_owned = false;
+static bool g_full_marker_pending = false;
 static int RemoveStageEntry(const char *path, const char *, const struct stat *expected, void *) {
   struct stat st;
   if(lstat(path, &st) != 0) return -errno;
@@ -692,9 +701,10 @@ WriteStatus(bool force) {
   }
   std::unique_ptr<char[]> body(new(std::nothrow) char[capacity]);
   if(!body) return;
-  const bool rar = g_status.archive_type == "rar";
+  const bool full = g_status.full_engine;
+  const bool rar = g_status.archive_type == "rar" && !full;
   const bool done = g_status.state == "done";
-  const bool total_known = !rar || done;
+  const bool total_known = full ? done : !rar || done;
   const unsigned long long displayed_total = rar ? (done ? output_bytes : 0) : g_status.total_bytes;
   const unsigned long long displayed_written = rar ? output_bytes : g_status.bytes_written;
   const int displayed_percent = done ? 100 : rar ? 0 : std::min(99, g_status.percent);
@@ -707,7 +717,10 @@ WriteStatus(bool force) {
       "\"source\":\"%s\",\"destination\":\"%s\",\"stage\":\"%s\","
       "\"current\":\"%s\",\"error\":\"%s\","
       "\"percent\":%d,\"totalBytes\":%llu,\"bytesWritten\":%llu,"
-      "\"totalKnown\":%s,\"progressUnit\":\"output-bytes\","
+      "\"totalKnown\":%s,\"progressUnit\":\"%s\","
+      "\"fullEngine\":%s,\"helperQuiescent\":%s,\"helperTaskId\":%llu,"
+      "\"decoderBytesDone\":%llu,\"decoderBytesTotal\":%llu,"
+      "\"metricsScope\":\"%s\",\"cpuAvailable\":%s,"
       "\"packedBytesProcessed\":%llu,\"packedTotalBytes\":%llu,"
       "\"filesDone\":%llu,\"totalFiles\":%llu,"
       "\"elapsedMs\":%ld,\"averageMBps\":%.2f,\"errno\":%d,"
@@ -736,16 +749,20 @@ WriteStatus(bool force) {
       escaped[5].c_str(),
       escaped[6].c_str(),
       displayed_percent, displayed_total, displayed_written,
-      total_known ? "true" : "false", rar ? g_status.bytes_written : 0,
+      total_known ? "true" : "false", full && !done ? "decoder-bytes" : "output-bytes",
+      full ? "true" : "false", g_status.helper_quiescent ? "true" : "false",
+      g_status.helper_task_id, g_status.decoder_done, g_status.decoder_total,
+      full ? "coordinator" : "process", full ? "false" : "true",
+      rar ? g_status.bytes_written : 0,
       rar ? g_status.total_bytes : 0,
       g_status.files_done, g_status.total_files, elapsed_ms, mbps,
       g_status.errno_code, g_status.threads,
       g_status.effective_threads,
-      g_status.threads == 0 ? "auto" : "manual",
+      full ? "decoder-default" : g_status.threads == 0 ? "auto" : "manual",
       input_bytes, output_bytes, input_ops, output_ops,
       input_usec / 1000ULL, output_usec / 1000ULL,
       input_mbps, output_mbps, input_wait_mbps, output_wait_mbps,
-      cpu_user_ms, cpu_system_ms, cpu_total_ms, cpu_util_percent,
+      cpu_user_ms, cpu_system_ms, cpu_total_ms, full ? 0.0 : cpu_util_percent,
       voluntary_switches, involuntary_switches, max_rss,
       rar_mt_batches, rar_mt_threaded_batches, rar_mt_blocks,
       rar_mt_threaded_blocks, rar_mt_large_blocks,
@@ -922,7 +939,8 @@ enum ArchiveType {
   ARCHIVE_UNKNOWN,
   ARCHIVE_RAR,
   ARCHIVE_7Z,
-  ARCHIVE_ZIP
+  ARCHIVE_ZIP,
+  ARCHIVE_FULL
 };
 
 static unsigned
@@ -940,6 +958,7 @@ ArchiveTypeName(ArchiveType type) {
   case ARCHIVE_RAR: return "rar";
   case ARCHIVE_7Z: return "7z";
   case ARCHIVE_ZIP: return "zip";
+  case ARCHIVE_FULL: return "auto";
   default: return "unknown";
   }
 }
@@ -982,7 +1001,7 @@ DetectArchiveType(const std::string &path) {
     return ARCHIVE_7Z;
   }
   if(EndsWithNoCase(name, ".zip")) return ARCHIVE_ZIP;
-  return ARCHIVE_UNKNOWN;
+  return ARCHIVE_FULL;
 }
 
 static const char *
@@ -1930,6 +1949,140 @@ ExtractOneZipEntry(ZipMultiVolume &mv, ZipEntry &entry, const std::string &dest,
   return ok;
 }
 
+struct ActiveFullArchive {
+  unsigned long long id = 0, device = 0, inode = 0;
+  std::string source, destination, stage;
+  bool stage_missing = false, published = false;
+};
+static int SaveActiveFullArchive(uint64_t id) {
+  struct stat st;
+  if(lstat(g_status.stage.c_str(), &st) != 0 || !S_ISDIR(st.st_mode)) return -(errno ? errno : ENOTDIR);
+  std::string data = "BFPILOT_FULL_ARCHIVE_V1\n";
+  char numbers[192];
+  snprintf(numbers,sizeof(numbers),"id=%llu\ndevice=%llu\ninode=%llu\n",
+      (unsigned long long)id,(unsigned long long)st.st_dev,(unsigned long long)st.st_ino);
+  data += numbers;
+  data += "source=" + g_status.source + "\ndestination=" + g_status.destination +
+          "\nstage=" + g_status.stage + "\n";
+  int fd = open(BFPILOT_FULL_ACTIVE_TMP, O_WRONLY|O_CREAT|O_TRUNC|O_NOFOLLOW,0600);
+  if(fd<0)return -errno;
+  int error=0;
+  if(!WriteAll(fd,data.data(),data.size()) || fsync(fd)!=0)error=errno ? errno : EIO;
+  if(close(fd)!=0 && !error)error=errno;
+  if(!error && rename(BFPILOT_FULL_ACTIVE_TMP,BFPILOT_FULL_ACTIVE)!=0)error=errno;
+  if(error)unlink(BFPILOT_FULL_ACTIVE_TMP);
+  if(!error)g_full_marker_pending=true;
+  return -error;
+}
+static void ClearActiveFullArchive() {
+  if(!g_status.helper_quiescent)return;
+  if(unlink(BFPILOT_FULL_ACTIVE)!=0 && errno!=ENOENT) {
+    LogLine("cannot remove completed full archive marker errno=%d",errno);
+    return;
+  }
+  g_full_marker_pending=false;
+  if(g_status.helper_task_admitted) {
+    int rc=bfpilot_full_archive_ack(g_status.helper_task_id);
+    if(rc)LogLine("completed full archive acknowledgement failed task=%llu rc=%d",
+                  g_status.helper_task_id,rc);
+    else g_status.helper_task_admitted=false;
+  }
+}
+static bool LoadActiveFullArchive(ActiveFullArchive &job, std::string &error) {
+  std::string text;
+  if(!ReadSmallFile(BFPILOT_FULL_ACTIVE,text,16384) ||
+     text.compare(0,24,"BFPILOT_FULL_ARCHIVE_V1\n")!=0) {
+    error="invalid active archive marker";return false;
+  }
+  size_t start=text.find('\n')+1;
+  unsigned seen=0;
+  while(start<text.size()) {
+    size_t end=text.find('\n',start);
+    if(end==std::string::npos){error="truncated active archive marker";return false;}
+    std::string line=text.substr(start,end-start);start=end+1;
+    size_t equal=line.find('=');
+    if(equal==std::string::npos){error="invalid active archive field";return false;}
+    std::string key=line.substr(0,equal),value=line.substr(equal+1);
+    unsigned bit=0;
+    if(key=="id" || key=="device" || key=="inode") {
+      char *tail=NULL;errno=0;
+      unsigned long long number=strtoull(value.c_str(),&tail,10);
+      if(errno || value.empty() || !tail || *tail){error="invalid active archive identity";return false;}
+      if(key=="id"){job.id=number;bit=1;}else if(key=="device"){job.device=number;bit=2;}else{job.inode=number;bit=4;}
+    } else if(key=="source"){job.source=value;bit=8;}
+    else if(key=="destination"){job.destination=value;bit=16;}
+    else if(key=="stage"){job.stage=value;bit=32;}
+    else {error="unknown active archive field";return false;}
+    if(seen&bit){error="duplicate active archive field";return false;}seen|=bit;
+  }
+  const bool stage_name=job.stage.find("/BFpilot/staging/extract-")!=std::string::npos ||
+      job.stage.find("/.bfpilot-staging/extract-")!=std::string::npos;
+  if(seen!=63 || !job.id || !IsAllowedArchivePath(job.source) ||
+     !IsAllowedArchivePath(job.destination) || !IsAllowedArchivePath(job.stage) || !stage_name) {
+    error="active archive paths or identity are invalid";return false;
+  }
+  struct stat st;
+  if(lstat(job.stage.c_str(),&st)!=0) {
+    if(errno!=ENOENT){error="cannot verify active archive staging identity";return false;}
+    job.stage_missing=true;
+    // A coordinator can exit after the atomic publication rename but before
+    // clearing its marker. Only the very same directory is our published tree.
+    job.published=lstat(job.destination.c_str(),&st)==0 && S_ISDIR(st.st_mode) &&
+        (unsigned long long)st.st_dev==job.device && (unsigned long long)st.st_ino==job.inode;
+    return true;
+  }
+  if(!S_ISDIR(st.st_mode) ||
+     (unsigned long long)st.st_dev!=job.device || (unsigned long long)st.st_ino!=job.inode) {
+    error="active archive staging identity changed; retained for inspection";return false;
+  }
+  return true;
+}
+
+static int RunFullArchive(const std::string &source, const std::string &stage,
+                          const std::string &password, std::string &error, uint64_t resume_id = 0) {
+  g_status.full_engine = true;
+  g_status.effective_threads = 0; // The service uses its decoder's bounded defaults.
+  bfpilot_full_archive_callbacks_t callbacks = {};
+  callbacks.started = [](void *, uint64_t id) -> int {
+    int rc=SaveActiveFullArchive(id);
+    if(rc)return rc;
+    g_status.helper_task_id = id;
+    g_status.helper_quiescent = false;
+    WriteStatus(true);
+    return 0;
+  };
+  callbacks.accepted = [](void *) { g_status.helper_task_admitted=true; };
+  callbacks.cancelled = [](void *) -> int {
+    return __atomic_load_n(&g_archive_cancel, __ATOMIC_RELAXED);
+  };
+  callbacks.progress = [](void *, uint64_t done, uint64_t total) {
+    g_status.decoder_done = done;
+    g_status.decoder_total = total;
+    // Decoder totals are not universally output byte totals. Label separately.
+    g_status.percent = total ? (int)std::min<long double>(99,
+        ((long double)done * 100) / (long double)total) : 0;
+    WriteStatus(false);
+  };
+  callbacks.current = [](void *, const char *path) {
+    g_status.current = path;
+    WriteStatus(false);
+  };
+  char message[1024] = {0};
+  int quiet = 1;
+  int rc = resume_id ? bfpilot_full_archive_resume(resume_id,source.c_str(),stage.c_str(),
+      &callbacks,message,sizeof(message),&quiet) :
+      bfpilot_full_archive_extract(source.c_str(), stage.c_str(), password.c_str(),
+      &callbacks, message, sizeof(message), &quiet);
+  g_status.helper_quiescent = quiet != 0;
+  if(rc) {
+    errno = -rc;
+    error = rc == -ECANCELED ? "archive: cancelled" :
+        message[0] ? message : strerror(-rc);
+    return rc == -ECANCELED ? RARX_USERBREAK : RARX_FATAL;
+  }
+  return 0;
+}
+
 static bool
 RunZipExtract(const std::string &archive_path, const std::string &dest_path,
               const std::string &password, std::string &error) {
@@ -1963,6 +2116,12 @@ RunZipExtract(const std::string &archive_path, const std::string &dest_path,
     return false;
   }
 
+  // Route unsupported ZIP features before any output is written, preserving
+  // the native stored/deflate path for ordinary archives.
+  for(const auto &entry : entries) {
+    if(entry.aes_encrypted || (entry.method != 0 && entry.method != MZ_DEFLATED))
+      return RunFullArchive(archive_path, dest_path, password, error) == 0;
+  }
   (void)central_size;
   g_status.total_files = entries.size();
   g_status.total_bytes = 0;
@@ -2009,6 +2168,8 @@ RunZipExtract(const std::string &archive_path, const std::string &dest_path,
 
 static int
 RunArchive(const ArchiveConfig &cfg, ArchiveType type, std::string &error) {
+  if(type == ARCHIVE_FULL || type == ARCHIVE_UNKNOWN)
+    return RunFullArchive(cfg.source, g_status.stage, cfg.password, error);
   if(type == ARCHIVE_RAR) {
     g_status.effective_threads =
         EffectiveArchiveThreadsForType(cfg.threads, type);
@@ -2092,12 +2253,93 @@ RunArchive(const ArchiveConfig &cfg, ArchiveType type, std::string &error) {
   if(type == ARCHIVE_ZIP) {
     g_status.effective_threads = 1;
     errno = 0;
-    return RunZipExtract(cfg.source, g_status.stage, cfg.password, error) ? 0
-                                                                         : 1;
+    bool ok = RunZipExtract(cfg.source, g_status.stage, cfg.password, error);
+    return ok ? 0 : error == "archive: cancelled" ? RARX_USERBREAK : RARX_FATAL;
   }
 
   error = "unsupported archive type";
   return 1;
+}
+
+static int FinalizeArchive(const ArchiveConfig &cfg, ArchiveType type, int rc, std::string &error) {
+  if(rc == 0) {
+    SetStatus("finalizing", "checking and syncing extracted files", true);
+    bfpilot_tree_totals_t totals = {};
+    int permission_rc = bfpilot_tree_finalize_stats(g_status.stage.c_str(), 0777,
+        [](void *) -> int {
+          WriteStatus(false);
+          return __atomic_load_n(&g_archive_cancel, __ATOMIC_RELAXED);
+        }, NULL, &totals);
+    if(permission_rc == 0 && g_status.full_engine) {
+      g_status.total_bytes = g_status.bytes_written = totals.bytes;
+      g_status.total_files = g_status.files_done = totals.files;
+    }
+    if(permission_rc != 0) {
+      errno = -permission_rc;
+      error = permission_rc == -ECANCELED ? "archive: cancelled" :
+              std::string("archive finalization: ") + strerror(-permission_rc);
+      rc = permission_rc == -ECANCELED ? RARX_USERBREAK : RARX_FATAL;
+    }
+  }
+  if(rc != 0) {
+    g_status.state = "error";
+    g_status.error = error.empty() ? "archive extraction failed" : error;
+    g_status.errno_code = errno;
+    g_status.archive_exit_code = rc;
+    if(cfg.cleanup_partial && g_stage_owned && g_status.helper_quiescent) {
+      std::string old_stage = g_status.stage;
+      int cleanup_rc = DeleteRecursiveForce(old_stage) ? 0 : -1;
+      int cleanup_errno = cleanup_rc == 0 ? 0 : errno;
+      LogLine("partial cleanup rc=%d errno=%d stage=%s", cleanup_rc,
+              cleanup_errno, old_stage.c_str());
+      if(cleanup_rc == 0) {
+        g_status.stage.clear();
+        g_stage_owned = false;
+        g_status.current = "partial extraction cleaned";
+      } else {
+        g_status.current = "partial extraction cleanup failed";
+      }
+    }
+    ClearActiveFullArchive();
+    WriteStatus(true);
+    LogLine("extract failed rc=%d errno=%d error=%s stage=%s", rc, errno,
+            g_status.error.c_str(), g_status.stage.c_str());
+    return 10 + rc;
+  }
+
+  SetStatus("finalizing", "renaming staging directory", true);
+  if(PathExists(cfg.destination)) {
+    g_status.state = "error";
+    g_status.error = "destination appeared before finalize";
+    g_status.errno_code = EEXIST;
+    WriteStatus(true);
+    ClearActiveFullArchive();
+    LogLine("destination appeared before finalize path=%s",
+            cfg.destination.c_str());
+    return 20;
+  }
+  if(rename(g_status.stage.c_str(), cfg.destination.c_str()) != 0) {
+    g_status.state = "error";
+    g_status.error = "failed to finalize extraction";
+    g_status.errno_code = errno;
+    WriteStatus(true);
+    ClearActiveFullArchive();
+    LogLine("finalize failed stage=%s destination=%s errno=%d",
+            g_status.stage.c_str(), cfg.destination.c_str(), errno);
+    return 21;
+  }
+
+  ClearActiveFullArchive();
+  g_status.stage.clear();
+  g_stage_owned = false;
+  g_status.current = cfg.destination;
+  g_status.percent = 100;
+  g_status.state = "done";
+  WriteStatus(true);
+  LogLine("extract done type=%s destination=%s bytes_written=%llu files=%llu",
+          ArchiveTypeName(type), cfg.destination.c_str(),
+          g_status.bytes_written, g_status.files_done);
+  return 0;
 }
 
 static int
@@ -2106,6 +2348,11 @@ bfpilot_archive_run_prepared_job_impl(void) {
   g_status.started_ms = NowMs();
   g_status.percent = 0;
   g_status.archive_exit_code = 0;
+  g_status.full_engine = false;
+  g_status.helper_quiescent = true;
+  g_status.helper_task_admitted = false;
+  g_status.helper_task_id = 0;
+  g_status.decoder_done = g_status.decoder_total = 0;
   g_status.errno_code = 0;
   g_status.priority_nice = 0;
   g_status.priority_rc = 0;
@@ -2217,75 +2464,7 @@ bfpilot_archive_run_prepared_job_impl(void) {
           cfg.threads == 0 ? "auto" : "manual");
 
   int rc = RunArchive(cfg, type, error);
-  if(rc == 0) {
-    SetStatus("finalizing", "checking and syncing extracted files", true);
-    int permission_rc = bfpilot_tree_finalize(g_status.stage.c_str(), 0777,
-        [](void *) -> int {
-          WriteStatus(false);
-          return __atomic_load_n(&g_archive_cancel, __ATOMIC_RELAXED);
-        }, NULL);
-    if(permission_rc != 0) {
-      errno = -permission_rc;
-      error = permission_rc == -ECANCELED ? "archive: cancelled" :
-              std::string("archive finalization: ") + strerror(-permission_rc);
-      rc = permission_rc == -ECANCELED ? RARX_USERBREAK : RARX_FATAL;
-    }
-  }
-  if(rc != 0) {
-    g_status.state = "error";
-    g_status.error = error.empty() ? "archive extraction failed" : error;
-    g_status.errno_code = errno;
-    g_status.archive_exit_code = rc;
-    if(cfg.cleanup_partial && g_stage_owned) {
-      std::string old_stage = g_status.stage;
-      int cleanup_rc = DeleteRecursiveForce(old_stage) ? 0 : -1;
-      int cleanup_errno = cleanup_rc == 0 ? 0 : errno;
-      LogLine("partial cleanup rc=%d errno=%d stage=%s", cleanup_rc,
-              cleanup_errno, old_stage.c_str());
-      if(cleanup_rc == 0) {
-        g_status.stage.clear();
-        g_stage_owned = false;
-        g_status.current = "partial extraction cleaned";
-      } else {
-        g_status.current = "partial extraction cleanup failed";
-      }
-    }
-    WriteStatus(true);
-    LogLine("extract failed rc=%d errno=%d error=%s stage=%s", rc, errno,
-            g_status.error.c_str(), g_status.stage.c_str());
-    return 10 + rc;
-  }
-
-  SetStatus("finalizing", "renaming staging directory", true);
-  if(PathExists(cfg.destination)) {
-    g_status.state = "error";
-    g_status.error = "destination appeared before finalize";
-    g_status.errno_code = EEXIST;
-    WriteStatus(true);
-    LogLine("destination appeared before finalize path=%s",
-            cfg.destination.c_str());
-    return 20;
-  }
-  if(rename(g_status.stage.c_str(), cfg.destination.c_str()) != 0) {
-    g_status.state = "error";
-    g_status.error = "failed to finalize extraction";
-    g_status.errno_code = errno;
-    WriteStatus(true);
-    LogLine("finalize failed stage=%s destination=%s errno=%d",
-            g_status.stage.c_str(), cfg.destination.c_str(), errno);
-    return 21;
-  }
-
-  g_status.stage.clear();
-  g_stage_owned = false;
-  g_status.current = cfg.destination;
-  g_status.percent = 100;
-  g_status.state = "done";
-  WriteStatus(true);
-  LogLine("extract done type=%s destination=%s bytes_written=%llu files=%llu",
-          ArchiveTypeName(type), cfg.destination.c_str(),
-          g_status.bytes_written, g_status.files_done);
-  return 0;
+  return FinalizeArchive(cfg,type,rc,error);
 }
 
 
@@ -2294,7 +2473,7 @@ extern "C" __attribute__((weak)) std::atomic<int> g_archive_busy(0);
 extern "C" int
 bfpilot_archive_run_prepared_job(void) {
   int rc = bfpilot_archive_run_prepared_job_impl();
-  g_archive_busy.store(0);
+  if(g_status.helper_quiescent && !g_full_marker_pending) g_archive_busy.store(0);
   return rc;
 }
 
@@ -2339,12 +2518,60 @@ MarkInterruptedArchiveStatus(const std::string &old_status) {
   LogLine("archive interrupted status recovered old_status=%s", sample.c_str());
 }
 
+static bool RecoverActiveFullArchive() {
+  struct stat marker;
+  if(lstat(BFPILOT_FULL_ACTIVE,&marker)!=0)return false;
+  g_full_marker_pending=true;
+  g_status.started_ms=NowMs();
+  g_status.full_engine=true;g_status.helper_quiescent=false;
+  g_status.archive_type="auto";g_status.state="recovering";
+  ActiveFullArchive active;ArchiveConfig cfg;std::string error;
+  if(!LoadActiveFullArchive(active,error) || !LoadConfig(cfg,error) ||
+     cfg.source!=active.source || cfg.destination!=active.destination) {
+    g_status.error=error.empty()?"active archive configuration changed; retained for inspection":error;
+    g_status.state="error";WriteStatus(true);
+    LogLine("full archive recovery refused: %s",g_status.error.c_str());return true;
+  }
+  g_status.source=active.source;g_status.destination=active.destination;
+  g_status.stage=active.stage;g_status.helper_task_id=active.id;
+  g_status.threads=cfg.threads;g_stage_owned=!active.stage_missing;
+  WriteStatus(true);
+  int rc=RunFullArchive(active.source,active.stage,cfg.password,error,active.id);
+  if(active.stage_missing && rc==0) {
+    if(active.published) {
+      // The retained helper must confirm success before trusting publication.
+      bfpilot_tree_totals_t totals={};
+      int sync_rc=bfpilot_tree_finalize_stats(active.destination.c_str(),0777,NULL,NULL,&totals);
+      if(!sync_rc) {
+        g_status.total_bytes=g_status.bytes_written=totals.bytes;
+        g_status.total_files=g_status.files_done=totals.files;
+        g_status.state="done";g_status.percent=100;g_status.current=active.destination;
+        g_status.stage.clear();ClearActiveFullArchive();WriteStatus(true);
+      } else {
+        g_status.state="error";g_status.error="published archive could not be verified and synced";
+        g_status.errno_code=-sync_rc;WriteStatus(true);rc=21;
+      }
+    } else {
+      g_status.state="error";g_status.error="completed archive staging directory is missing; retained for inspection";
+      WriteStatus(true);rc=21;
+    }
+  } else if(active.published) {
+    // Never delete or rename a destination through the partial-stage path.
+    g_status.state="error";g_status.error="published archive helper result could not be verified: "+error;
+    WriteStatus(true);
+  } else rc=FinalizeArchive(cfg,ARCHIVE_FULL,rc,error);
+  if(g_status.helper_quiescent && !g_full_marker_pending)g_archive_busy.store(0);
+  LogLine("full archive recovered task=%llu rc=%d quiet=%d",active.id,rc,g_status.helper_quiescent?1:0);
+  return true;
+}
+
 static std::atomic<int> g_archive_daemon_exit(0);
 static std::atomic<int> g_archive_daemon_running(0);
 
 static void *
 ArchiveDaemonMain(void *arg) {
   g_archive_daemon_running = 1;
+  struct RunningGuard { ~RunningGuard() { g_archive_daemon_running=0; } } running_guard;
   g_archive_daemon_exit = 0;
   if(!MkdirAll(BFPILOT_ARCHIVE_DIR)) {
     LogLine("archive daemon mkdir failed errno=%d", errno);
@@ -2386,8 +2613,9 @@ ArchiveDaemonMain(void *arg) {
 
   LogLine("archive daemon started pid=%ld", (long)getpid());
 
+  const bool recovered=RecoverActiveFullArchive();
   std::string startup_status;
-  if(ReadSmallFile(BFPILOT_ARCHIVE_STATUS, startup_status, 32768) &&
+  if(!recovered && ReadSmallFile(BFPILOT_ARCHIVE_STATUS, startup_status, 32768) &&
      StatusLooksInterrupted(startup_status)) {
     MarkInterruptedArchiveStatus(startup_status);
   }
@@ -2418,6 +2646,8 @@ ArchiveDaemonMain(void *arg) {
 
 extern "C" int
 bfpilot_archive_start_daemon(void) {
+  struct stat active;
+  if(lstat(BFPILOT_FULL_ACTIVE,&active)==0)g_archive_busy.store(1);
   pthread_t thread;
   if(pthread_create(&thread, NULL, ArchiveDaemonMain, NULL) != 0) {
     LogLine("archive daemon thread creation failed errno=%d", errno);

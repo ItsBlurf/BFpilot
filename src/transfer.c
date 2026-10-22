@@ -65,7 +65,7 @@
 #define BFPILOT_WRITEBACK_SYNC_BYTES (256ULL * 1024ULL * 1024ULL)
 #define BFPILOT_SPACE_MARGIN_BYTES (256ULL * 1024ULL * 1024ULL)
 #define BFPILOT_TEXT_MAX_SIZE (5U * 1024U * 1024U)
-#define BFPILOT_ACTION_FORM_MAX_SIZE (8U * 1024U)
+#define BFPILOT_ACTION_FORM_MAX_SIZE (64U * 1024U)
 #define BFPILOT_DOWNLOAD_FORM_MAX_SIZE (4U * 1024U * 1024U)
 #define BFPILOT_DOWNLOAD_MAX_PATHS 2048U
 #define BFPILOT_DOWNLOAD_BUF_SIZE (2U * 1024U * 1024U)
@@ -4423,11 +4423,7 @@ archive_status_handler(const http_request_t *req) {
     return websrv_send(req->fd, 200, "application/json",
                        idle_body, strlen(idle_body));
   }
-  if(strstr(buf, "\"state\":\"done\"") ||
-     strstr(buf, "\"state\":\"error\"") ||
-     strstr(buf, "\"state\":\"idle\"")) {
-    atomic_store(&g_archive_busy, 0);
-  }
+  /* Only the producer releases archive ownership, after it has stopped. */
 #endif
   return serve_owned(req, 200, buf, (size_t)n);
 }
@@ -4435,17 +4431,17 @@ archive_status_handler(const http_request_t *req) {
 
 static int
 archive_support_handler(const http_request_t *req) {
-  char body[2048];
+  char body[4096];
   int length = snprintf(body, sizeof(body),
       "{\"ok\":true,\"worker\":\"bfpilot-integrated-archive\","
       "\"requiresInjection\":false,"
       "\"jobPath\":\"" BFPILOT_ARCHIVE_JOB "\","
       "\"statusPath\":\"" BFPILOT_ARCHIVE_STATUS "\","
-      "\"supported\":[\"rar\",\"7z\",\"7z.001\",\"zip\"],"
+      "\"supported\":[\"rar\",\"7z\",\"7z.001\",\"zip\",\"zipx\",\"tar\",\"gz\",\"bz2\",\"xz\",\"zst\",\"z\",\"lzma\",\"pmd\",\"arj\",\"cpio\",\"lzh\",\"cab\",\"xar\",\"xip\",\"001\"],"
       "\"passwords\":{\"rar\":true,\"7z\":true,"
-      "\"zip\":\"ZipCrypto only; AES zip reports unsupported\"},"
+      "\"zip\":\"ZipCrypto and AES\"},"
       "\"multipart\":{\"rar\":true,\"7z.001\":true,"
-      "\"zip\":false},"
+      "\"zip\":true},"
       "\"threading\":{\"default\":\"auto\",\"autoMax\":%u,"
       "\"manualMax\":%u,\"statusField\":\"effectiveThreads\","
       "\"formats\":{\"rar\":{\"autoMax\":%u,\"manualMax\":%u},"
@@ -4488,31 +4484,10 @@ transfer_archive_prepare_request(const http_request_t *req,
 #if BFPILOT_ENABLE_INTEGRATED_ARCHIVE
   int expected = 0;
   if(!atomic_compare_exchange_strong(&g_archive_busy, &expected, 1)) {
-    int fd = open(BFPILOT_ARCHIVE_STATUS, O_RDONLY);
-    char status[2048] = {0};
-    ssize_t n = -1;
-    if(fd >= 0) {
-      n = read(fd, status, sizeof(status) - 1);
-      close(fd);
-      if(n > 0) {
-        status[n] = 0;
-        if(strstr(status, "\"state\":\"done\"") ||
-           strstr(status, "\"state\":\"error\"") ||
-           strstr(status, "\"state\":\"idle\"")) {
-          atomic_store(&g_archive_busy, 0);
-          expected = 0;
-          if(atomic_compare_exchange_strong(&g_archive_busy, &expected, 1)) {
-            goto archive_busy_claimed;
-          }
-        }
-      }
-    }
-    bfpilot_log("[diag] archive prepare 409 conflict: g_archive_busy=%d expected=%d n=%zd status='%s'",
-            atomic_load(&g_archive_busy), expected, n, status);
+    bfpilot_log("archive prepare conflict: extraction still owns the transfer slot");
     drain_body(req->fd, initial_size, content_size);
     return serve_error(req, 409, "archive extraction is already running");
   }
-archive_busy_claimed:
   /* Close the race with job_begin claiming the regular transfer flag. */
   if(atomic_load(&g_job.busy)) {
     atomic_store(&g_archive_busy, 0);
@@ -4523,7 +4498,7 @@ archive_busy_claimed:
 #endif
 
   if(read_request_body(req, initial_data, initial_size, content_size,
-                       8192, &body) != 0) {
+                       BFPILOT_ACTION_FORM_MAX_SIZE, &body) != 0) {
 #if BFPILOT_ENABLE_INTEGRATED_ARCHIVE
     atomic_store(&g_archive_busy, 0);
 #endif

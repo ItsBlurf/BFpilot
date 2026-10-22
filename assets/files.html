@@ -1974,7 +1974,8 @@
         lower.endsWith('.7z') ||
         lower.endsWith('.7z.001') ||
         /\.part\d+\.rar$/.test(lower) ||
-        /\.r\d\d$/.test(lower);
+        /\.r\d\d$/.test(lower) ||
+        /\.(?:001|zipx|tar|gz|gzip|tgz|tpz|bz2|bzip2|tbz|tbz2|xz|txz|zst|tzst|z|taz|lzma|pmd|arj|cpio|lzh|lha|cab|xar|xip)$/.test(lower);
     }
 
     function archiveStem(name) {
@@ -1987,7 +1988,9 @@
       if (/\.part\d+\.rar$/i.test(stem)) {
         return stem.replace(/\.part\d+\.rar$/i, '');
       }
-      if (/\.(zip|rar|7z)$/i.test(stem)) return stem.replace(/\.(zip|rar|7z)$/i, '');
+      if (/\.tar\.(?:gz|bz2|xz|zst)$/i.test(stem)) return stem.replace(/\.tar\.(?:gz|bz2|xz|zst)$/i, '');
+      if (/\.(?:zip|zipx|rar|7z|tar|gz|gzip|tgz|tpz|bz2|bzip2|tbz|tbz2|xz|txz|zst|tzst|z|taz|lzma|pmd|arj|cpio|lzh|lha|cab|xar|xip)$/i.test(stem))
+        return stem.replace(/\.[^.]+$/, '');
       if (/\.r\d\d$/i.test(stem)) return stem.replace(/\.r\d\d$/i, '');
       return stem;
     }
@@ -2111,7 +2114,9 @@
         parts.push(job.state || 'archive');
       }
       if (job.archiveType && job.archiveType !== 'pending') parts.push(job.archiveType);
-      if (job.totalKnown === false) {
+      if (job.progressUnit === 'decoder-bytes') {
+        parts.push(shortSize(Number(job.decoderBytesDone || 0)) + ' processed by decoder');
+      } else if (job.totalKnown === false) {
         parts.push(shortSize(written) + " output");
       } else if (total > 0) {
         parts.push(shortSize(written) + ' / ' + shortSize(total));
@@ -3245,7 +3250,7 @@
         return;
       }
       if (!isArchiveName(entries[0].name)) {
-        toast('Supported archives: rar, 7z, 7z.001, zip', 'err');
+        toast('Select a RAR, 7z, ZIP, TAR or supported compressed archive', 'err');
         return;
       }
 

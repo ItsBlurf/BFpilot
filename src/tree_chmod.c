@@ -3,6 +3,7 @@
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -51,7 +52,9 @@ visit(visited_t *set, const struct stat *st) {
 
 static int
 walk_chmod(const char *path, mode_t mode,
-            int (*cancelled)(void *), void *context, int sync_files) {
+            int (*cancelled)(void *), void *context, int sync_files,
+            bfpilot_tree_totals_t *totals) {
+  if(totals) memset(totals, 0, sizeof(*totals));
   struct stat root;
   if(!path || !*path) return -EINVAL;
   if(lstat(path, &root) != 0) return -errno;
@@ -120,6 +123,12 @@ walk_chmod(const char *path, mode_t mode,
     } else {
       if(fchmod(fd, mode) != 0) rc = -errno;
       if(rc == 0 && sync_files && fsync(fd) != 0) rc = -errno;
+      if(rc == 0 && totals) {
+        unsigned long long bytes = opened.st_size > 0 ? (unsigned long long)opened.st_size : 0;
+        if(totals->files == ULLONG_MAX || bytes > ULLONG_MAX - totals->bytes)
+          rc = -EOVERFLOW;
+        else { totals->files++; totals->bytes += bytes; }
+      }
       if(close(fd) != 0 && rc == 0) rc = -errno;
       if(rc != 0) break;
     }
@@ -134,9 +143,13 @@ walk_chmod(const char *path, mode_t mode,
 
 int bfpilot_tree_chmod(const char *path, mode_t mode,
                        int (*cancelled)(void *), void *context) {
-  return walk_chmod(path, mode, cancelled, context, 0);
+  return walk_chmod(path, mode, cancelled, context, 0, NULL);
 }
 int bfpilot_tree_finalize(const char *path, mode_t mode,
                           int (*cancelled)(void *), void *context) {
-  return walk_chmod(path, mode, cancelled, context, 1);
+  return walk_chmod(path, mode, cancelled, context, 1, NULL);
+}
+int bfpilot_tree_finalize_stats(const char *path, mode_t mode,
+    int (*cancelled)(void *), void *context, bfpilot_tree_totals_t *totals) {
+  return walk_chmod(path, mode, cancelled, context, 1, totals);
 }

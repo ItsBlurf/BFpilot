@@ -2,6 +2,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <unistd.h>
 #ifdef __PROSPERO__
 #include <sys/syscall.h>
@@ -40,5 +41,21 @@ int bfpilot_fs_fstatat(int dir, const char *path, struct stat *st, int flags) {
   return (int)syscall_at(SYS_fstatat, dir, (long)(uintptr_t)path, (long)(uintptr_t)st, flags);
 #else
   return fstatat(dir, path, st, flags);
+#endif
+}
+int bfpilot_fs_unlinkat(int dir, const char *path, int flags) {
+#ifdef __PROSPERO__
+  return (int)syscall_at(SYS_unlinkat, dir, (long)(uintptr_t)path, flags, 0);
+#else
+  return unlinkat(dir, path, flags);
+#endif
+}
+int bfpilot_fs_renameat(int old_dir, const char *old_path,
+                       int new_dir, const char *new_path) {
+#ifdef __PROSPERO__
+  return (int)syscall_at(SYS_renameat, old_dir, (long)(uintptr_t)old_path,
+                       new_dir, (long)(uintptr_t)new_path);
+#else
+  return renameat(old_dir, old_path, new_dir, new_path);
 #endif
 }

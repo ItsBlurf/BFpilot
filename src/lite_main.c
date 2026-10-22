@@ -55,6 +55,7 @@
 
 #if BFPILOT_ENABLE_INTEGRATED_ARCHIVE
 #include "archive_worker.h"
+#include "full_archive_client.h"
 #endif
 
 static void
@@ -422,6 +423,10 @@ main(int argc, char **argv) {
 #if BFPILOT_ENABLE_INTEGRATED_ARCHIVE
   bfpilot_archive_stop_daemon();
 #endif
+  if(!transfer_archive_busy()) {
+    int archive_service_stop_rc = bfpilot_full_archive_stop();
+    bfpilot_log("full archive service stop rc=%d", archive_service_stop_rc);
+  }
   int pkg_worker_stop_rc = bfpilot_pkg_worker_stop();
   bfpilot_log("pkg worker stop rc=%d", pkg_worker_stop_rc);
   bfpilot_search_shutdown();

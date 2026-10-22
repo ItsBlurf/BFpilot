@@ -1,0 +1,6 @@
+#include "../../../Common/MyInitGuid.h"
+#include "../../IStream.h"
+#include "../../ICoder.h"
+#include "../../IPassword.h"
+#include "../../IProgress.h"
+#include "../../Archive/IArchive.h"

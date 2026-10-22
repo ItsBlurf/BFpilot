@@ -1,0 +1,7 @@
+{
+  "source": "https://github.com/owendswang/wfm-7zip-helper",
+  "revision": "131ef9d75ded2f1c3b3f886a6c06dde4d5cda82f",
+  "upstream7zip": "0766b733fe3e06dd2a7f9a3cfbf2108ac73abd17",
+  "license": "LGPL-2.1-or-later with per-file BSD, public-domain and unRAR terms; see DOC/License.txt and CPP/7zip/Bundles/WfmHelper/THIRD_PARTY_NOTICES.md",
+  "status": "BFpilot-owned embedded service; native integration verified in v0.4.5-dev.8"
+}

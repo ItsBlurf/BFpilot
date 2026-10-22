@@ -1,0 +1,6 @@
+# Build caches, including debug/release objects and test executables.
+/_o_ps5/
+/_o_linux/
+# Linked helper binaries.
+/wfm-7zip-helper.elf
+/wfm-7zip-helper-linux

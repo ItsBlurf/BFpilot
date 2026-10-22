@@ -1,0 +1,61 @@
+PROG := wfm-7zip-helper.elf
+PS5_DEBUG := $(if $(filter debug,$(MAKECMDGOALS)),1,0)
+BUILD_DIR := _o_ps5/$(if $(filter debug,$(MAKECMDGOALS)),debug,release)
+SOURCES := Main.cpp WfmProtocol.cpp
+OBJECTS := $(SOURCES:%.cpp=$(BUILD_DIR)/%.o)
+include EngineObjects.mk
+OBJECTS += $(ENGINE_OBJECTS)
+OBJECTS += $(BUILD_DIR)/engine/BfpilotFsAt.o
+
+ifndef PS5_PAYLOAD_SDK
+$(error PS5_PAYLOAD_SDK is undefined)
+endif
+
+include $(PS5_PAYLOAD_SDK)/toolchain/prospero.mk
+
+STRIP ?= $(PS5_PAYLOAD_SDK)/bin/prospero-strip
+CPPFLAGS := -I. -DWFM_PLATFORM_PS5=1 -DWFM_DEBUG=$(PS5_DEBUG) -DWFM_PERF=1 -DWFM_RAR_LARGE_OUTPUT=1 -DZ7_EXTRACT_ONLY=1 -DZ7_DISABLE_VAES=1 -DZ7_USE_VAES_HW_STUB=1 -DZ7_DISABLE_SHA512_HW=1 -DZ7_USE_HW_SHA_STUB=1
+CFLAGS := -Oz -Wall -Wextra -Werror -ffunction-sections -fdata-sections -MMD -MP
+CXXFLAGS := $(CFLAGS) -fno-exceptions -fno-rtti
+ENGINE_CXXFLAGS := $(CFLAGS) -fno-rtti -fexceptions
+LDLIBS := -lSceNotification -lpthread
+
+.PHONY: all debug clean deploy force-link
+
+all: $(PROG)
+
+debug: all
+
+$(BUILD_DIR)/engine/WfmEngine.o $(BUILD_DIR)/engine/WfmPerf.o $(BUILD_DIR)/engine/FileStreams.o: WfmPerf.h
+$(BUILD_DIR)/engine/WfmEngine.o $(BUILD_DIR)/engine/WfmReadAhead.o: WfmReadAhead.h
+$(BUILD_DIR)/engine/WfmReadAhead.o: WfmPerf.h
+$(OBJECTS): makefile.ps5
+
+$(PROG): $(OBJECTS) force-link
+	$(file >$(BUILD_DIR)/helper-link.rsp,$(filter %.o,$^))
+	$(CXX) -x none -Wl,--gc-sections -o $@ @$(BUILD_DIR)/helper-link.rsp $(LDLIBS) -lc++ -lc++abi -lunwind
+	$(STRIP) $@
+
+$(BUILD_DIR)/engine/BfpilotFsAt.o: ../../../../../../src/fs_at.c ../../../../../../src/fs_at.h
+	@mkdir -p $(dir $@)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
+
+-include $(OBJECTS:.o=.d)
+
+$(BUILD_DIR)/%.o: %.cpp WfmProtocol.h
+	@mkdir -p $(dir $@)
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/engine/%.o: %.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(CPPFLAGS) $(ENGINE_CXXFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/engine/%.o: %.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
+
+clean:
+	rm -rf _o_ps5 $(PROG)
+
+deploy: $(PROG)
+	$(PS5_DEPLOY) -h $(PS5_HOST) -p $(PS5_PORT) $<
