@@ -1,3 +1,4 @@
+#include "fs_at.h"
 /*
  * BFpilot - direct file and directory serving.
  */
@@ -237,7 +238,7 @@ dir_json_request(const http_request_t *req, const char *path, DIR *dir,
     if(!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) continue;
 
     struct stat st;
-    if(fstatat(dirfd(dir), entry->d_name, &st, AT_SYMLINK_NOFOLLOW) != 0) {
+    if(bfpilot_fs_fstatat(dirfd(dir), entry->d_name, &st, AT_SYMLINK_NOFOLLOW) != 0) {
       continue;
     }
 

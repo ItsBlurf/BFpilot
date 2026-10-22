@@ -1,3 +1,5 @@
+#include "url_codec.h"
+#include "fs_at.h"
 /*
  * BFpilot - file-manager copy/move/delete primitives and API.
  */
@@ -30,6 +32,7 @@
 #include "path_ops.h"
 #include "tree_chmod.h"
 #include "tree_walk.h"
+#include "staging.h"
 #include "paths.h"
 #include "payload_launch.h"
 #include "pkg_file.h"
@@ -1389,20 +1392,6 @@ copy_worker(void *arg) {
     return NULL;
   }
 
-  struct timespec staging_now;
-  if(clock_gettime(CLOCK_MONOTONIC, &staging_now) != 0) {
-    staging_now.tv_sec = time(NULL);
-    staging_now.tv_nsec = 0;
-  }
-  int n = snprintf(staging_dst, sizeof(staging_dst),
-                   "%s.bfpilot-part-%ld-%ld-%ld", final_dst, (long)getpid(),
-                   (long)staging_now.tv_sec, (long)staging_now.tv_nsec);
-  if(n < 0 || (size_t)n >= sizeof(staging_dst)) {
-    job_end(-1, "staging path too long");
-    free(a);
-    return NULL;
-  }
-
   if(!strcmp(a->src, final_dst)) {
     job_end(-1, "source and destination are the same");
     free(a);
@@ -1437,10 +1426,15 @@ copy_worker(void *arg) {
       free(a);
       return NULL;
     }
-    bfpilot_log("transfer move cross-device fallback src=%s staging=%s final=%s",
-                a->src, staging_dst, final_dst);
+    bfpilot_log("transfer move cross-device fallback src=%s final=%s", a->src, final_dst);
   }
 
+  if(bfpilot_stage_path_avoiding(a->dst, "copy",
+      S_ISDIR(src_st.st_mode) ? a->src : NULL, staging_dst, sizeof(staging_dst)) != 0) {
+    char error[192];
+    snprintf(error, sizeof(error), "private staging: %s", strerror(errno));
+    job_end(-1, error); free(a); return NULL;
+  }
   int rc = copy_recursive(a->src, staging_dst, src_st.st_dev);
   if(rc != 0) {
     int saved_errno = errno;
@@ -1734,7 +1728,7 @@ list_request(const http_request_t *req) {
     char full[1024];
     if(join_path_checked(full, sizeof(full), path, ent->d_name) != 0) continue;
     struct stat st;
-    if(fstatat(dirfd(d), ent->d_name, &st, AT_SYMLINK_NOFOLLOW) != 0) {
+    if(bfpilot_fs_fstatat(dirfd(d), ent->d_name, &st, AT_SYMLINK_NOFOLLOW) != 0) {
       continue;
     }
     if(!first && json_append(&b, ",") != 0) break;
@@ -2718,44 +2712,8 @@ read_request_body(const http_request_t *req, const char *initial_data,
 }
 
 
-static int
-form_get_arg(const char *body, const char *name, char *out, size_t out_size) {
-  const char *p = body;
-  char key[128];
-  char value[4096];
-  char decoded[4096];
-
-  if(out_size > 0) out[0] = 0;
-  while(p && *p) {
-    const char *amp = strchr(p, '&');
-    size_t pair_len = amp ? (size_t)(amp - p) : strlen(p);
-    const char *eq = memchr(p, '=', pair_len);
-    size_t key_len = eq ? (size_t)(eq - p) : pair_len;
-    size_t val_len = eq ? pair_len - key_len - 1 : 0;
-
-    if(key_len >= sizeof(key)) return 0;
-    memcpy(key, p, key_len);
-    key[key_len] = 0;
-    websrv_url_decode(key, sizeof(key), key);
-
-    if(!strcmp(key, name)) {
-      if(val_len >= sizeof(value)) return 0;
-      if(eq) memcpy(value, eq + 1, val_len);
-      value[val_len] = 0;
-      websrv_url_decode(decoded, sizeof(decoded), value);
-      if(!strcmp(name, "path") || !strcmp(name, "src") ||
-         !strcmp(name, "dst") || !strcmp(name, "root")) {
-        (void)bfpilot_path_decode_byte_tokens(decoded);
-      }
-      if(strlen(decoded) >= out_size) return 0;
-      memcpy(out, decoded, strlen(decoded) + 1);
-      return 1;
-    }
-
-    if(!amp) break;
-    p = amp + 1;
-  }
-  return 0;
+static int form_get_arg(const char *body, const char *name, char *out, size_t out_size) {
+  return bfpilot_form_arg(body, name, out, out_size);
 }
 
 
@@ -4161,7 +4119,7 @@ transfer_text_create_request(const http_request_t *req,
   }
   if(rc == 0) {
     pthread_mutex_lock(&g_text_lock);
-    fd = openat(dir_fd, name, O_WRONLY | O_CREAT | O_EXCL, 0777);
+    fd = bfpilot_fs_openat(dir_fd, name, O_WRONLY | O_CREAT | O_EXCL, 0777);
     if(fd < 0) {
       rc = -1;
     } else {
@@ -4434,19 +4392,25 @@ archive_status_handler(const http_request_t *req) {
     return websrv_send(req->fd, 200, "application/json",
                        idle_body, strlen(idle_body));
   }
-  char *buf = malloc(32768);
-  if(!buf) {
-    close(fd);
-    return serve_error(req, 500, "out of memory");
+  struct stat status_st;
+  if(fstat(fd, &status_st) != 0 || !S_ISREG(status_st.st_mode) ||
+     status_st.st_size < 0 || status_st.st_size > 1024 * 1024) {
+    close(fd); return serve_error(req, 500, "invalid archive status file");
   }
-  ssize_t n = read(fd, buf, 32767);
-  int saved = errno;
-  close(fd);
-  if(n < 0) {
-    free(buf);
-    errno = saved;
-    return serve_error(req, 500, strerror(errno));
+  size_t length = (size_t)status_st.st_size;
+  char *buf = malloc(length + 1);
+  if(!buf) { close(fd); return serve_error(req, 500, "out of memory"); }
+  size_t used = 0;
+  int error = 0;
+  while(used < length) {
+    ssize_t got = read(fd, buf + used, length - used);
+    if(got < 0 && errno == EINTR) continue;
+    if(got <= 0) { error = got < 0 ? errno : EIO; break; }
+    used += (size_t)got;
   }
+  if(close(fd) != 0 && !error) error = errno;
+  if(error) { free(buf); return serve_error(req, 500, strerror(error)); }
+  ssize_t n = (ssize_t)used;
   if(n == 0) {
     free(buf);
     return websrv_send(req->fd, 200, "application/json",
@@ -4555,7 +4519,7 @@ archive_busy_claimed:
     drain_body(req->fd, initial_size, content_size);
     return serve_error(req, 409, "another file-manager job is running");
   }
-  g_archive_cancel = 0;
+  __atomic_store_n(&g_archive_cancel, 0, __ATOMIC_RELAXED);
 #endif
 
   if(read_request_body(req, initial_data, initial_size, content_size,
@@ -4729,7 +4693,7 @@ archive_busy_claimed:
 
 static int
 cancel_handler(const http_request_t *req) {
-  g_archive_cancel = 1;
+  __atomic_store_n(&g_archive_cancel, 1, __ATOMIC_RELAXED);
   if(download_cancel_pending()) return status_handler(req);
   if(atomic_load(&g_job.busy)) {
     atomic_store(&g_job.cancel, 1);
@@ -4915,20 +4879,6 @@ transfer_upload_request(const http_request_t *req, const char *initial_data,
     drain_body(req->fd, initial_size, content_size);
     return serve_error(req, 400, "upload path too long");
   }
-  struct timespec upload_now;
-  if(clock_gettime(CLOCK_MONOTONIC, &upload_now) != 0) {
-    upload_now.tv_sec = time(NULL);
-    upload_now.tv_nsec = 0;
-  }
-  int staging_n = snprintf(staging_path, sizeof(staging_path),
-                           "%s.bfpilot-upload-%ld-%ld-%ld", final_path,
-                           (long)getpid(), (long)upload_now.tv_sec,
-                           (long)upload_now.tv_nsec);
-  if(staging_n < 0 || (size_t)staging_n >= sizeof(staging_path)) {
-    drain_body(req->fd, initial_size, content_size);
-    return serve_error(req, 400, "upload staging path too long");
-  }
-
   if(!job_begin("upload")) {
     drain_body(req->fd, initial_size, content_size);
     return serve_error(req, 409, "another file-manager job is running");
@@ -4970,6 +4920,12 @@ transfer_upload_request(const http_request_t *req, const char *initial_data,
     return serve_error(req, 507, msg);
   }
 
+  if(bfpilot_stage_path(dir, "upload", staging_path, sizeof(staging_path)) != 0) {
+    int error = errno;
+    drain_body(req->fd, initial_size, content_size);
+    errno = error; job_end(-1, "upload private staging failed");
+    return serve_error(req, 500, strerror(error));
+  }
   int out = open(staging_path, O_WRONLY | O_CREAT | O_EXCL, 0777);
   if(out < 0) {
     int saved_errno = errno;

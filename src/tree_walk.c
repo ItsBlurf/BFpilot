@@ -1,3 +1,4 @@
+#include "fs_at.h"
 #include "tree_walk.h"
 #include <dirent.h>
 #include <errno.h>
@@ -45,7 +46,7 @@ static int visit(visited_t *set, const struct stat *st) {
 }
 static int open_directory(int parent, const char *name, const struct stat *st,
                           DIR **result) {
-  int fd = openat(parent, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW);
+  int fd = bfpilot_fs_openat(parent, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW, 0);
   if(fd < 0) return -errno;
   struct stat opened;
   int rc = fstat(fd, &opened);
@@ -103,7 +104,7 @@ static int walk(const char *path, dev_t device,
     int n = snprintf(child, WALK_PATH, "%s%s%s", frames[depth].path,
                      !strcmp(frames[depth].path, "/") ? "" : "/", ent->d_name);
     if(n < 0 || n >= (int)WALK_PATH) { rc = -ENAMETOOLONG; break; }
-    if(fstatat(dirfd(dir), ent->d_name, &st, AT_SYMLINK_NOFOLLOW) != 0) {
+    if(bfpilot_fs_fstatat(dirfd(dir), ent->d_name, &st, AT_SYMLINK_NOFOLLOW) != 0) {
       rc = -errno; break;
     }
     if(st.st_dev != device) { rc = -EXDEV; break; }

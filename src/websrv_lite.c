@@ -1,3 +1,4 @@
+#include "url_codec.h"
 /*
  * BFpilot - tiny single-purpose HTTP server.
  */
@@ -336,75 +337,13 @@ websrv_send_error_json(int fd, int status, const char *message) {
 }
 
 
-static int
-hex_value(int ch) {
-  if(ch >= '0' && ch <= '9') return ch - '0';
-  if(ch >= 'a' && ch <= 'f') return ch - 'a' + 10;
-  if(ch >= 'A' && ch <= 'F') return ch - 'A' + 10;
-  return -1;
+void websrv_url_decode(char *out, size_t out_size, const char *in) {
+  (void)bfpilot_url_decode(out, out_size, in ? in : "", in ? strlen(in) : 0);
 }
-
-
-void
-websrv_url_decode(char *out, size_t out_size, const char *in) {
-  size_t pos = 0;
-
-  if(out_size == 0) return;
-  for(size_t i = 0; in && in[i] && pos + 1 < out_size; i++) {
-    if(in[i] == '%' && isxdigit((unsigned char)in[i + 1]) &&
-       isxdigit((unsigned char)in[i + 2])) {
-      int hi = hex_value(in[i + 1]);
-      int lo = hex_value(in[i + 2]);
-      out[pos++] = (char)((hi << 4) | lo);
-      i += 2;
-    } else if(in[i] == '+') {
-      out[pos++] = ' ';
-    } else {
-      out[pos++] = in[i];
-    }
-  }
-  out[pos] = 0;
+int websrv_get_query_arg(const http_request_t *req, const char *name,
+                           char *out, size_t out_size) {
+  return bfpilot_form_arg(req ? req->query : "", name, out, out_size);
 }
-
-
-int
-websrv_get_query_arg(const http_request_t *req, const char *name,
-                     char *out, size_t out_size) {
-  const char *p = req ? req->query : NULL;
-  char key[128];
-  char value[1024];
-
-  if(out_size > 0) out[0] = 0;
-  while(p && *p) {
-    const char *amp = strchr(p, '&');
-    size_t pair_len = amp ? (size_t)(amp - p) : strlen(p);
-    const char *eq = memchr(p, '=', pair_len);
-    size_t key_len = eq ? (size_t)(eq - p) : pair_len;
-    size_t val_len = eq ? pair_len - key_len - 1 : 0;
-
-    if(key_len >= sizeof(key)) key_len = sizeof(key) - 1;
-    memcpy(key, p, key_len);
-    key[key_len] = 0;
-    websrv_url_decode(key, sizeof(key), key);
-
-    if(!strcmp(key, name)) {
-      if(val_len >= sizeof(value)) val_len = sizeof(value) - 1;
-      if(eq) memcpy(value, eq + 1, val_len);
-      value[val_len] = 0;
-      websrv_url_decode(out, out_size, value);
-      if(!strcmp(name, "path") || !strcmp(name, "src") ||
-         !strcmp(name, "dst") || !strcmp(name, "root")) {
-        (void)bfpilot_path_decode_byte_tokens(out);
-      }
-      return 1;
-    }
-
-    if(!amp) break;
-    p = amp + 1;
-  }
-  return 0;
-}
-
 
 static int
 find_header_end(const char *buf, size_t size) {
@@ -909,7 +848,7 @@ static void *
 client_thread(void *arg) {
   client_arg_t *client = arg;
   int fd = client->fd;
-  char *buf = malloc(HEADER_MAX);
+  char *buf = malloc(HEADER_MAX + 1);
   size_t used = 0;
   int req_count = 0;
 
@@ -950,8 +889,9 @@ client_thread(void *arg) {
     buf[header_end] = 0;
 
     char method[8];
-    char target[2048];
-    if(sscanf(buf, "%7s %2047s", method, target) != 2) {
+    char target[16384], protocol[16];
+    if(sscanf(buf, "%7s %16383s %15s", method, target, protocol) != 3 ||
+       (strcmp(protocol, "HTTP/1.0") && strcmp(protocol, "HTTP/1.1"))) {
       websrv_conn_set_keep_alive(0);
       websrv_send_error_json(fd, 400, "bad request");
       goto done;
@@ -974,8 +914,19 @@ client_thread(void *arg) {
       *query++ = 0;
       snprintf(req.query, sizeof(req.query), "%s", query);
     }
-    websrv_url_decode(req.path, sizeof(req.path), target);
-    (void)bfpilot_path_decode_byte_tokens(req.path);
+    char decoded_path[4097];
+    if(bfpilot_url_decode(decoded_path, sizeof(decoded_path), target, strlen(target)) != 0) {
+      websrv_conn_set_keep_alive(0);
+      websrv_send_error_json(fd, 400, "invalid or overlong URL path");
+      goto done;
+    }
+    (void)bfpilot_path_decode_byte_tokens(decoded_path);
+    if(strlen(decoded_path) >= sizeof(req.path)) {
+      websrv_conn_set_keep_alive(0);
+      websrv_send_error_json(fd, 400, "URL path too long");
+      goto done;
+    }
+    memcpy(req.path, decoded_path, strlen(decoded_path) + 1);
 
     size_t content_size = content_length_from_headers(buf);
     size_t body_in_buf = used - (size_t)header_end;

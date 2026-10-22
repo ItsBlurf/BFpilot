@@ -19,11 +19,11 @@ static FILE *report;
 static int failures, checks;
 #ifdef BFPILOT_FAULT_WRAPPERS
 static int injected_fault;
-int __real_fstatat(int, const char *, struct stat *, int);
+int __real_bfpilot_fs_fstatat(int, const char *, struct stat *, int);
 int __real_fchmod(int, mode_t);
 struct dirent *__real_readdir(DIR *);
-int __wrap_fstatat(int fd, const char *name, struct stat *st, int flags) {
-  int rc=__real_fstatat(fd,name,st,flags);
+int __wrap_bfpilot_fs_fstatat(int fd, const char *name, struct stat *st, int flags) {
+  int rc=__real_bfpilot_fs_fstatat(fd,name,st,flags);
   if(rc==0 && injected_fault==1)st->st_dev++;
   return rc;
 }

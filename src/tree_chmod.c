@@ -1,3 +1,4 @@
+#include "fs_at.h"
 #include "tree_chmod.h"
 #include <dirent.h>
 #include <errno.h>
@@ -48,9 +49,9 @@ visit(visited_t *set, const struct stat *st) {
   return 1;
 }
 
-int
-bfpilot_tree_chmod(const char *path, mode_t mode,
-                   int (*cancelled)(void *), void *context) {
+static int
+walk_chmod(const char *path, mode_t mode,
+            int (*cancelled)(void *), void *context, int sync_files) {
   struct stat root;
   if(!path || !*path) return -EINVAL;
   if(lstat(path, &root) != 0) return -errno;
@@ -90,7 +91,7 @@ bfpilot_tree_chmod(const char *path, mode_t mode,
     }
     if(!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) continue;
     struct stat child;
-    if(fstatat(dirfd(dir), entry->d_name, &child, AT_SYMLINK_NOFOLLOW) != 0) {
+    if(bfpilot_fs_fstatat(dirfd(dir), entry->d_name, &child, AT_SYMLINK_NOFOLLOW) != 0) {
       rc = -errno; break;
     }
     if(S_ISLNK(child.st_mode)) continue;
@@ -99,7 +100,7 @@ bfpilot_tree_chmod(const char *path, mode_t mode,
     if(S_ISDIR(child.st_mode) && depth == CHMOD_MAX_DEPTH) { rc = -ELOOP; break; }
     int flags = O_RDONLY | O_NOFOLLOW | O_NONBLOCK;
     if(S_ISDIR(child.st_mode)) flags |= O_DIRECTORY;
-    fd = openat(dirfd(dir), entry->d_name, flags);
+    fd = bfpilot_fs_openat(dirfd(dir), entry->d_name, flags, 0);
     if(fd < 0) { rc = -errno; break; }
     if(fstat(fd, &opened) != 0) { rc = -errno; close(fd); break; }
     if(opened.st_dev != root.st_dev || opened.st_ino != child.st_ino ||
@@ -118,6 +119,7 @@ bfpilot_tree_chmod(const char *path, mode_t mode,
       frames[++depth] = next;
     } else {
       if(fchmod(fd, mode) != 0) rc = -errno;
+      if(rc == 0 && sync_files && fsync(fd) != 0) rc = -errno;
       if(close(fd) != 0 && rc == 0) rc = -errno;
       if(rc != 0) break;
     }
@@ -128,4 +130,13 @@ bfpilot_tree_chmod(const char *path, mode_t mode,
   free(frames);
   free(visited.slots);
   return rc;
+}
+
+int bfpilot_tree_chmod(const char *path, mode_t mode,
+                       int (*cancelled)(void *), void *context) {
+  return walk_chmod(path, mode, cancelled, context, 0);
+}
+int bfpilot_tree_finalize(const char *path, mode_t mode,
+                          int (*cancelled)(void *), void *context) {
+  return walk_chmod(path, mode, cancelled, context, 1);
 }

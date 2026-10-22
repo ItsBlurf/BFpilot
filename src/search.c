@@ -1,3 +1,4 @@
+#include "fs_at.h"
 /*
  * BFpilot - indexed filename/path search.
  */
@@ -1053,7 +1054,7 @@ crawl_one_root(search_index_t *idx, const char *root, char *error,
 
       struct stat st = {0};
       /* Anchor metadata lookup to the already-open parent directory. */
-      if(fstatat(dirfd(dir), ent->d_name, &st, AT_SYMLINK_NOFOLLOW) != 0) {
+      if(bfpilot_fs_fstatat(dirfd(dir), ent->d_name, &st, AT_SYMLINK_NOFOLLOW) != 0) {
         int e = errno;
         idx->errors++;
         if(e == EIO || e == ESTALE || e == EFAULT || e == EBADF) {

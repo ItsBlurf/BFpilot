@@ -6,6 +6,8 @@
 
 #include "archive_worker.h"
 #include "tree_chmod.h"
+#include "tree_walk.h"
+#include "staging.h"
 #include "rar.hpp"
 #include "ps5_7z.hpp"
 
@@ -309,51 +311,21 @@ IsAllowedArchivePath(const std::string &path) {
   return false;
 }
 
-static bool
-IsGeneratedStagePath(const std::string &path) {
-  return IsAllowedArchivePath(path) &&
-         path.find(".bfpilot-extracting-") != std::string::npos;
+static bool g_stage_owned = false;
+static int RemoveStageEntry(const char *path, const char *, const struct stat *expected, void *) {
+  struct stat st;
+  if(lstat(path, &st) != 0) return -errno;
+  if(st.st_dev != expected->st_dev || st.st_ino != expected->st_ino ||
+     (st.st_mode & S_IFMT) != (expected->st_mode & S_IFMT)) return -EAGAIN;
+  if((S_ISDIR(st.st_mode) ? rmdir(path) : unlink(path)) != 0) return -errno;
+  return 0;
 }
-
-static bool
-DeleteRecursiveForce(const std::string &path) {
+static bool DeleteRecursiveForce(const std::string &path) {
   struct stat st;
   if(lstat(path.c_str(), &st) != 0) return errno == ENOENT;
-
-  if(S_ISDIR(st.st_mode)) {
-    DIR *d = opendir(path.c_str());
-    if(!d) return false;
-    bool ok = true;
-    int first_errno = 0;
-    struct dirent *ent;
-    int read_errno = 0;
-    for(;;) {
-      errno = 0;
-      ent = readdir(d);
-      if(!ent) {
-        read_errno = errno;
-        break;
-      }
-      if(!strcmp(ent->d_name, ".") || !strcmp(ent->d_name, "..")) continue;
-      if(!DeleteRecursiveForce(JoinPath(path, ent->d_name))) {
-        ok = false;
-        if(first_errno == 0) first_errno = errno ? errno : EIO;
-      }
-    }
-    int close_rc = closedir(d);
-    if(read_errno != 0) {
-      errno = read_errno;
-      return false;
-    }
-    if(close_rc != 0) return false;
-    if(!ok) {
-      errno = first_errno ? first_errno : EIO;
-      return false;
-    }
-    return rmdir(path.c_str()) == 0 || errno == ENOENT;
-  }
-
-  return unlink(path.c_str()) == 0 || errno == ENOENT;
+  int rc = bfpilot_tree_walk_post(path.c_str(), st.st_dev, RemoveStageEntry, NULL, NULL);
+  if(rc) errno = -rc;
+  return rc == 0;
 }
 
 static bool
@@ -540,9 +512,9 @@ PreallocateOutputFile(int fd, unsigned long long size, const char *context,
             context ? context : "output", size);
     return true;
   }
-  if(rc == ENOSPC || rc == EFBIG) {
+  if(rc != EOPNOTSUPP && rc != ENOSYS && rc != EINVAL) {
     errno = rc;
-    error = "not enough space to preallocate archive output";
+    error = std::string("failed to preallocate archive output: ") + strerror(rc);
     LogLine("archive prealloc failed context=%s rc=%d size=%llu",
             context ? context : "output", rc, size);
     return false;
@@ -550,13 +522,6 @@ PreallocateOutputFile(int fd, unsigned long long size, const char *context,
 
   LogLine("archive prealloc ignored context=%s rc=%d size=%llu",
           context ? context : "output", rc, size);
-  if(ftruncate(fd, (off_t)size) == 0) {
-    LogLine("archive size hint ok context=%s size=%llu",
-            context ? context : "output", size);
-  } else {
-    LogLine("archive size hint ignored context=%s errno=%d size=%llu",
-            context ? context : "output", errno, size);
-  }
   return true;
 }
 
@@ -715,16 +680,35 @@ WriteStatus(bool force) {
       g_rar_mt_threaded_blocks.load();
   unsigned long long rar_mt_large_blocks = g_rar_mt_large_blocks.load();
 
-  char body[8192];
+  const std::string escaped[] = {
+    JsonEscape(g_status.state), JsonEscape(g_status.archive_type),
+    JsonEscape(g_status.source), JsonEscape(g_status.destination),
+    JsonEscape(g_status.stage), JsonEscape(g_status.current), JsonEscape(g_status.error)
+  };
+  size_t capacity = 4096;
+  for(const auto &field : escaped) {
+    if(field.size() > 1024U * 1024U - capacity) return;
+    capacity += field.size();
+  }
+  std::unique_ptr<char[]> body(new(std::nothrow) char[capacity]);
+  if(!body) return;
+  const bool rar = g_status.archive_type == "rar";
+  const bool done = g_status.state == "done";
+  const bool total_known = !rar || done;
+  const unsigned long long displayed_total = rar ? (done ? output_bytes : 0) : g_status.total_bytes;
+  const unsigned long long displayed_written = rar ? output_bytes : g_status.bytes_written;
+  const int displayed_percent = done ? 100 : rar ? 0 : std::min(99, g_status.percent);
   const char *worker_name = "bfpilot-integrated-archive";
   const char *requires_injection = "false";
   int n = snprintf(
-      body, sizeof(body),
+      body.get(), capacity,
       "{\"ok\":true,\"worker\":\"%s\","
       "\"state\":\"%s\",\"archiveType\":\"%s\","
       "\"source\":\"%s\",\"destination\":\"%s\",\"stage\":\"%s\","
       "\"current\":\"%s\",\"error\":\"%s\","
       "\"percent\":%d,\"totalBytes\":%llu,\"bytesWritten\":%llu,"
+      "\"totalKnown\":%s,\"progressUnit\":\"output-bytes\","
+      "\"packedBytesProcessed\":%llu,\"packedTotalBytes\":%llu,"
       "\"filesDone\":%llu,\"totalFiles\":%llu,"
       "\"elapsedMs\":%ld,\"averageMBps\":%.2f,\"errno\":%d,"
       "\"threads\":%u,\"effectiveThreads\":%u,\"threadMode\":\"%s\","
@@ -744,14 +728,16 @@ WriteStatus(bool force) {
       "\"archiveExitCode\":%d,"
       "\"requiresInjection\":%s}",
       worker_name,
-      JsonEscape(g_status.state).c_str(),
-      JsonEscape(g_status.archive_type).c_str(),
-      JsonEscape(g_status.source).c_str(),
-      JsonEscape(g_status.destination).c_str(),
-      JsonEscape(g_status.stage).c_str(),
-      JsonEscape(g_status.current).c_str(),
-      JsonEscape(g_status.error).c_str(),
-      g_status.percent, g_status.total_bytes, g_status.bytes_written,
+      escaped[0].c_str(),
+      escaped[1].c_str(),
+      escaped[2].c_str(),
+      escaped[3].c_str(),
+      escaped[4].c_str(),
+      escaped[5].c_str(),
+      escaped[6].c_str(),
+      displayed_percent, displayed_total, displayed_written,
+      total_known ? "true" : "false", rar ? g_status.bytes_written : 0,
+      rar ? g_status.total_bytes : 0,
       g_status.files_done, g_status.total_files, elapsed_ms, mbps,
       g_status.errno_code, g_status.threads,
       g_status.effective_threads,
@@ -766,12 +752,12 @@ WriteStatus(bool force) {
       g_status.priority_nice, g_status.priority_rc,
       g_status.priority_errno,
       g_status.archive_exit_code, requires_injection);
-  if(n < 0) return;
-  size_t len = (size_t)std::min(n, (int)sizeof(body) - 1);
+  if(n < 0 || (size_t)n >= capacity) return;
+  size_t len = (size_t)n;
 
   int fd = open(BFPILOT_ARCHIVE_STATUS_TMP, O_WRONLY | O_CREAT | O_TRUNC, 0666);
   if(fd < 0) return;
-  bool ok = WriteAll(fd, body, len);
+  bool ok = WriteAll(fd, body.get(), len);
   close(fd);
   if(ok) rename(BFPILOT_ARCHIVE_STATUS_TMP, BFPILOT_ARCHIVE_STATUS);
 }
@@ -1056,6 +1042,7 @@ RunUnrarExtract(const std::string &archive_path, const std::string &dest_path,
   cmd->FileArgs.AddString(MASKALL);
   cmd->AllYes = true;
   cmd->Overwrite = OVERWRITE_ALL;
+  cmd->IgnoreGeneralAttr = true;
   cmd->DisableCopyright = true;
   cmd->DisableDone = true;
   cmd->DisableNames = true;
@@ -1680,7 +1667,7 @@ WriteZipStoredFile(ZipMultiVolume &mv, int out_fd, ZipEntry &entry,
   }
   while(remaining > 0) {
     extern int g_archive_cancel;
-    if(g_archive_cancel) {
+    if(__atomic_load_n(&g_archive_cancel, __ATOMIC_RELAXED)) {
       error = "archive: cancelled";
       return false;
     }
@@ -1752,7 +1739,7 @@ WriteZipDeflatedFile(ZipMultiVolume &mv, int out_fd, ZipEntry &entry,
   bool done = false;
   while(!done) {
     extern int g_archive_cancel;
-    if(g_archive_cancel) {
+    if(__atomic_load_n(&g_archive_cancel, __ATOMIC_RELAXED)) {
       error = "archive: cancelled";
       ok = false;
       break;
@@ -2007,7 +1994,7 @@ RunZipExtract(const std::string &archive_path, const std::string &dest_path,
 
   for(size_t i = 0; i < entries.size(); i++) {
     extern int g_archive_cancel;
-    if(g_archive_cancel) {
+    if(__atomic_load_n(&g_archive_cancel, __ATOMIC_RELAXED)) {
       error = "archive: cancelled";
       return false;
     }
@@ -2137,6 +2124,7 @@ bfpilot_archive_run_prepared_job_impl(void) {
   g_status.archive_type.clear();
   g_last_status_ms = 0;
   g_last_progress = -1;
+  g_stage_owned = false;
   ResetIoCounters();
   WriteStatus(true);
   LogLine("archive job entry reached");
@@ -2187,10 +2175,14 @@ bfpilot_archive_run_prepared_job_impl(void) {
     return 5;
   }
 
-  char stage_suffix[80];
-  snprintf(stage_suffix, sizeof(stage_suffix), ".bfpilot-extracting-%ld-%ld",
-           (long)getpid(), (long)time(NULL));
-  g_status.stage = cfg.destination + stage_suffix;
+  char stage_path[1024];
+  if(bfpilot_stage_path(parent.c_str(), "extract", stage_path, sizeof(stage_path)) != 0) {
+    g_status.state = "error";
+    g_status.error = "failed to select private staging on destination filesystem";
+    g_status.errno_code = errno;
+    WriteStatus(true); return 6;
+  }
+  g_status.stage = stage_path;
   if(PathExists(g_status.stage)) {
     g_status.state = "error";
     g_status.error = "staging path already exists";
@@ -2199,7 +2191,7 @@ bfpilot_archive_run_prepared_job_impl(void) {
     LogLine("stage exists path=%s", g_status.stage.c_str());
     return 6;
   }
-  if(!MkdirAll(g_status.stage)) {
+  if(mkdir(g_status.stage.c_str(), 0700) != 0) {
     g_status.state = "error";
     g_status.error = "failed to create staging directory";
     g_status.errno_code = errno;
@@ -2216,6 +2208,7 @@ bfpilot_archive_run_prepared_job_impl(void) {
   } else if(type == ARCHIVE_ZIP) {
     g_status.effective_threads = 1;
   }
+  g_stage_owned = true;
   SetStatus("running", "extracting", true);
   LogLine("extract start type=%s source=%s destination=%s stage=%s password=%s requested_threads=%u effective_threads=%u mode=%s",
           ArchiveTypeName(type), cfg.source.c_str(), cfg.destination.c_str(),
@@ -2225,14 +2218,17 @@ bfpilot_archive_run_prepared_job_impl(void) {
 
   int rc = RunArchive(cfg, type, error);
   if(rc == 0) {
-    SetStatus("finalizing", "setting extracted permissions", true);
-    int permission_rc = bfpilot_tree_chmod(g_status.stage.c_str(), 0777,
-        [](void *) -> int { return __atomic_load_n(&g_archive_cancel, __ATOMIC_RELAXED); }, NULL);
+    SetStatus("finalizing", "checking and syncing extracted files", true);
+    int permission_rc = bfpilot_tree_finalize(g_status.stage.c_str(), 0777,
+        [](void *) -> int {
+          WriteStatus(false);
+          return __atomic_load_n(&g_archive_cancel, __ATOMIC_RELAXED);
+        }, NULL);
     if(permission_rc != 0) {
       errno = -permission_rc;
       error = permission_rc == -ECANCELED ? "archive: cancelled" :
-              std::string("archive permissions: ") + strerror(-permission_rc);
-      rc = 1;
+              std::string("archive finalization: ") + strerror(-permission_rc);
+      rc = permission_rc == -ECANCELED ? RARX_USERBREAK : RARX_FATAL;
     }
   }
   if(rc != 0) {
@@ -2240,7 +2236,7 @@ bfpilot_archive_run_prepared_job_impl(void) {
     g_status.error = error.empty() ? "archive extraction failed" : error;
     g_status.errno_code = errno;
     g_status.archive_exit_code = rc;
-    if(cfg.cleanup_partial && IsGeneratedStagePath(g_status.stage)) {
+    if(cfg.cleanup_partial && g_stage_owned) {
       std::string old_stage = g_status.stage;
       int cleanup_rc = DeleteRecursiveForce(old_stage) ? 0 : -1;
       int cleanup_errno = cleanup_rc == 0 ? 0 : errno;
@@ -2248,6 +2244,7 @@ bfpilot_archive_run_prepared_job_impl(void) {
               cleanup_errno, old_stage.c_str());
       if(cleanup_rc == 0) {
         g_status.stage.clear();
+        g_stage_owned = false;
         g_status.current = "partial extraction cleaned";
       } else {
         g_status.current = "partial extraction cleanup failed";
@@ -2280,6 +2277,7 @@ bfpilot_archive_run_prepared_job_impl(void) {
   }
 
   g_status.stage.clear();
+  g_stage_owned = false;
   g_status.current = cfg.destination;
   g_status.percent = 100;
   g_status.state = "done";
@@ -2330,7 +2328,7 @@ MarkInterruptedArchiveStatus(const std::string &old_status) {
   g_status.current = "previous archive job interrupted";
   g_status.error =
       "previous archive job was interrupted; inspect logs and any "
-      ".bfpilot-extracting staging folder before cleanup";
+      "staging folder recorded in the previous status before cleanup";
   g_status.archive_type = "unknown";
   g_last_status_ms = 0;
   g_last_progress = -1;

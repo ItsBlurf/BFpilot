@@ -2111,7 +2111,9 @@
         parts.push(job.state || 'archive');
       }
       if (job.archiveType && job.archiveType !== 'pending') parts.push(job.archiveType);
-      if (total > 0) {
+      if (job.totalKnown === false) {
+        parts.push(shortSize(written) + " output");
+      } else if (total > 0) {
         parts.push(shortSize(written) + ' / ' + shortSize(total));
       }
       if (pct > 0) parts.push(Math.max(0, Math.min(100, pct)).toFixed(0) + '%');

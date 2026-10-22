@@ -5,11 +5,11 @@
 #include <ps5/payload.h>
 #endif
 static int fault, reads;
-int __real_fstatat(int, const char *, struct stat *, int);
+int __real_bfpilot_fs_fstatat(int, const char *, struct stat *, int);
 struct dirent *__real_readdir(DIR *);
-int __wrap_fstatat(int fd, const char *name, struct stat *st, int flags) {
+int __wrap_bfpilot_fs_fstatat(int fd, const char *name, struct stat *st, int flags) {
   if(fault == 1) { errno = EIO; return -1; }
-  int rc = __real_fstatat(fd, name, st, flags);
+  int rc = __real_bfpilot_fs_fstatat(fd, name, st, flags);
   if(rc == 0 && fault == 2) st->st_dev++;
   return rc;
 }

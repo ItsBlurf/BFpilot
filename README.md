@@ -8,7 +8,7 @@ http://<PS5_IP>:5905/
 
 Works from the PS5 browser or any PC/phone on the same network.
 
-Development version **v0.4.5-dev.4**. Tested on PS5 FW **11.60**.
+Development version **v0.4.5-dev.6**. Tested on PS5 FW **11.60**.
 
 ## Payloads
 

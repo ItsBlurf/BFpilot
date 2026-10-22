@@ -706,7 +706,7 @@ Z7_COM7F_IMF(CExtractCallback::SetTotal(UInt64 TotalValue))
 Z7_COM7F_IMF(CExtractCallback::SetCompleted(const UInt64 *CompleteValue))
 {
   extern int g_archive_cancel;
-  if (g_archive_cancel)
+  if(__atomic_load_n(&g_archive_cancel, __ATOMIC_RELAXED))
   {
     return E_ABORT;
   }
@@ -1115,7 +1115,7 @@ SevenZExtractResult Run7zExtract(const std::string &ArchivePath,
     else if (ExtractResult==E_ABORT)
     {
       extern int g_archive_cancel;
-      if (g_archive_cancel)
+      if(__atomic_load_n(&g_archive_cancel, __ATOMIC_RELAXED))
       {
         Result.code=RARX_FATAL;
         Result.reason="archive: cancelled";

@@ -286,7 +286,7 @@ void ComprDataIO::UnpWrite(byte *Addr,size_t Count)
 {
 #ifdef PS5_PAYLOAD
   extern int g_archive_cancel;
-  if (g_archive_cancel)
+  if(__atomic_load_n(&g_archive_cancel, __ATOMIC_RELAXED))
   {
     Ps5UnrarDiscardBufferedOutput();
     ErrHandler.SetErrorCode(RARX_USERBREAK);

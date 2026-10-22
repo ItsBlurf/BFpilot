@@ -12,7 +12,7 @@ typedef struct http_request {
   int  keep_alive; /* 1 = prefer Connection: keep-alive for this response */
   char method[8];
   char path[1024];
-  char query[2048];
+  char query[16384];
   char action[64];
 } http_request_t;
 

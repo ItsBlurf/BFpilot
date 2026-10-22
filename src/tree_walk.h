@@ -1,6 +1,9 @@
 #ifndef BFPILOT_TREE_WALK_H
 #define BFPILOT_TREE_WALK_H
 #include <sys/stat.h>
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 /* Visits regular files, directories and link metadata without following links.
  * Paths and frames live on the heap; directory identities and depth are bounded.
@@ -14,4 +17,7 @@ int bfpilot_tree_walk_post(const char *path, dev_t device,
     int (*entry)(const char *path, const char *relative,
                  const struct stat *st, void *context),
     int (*cancelled)(void *context), void *context);
+#ifdef __cplusplus
+}
+#endif
 #endif

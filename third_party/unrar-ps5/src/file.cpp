@@ -320,7 +320,7 @@ bool File::Rename(const std::wstring &NewName)
 bool File::Write(const void *Data,size_t Size)
 {
   extern int g_archive_cancel;
-  if (g_archive_cancel)
+  if(__atomic_load_n(&g_archive_cancel, __ATOMIC_RELAXED))
     return false;
   if (Size==0)
     return true;
