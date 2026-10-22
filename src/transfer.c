@@ -2533,6 +2533,10 @@ status_handler(const http_request_t *req) {
   ended_at = g_job.ended_at;
   pthread_mutex_unlock(&g_job.lock);
 
+  pthread_mutex_lock(&g_download.lock);
+  unsigned long download_id = g_download.id;
+  pthread_mutex_unlock(&g_download.lock);
+
   time_t now = time(NULL);
   time_t ref_at = busy ? now : (ended_at ? ended_at : now);
   long elapsed = started_at > 0 && ref_at > started_at
@@ -2590,7 +2594,7 @@ status_handler(const http_request_t *req) {
      json_append(&b, ",\"destination\":") != 0 ||
      json_string(&b, destination) != 0 ||
      json_appendf(&b,
-      ",\"totalBytes\":%ld,\"copiedBytes\":%ld,"
+      ",\"downloadId\":%lu,\"totalBytes\":%ld,\"copiedBytes\":%ld,"
       "\"totalKnown\":%s,\"totalFiles\":%d,\"doneFiles\":%d,\"failedFiles\":%d,"
       "\"startedAt\":%ld,\"endedAt\":%ld,"
       "\"elapsedSeconds\":%ld,\"elapsedMs\":%ld,"
@@ -2601,7 +2605,7 @@ status_handler(const http_request_t *req) {
       "\"speedBytesPerSec\":%ld,\"averageMBps\":%.2f,"
       "\"instantSpeedBytesPerSec\":%ld,\"instantMBps\":%.2f,"
       "\"etaSeconds\":%ld}",
-      tb, cb, atomic_load(&g_job.total_known) ? "true" : "false", tf, df, ff, (long)started_at, (long)ended_at,
+      download_id, tb, cb, atomic_load(&g_job.total_known) ? "true" : "false", tf, df, ff, (long)started_at, (long)ended_at,
       elapsed, elapsed_ms, read_bytes, written_bytes, pipeline_files,
       serial_files, writeback_syncs, (unsigned int)COPY_BUF_SIZE, source_dev,
       destination_dev, last_errno, speed, avg_mbps, instant_speed, instant_mbps, eta) != 0) {
