@@ -1,0 +1,7 @@
+{
+  "source": "https://github.com/sahlberg/libsmb2",
+  "revision": "d67e213a5c4e7e4969fd81f0b95e4ca5831fbba1",
+  "version": "6.1.0",
+  "license": "LGPL-2.1-or-later; retain corresponding source and relinkable build inputs",
+  "state": "integration in progress; not yet resident"
+}

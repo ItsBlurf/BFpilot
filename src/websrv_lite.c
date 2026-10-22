@@ -807,6 +807,8 @@ dispatch_request(const http_request_t *req, const char *initial_body,
                                           content_size);
     }
     if(!strcmp(req->path, "/api/fs/copy") ||
+       !strcmp(req->path, "/api/fs/smb/save") ||
+       !strcmp(req->path, "/api/fs/smb/remove") ||
        !strcmp(req->path, "/api/fs/move") ||
        !strcmp(req->path, "/api/fs/delete") ||
        !strcmp(req->path, "/api/fs/chmod") ||

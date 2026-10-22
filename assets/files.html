@@ -1106,6 +1106,7 @@
         <button id="add-shortcut">Add Shortcut</button>
         <button id="remove-shortcut">Remove Shortcut</button>
         <button id="customize-shortcut">Customize Shortcut</button>
+        <button id="network-connections">SMB Connections</button>
       </div>
     </nav>
 
@@ -1222,6 +1223,27 @@
   <input id="file-picker" class="hidden" type="file" multiple>
   <input id="folder-picker" class="hidden" type="file" multiple webkitdirectory directory>
   <iframe id="download-frame" class="hidden" title="File download"></iframe>
+  <div id="smb-overlay" role="dialog" aria-modal="true" aria-labelledby="smb-title" hidden style="position:fixed;inset:0;background:rgba(0,0,0,.85);z-index:10000;padding:20px;overflow:auto;">
+    <form id="smb-form" style="max-width:520px;margin:20px auto;background:#101720;border:1px solid #344655;border-radius:8px;padding:20px;display:grid;gap:12px;">
+      <h2 id="smb-title">SMB Connections</h2>
+      <label>Saved connection <select id="smb-record"><option value="">New connection</option></select></label>
+      <label>Name <input id="smb-label" required maxlength="127" autocomplete="off"></label>
+      <label>Server <input id="smb-server" required maxlength="255" placeholder="hostname or IP, optional :port" autocomplete="off" spellcheck="false"></label>
+      <label>Username <input id="smb-user" maxlength="127" autocomplete="off" spellcheck="false"></label>
+      <label>Domain <input id="smb-domain" maxlength="127" autocomplete="off" spellcheck="false"></label>
+      <label>Password <input id="smb-password" type="password" maxlength="255" autocomplete="new-password"></label>
+      <label><input id="smb-keep-password" type="checkbox"> Keep saved password when editing</label>
+      <label>Protocol <select id="smb-dialect"><option value="0">SMB2 / SMB3 automatic</option><option value="2">SMB2</option><option value="3">SMB3</option></select></label>
+      <label><input id="smb-encrypt" type="checkbox"> Require SMB3 encryption</label>
+      <p class="muted">Saved credentials stay on the PS5. Connections require signing or SMB3 encryption. Choose a saved connection to browse its shared folders.</p>
+      <p id="smb-message" role="status" aria-live="polite"></p>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;">
+        <button type="submit" id="smb-save" class="primary">Save and Browse</button>
+        <button type="button" id="smb-remove" class="danger">Remove</button>
+        <button type="button" id="smb-close">Cancel</button>
+      </div>
+    </form>
+  </div>
   <div id="toast" class="toast"></div>
 
   <div id="log-overlay" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.85); z-index: 9999; padding: 20px; box-sizing: border-box; flex-direction: column;">
@@ -1423,6 +1445,7 @@
       uploadAbort: false,
       uploadXhr: null,
       downloadQueue: null,
+      smbRecords: [],
       placesTimer: 0,
       jobTimer: 0,
       jobHideTimer: 0,
@@ -1524,6 +1547,7 @@
 
     function pathNavigationBlocked() {
       return Boolean(state.loadingPath || state.uploadBusy || state.downloadQueue || state.jobTimer ||
+        !el('smb-overlay').hidden ||
         state.archiveTimer || state.pkgTimer || state.searchTimer ||
         el('image-overlay').style.display === 'flex' ||
         el('editor-overlay').style.display === 'flex' ||
@@ -1898,6 +1922,58 @@
         if (!quiet) toast('places: ' + err.message, 'err');
       }
       renderPlaces();
+    }
+
+    function selectSmbRecord() {
+      const record = state.smbRecords.find(item => item.id === el('smb-record').value);
+      for (const field of ['label', 'server', 'user', 'domain'])
+        el('smb-' + field).value = record ? displayFsText(record[field] || '') : '';
+      el('smb-password').value = '';
+      el('smb-keep-password').checked = Boolean(record);
+      el('smb-keep-password').disabled = !record;
+      el('smb-dialect').value = String(record ? record.dialect : 0);
+      el('smb-encrypt').checked = Boolean(record && record.encrypt);
+      el('smb-remove').disabled = !record;
+    }
+
+    async function openSmbConnections() {
+      try {
+        const data = await api('/api/fs/smb/connections');
+        state.smbRecords = data.connections || [];
+        const select = el('smb-record');
+        select.textContent = '';
+        select.add(new Option('New connection', ''));
+        for (const record of state.smbRecords) select.add(new Option(displayFsText(record.label), record.id));
+        const activeId = state.path.startsWith('/smb/') ? state.path.split('/')[2] : '';
+        if (state.smbRecords.some(record => record.id === activeId)) select.value = activeId;
+        selectSmbRecord();
+        el('smb-message').textContent = '';
+        el('smb-overlay').hidden = false;
+        el('smb-label').focus();
+      } catch (err) { toast('SMB connections: ' + err.message, 'err'); }
+    }
+
+    function closeSmbConnections() {
+      el('smb-password').value = '';
+      el('smb-overlay').hidden = true;
+      el('network-connections').focus();
+    }
+
+    async function saveSmbConnection(event) {
+      event.preventDefault();
+      const fields = { id: el('smb-record').value };
+      for (const field of ['label', 'server', 'user', 'domain', 'password']) fields[field] = el('smb-' + field).value;
+      fields.dialect = el('smb-dialect').value;
+      fields.encrypt = el('smb-encrypt').checked ? '1' : '0';
+      fields.replacePassword = el('smb-keep-password').checked ? '0' : '1';
+      el('smb-save').disabled = true;
+      try {
+        const saved = await postForm('/api/fs/smb/save', fields);
+        closeSmbConnections();
+        await refreshPlaces(false);
+        await openPath('/smb/' + saved.id);
+      } catch (err) { el('smb-message').textContent = err.message; }
+      finally { fields.password = ''; el('smb-save').disabled = false; }
     }
 
     function activeShortcut() {
@@ -2524,7 +2600,7 @@
       if (entry.path && state.search.query) {
         nameEl.innerHTML = highlightPath(path, state.search.query);
       } else {
-        nameEl.textContent = displayFsText(entry.path ? path : entry.name);
+        nameEl.textContent = displayFsText(entry.displayName || (entry.path ? path : entry.name));
       }
       row.querySelector('.type-kind').textContent = parent ? '' : fileType(entry);
       row.querySelector('.size').textContent = parent || entry.dir ? '' : shortSize(entry.size || 0);
@@ -3188,7 +3264,7 @@
         }
         pollJob();
         const done = await waitDownloadIdle(data.id);
-        if (done.error) throw new Error(done.error + (individual ? '. Allow multiple downloads in your browser and retry.' : ''));
+        if (done.error && !state.downloadQueue.cancelled) throw new Error(done.error + (individual ? '. Allow multiple downloads in your browser and retry.' : ''));
        }
        toast(state.downloadQueue.cancelled ? 'Download queue cancelled' :
          individual ? groups.length + ' downloads sent to browser' : 'Download sent to browser', 'ok');
@@ -4351,6 +4427,29 @@
       el('new-text').addEventListener('click', makeTextFile);
       el('rename').addEventListener('click', renameOne);
       el('download').addEventListener('click', downloadSelected);
+      el('network-connections').addEventListener('click', openSmbConnections);
+      el('smb-record').addEventListener('change', selectSmbRecord);
+      el('smb-form').addEventListener('submit', saveSmbConnection);
+      el('smb-close').addEventListener('click', closeSmbConnections);
+      el('smb-overlay').addEventListener('keydown', event => {
+        if (event.key === 'Escape') { event.stopPropagation(); closeSmbConnections(); }
+        if (event.key === 'Tab') {
+          const controls = Array.from(el('smb-form').querySelectorAll('input,select,button')).filter(node => !node.disabled);
+          const first = controls[0], last = controls[controls.length - 1];
+          if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+          else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+        }
+      });
+      el('smb-remove').addEventListener('click', async () => {
+        const id = el('smb-record').value;
+        if (!id || !confirm('Remove this saved SMB connection?')) return;
+        try {
+          await postForm('/api/fs/smb/remove', { id });
+          closeSmbConnections();
+          await refreshPlaces(false);
+          if (state.path === '/smb/' + id || state.path.startsWith('/smb/' + id + '/')) await openPath('/smb');
+        } catch (err) { el('smb-message').textContent = err.message; }
+      });
       el('load-payload').addEventListener('click', loadPayloadSelected);
       el('install-pkg').addEventListener('click', () => installSelectedPkgs());
       if (el('pkg-info')) el('pkg-info').addEventListener('click', () => {

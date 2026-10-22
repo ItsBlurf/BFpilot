@@ -24,8 +24,8 @@ PYTHON ?= python3
 # Ship / daily use must stay 5905.
 WEB_PORT ?= 5905
 
-VERSION_TAG := bfpilot-v0.4.5-dev.9
-BUILD_VERSION ?= v0.4.5-dev.9
+VERSION_TAG := bfpilot-v0.4.5-dev.10
+BUILD_VERSION ?= v0.4.5-dev.10
 
 LLVM_CONFIG ?= $(if $(wildcard $(PS5_PAYLOAD_SDK)/bin/prospero-llvm-config),$(PS5_PAYLOAD_SDK)/bin/prospero-llvm-config,$(CURDIR)/build-tools/llvm-config)
 LLVM_BINDIR ?= $(shell "$(LLVM_CONFIG)" --bindir 2>/dev/null || dirname "$$(command -v clang 2>/dev/null || command -v clang.exe 2>/dev/null || command -v llvm-strip 2>/dev/null || command -v llvm-strip.exe 2>/dev/null || echo clang)" 2>/dev/null || echo .)
@@ -34,6 +34,8 @@ export LLVM_CONFIG
 
 BFPILOT_BIN := bfpilot.elf
 FULL_ARCHIVE_BIN := build/internal/bfpilot-full-archive.elf
+SMB_LIBRARY := build/internal/libsmb2.a
+SMB_INPUTS := $(wildcard third_party/libsmb2/lib/*.[ch] third_party/libsmb2/include/smb2/*.h third_party/libsmb2/ps5/*.h) third_party/libsmb2/lib/Makefile.am
 FULL_ARCHIVE_INPUTS := $(shell find third_party/wfm-7zip-helper -path '*/_o_*' -prune -o -type f ! -name '*.elf' -print)
 PKG_WORKER_BIN := build/internal/bfpilot-pkg-worker.elf
 PKG_WORKER_OBJ := build/internal/pkg_worker_main.o
@@ -60,6 +62,7 @@ WEB_SRCS += src/staging.c
 WEB_SRCS += src/fs_at.c
 WEB_SRCS += src/url_codec.c
 WEB_SRCS += src/full_archive_client.c
+WEB_SRCS += src/smb.c
 WEB_SRCS += src/pkg_install.c
 WEB_SRCS += src/pkg_file.c
 WEB_SRCS += src/pkg_worker_client.c
@@ -152,6 +155,7 @@ BFPILOT_CFLAGS += -DBFPILOT_WEB_PORT=$(WEB_PORT)
 BFPILOT_CFLAGS += -DBFPILOT_DEBUG_NOTIFICATIONS=0
 BFPILOT_CFLAGS += -DBFPILOT_BOOT_NOTIFY=0
 BFPILOT_CFLAGS += -DBFPILOT_FULL_ARCHIVE_EMBED=1
+BFPILOT_CFLAGS += -Ithird_party/libsmb2/include
 # Tile registration and the embedded PKG worker are always in this one file.
 # Match established PS5 payloads by linking AppInst together with SceIpmi.
 BFPILOT_CFLAGS += -DBFPILOT_ENABLE_INTEGRATED_ARCHIVE=$(ENABLE_ARCHIVE)
@@ -266,6 +270,9 @@ $(FULL_ARCHIVE_BIN): $(FULL_ARCHIVE_INPUTS) scripts/build_full_archive_helper.py
 
 build/bfpilot/src/full_archive_client.o: $(FULL_ARCHIVE_BIN)
 
+$(SMB_LIBRARY): $(SMB_INPUTS) scripts/build_smb_library.py
+	$(call run,$(PYTHON) scripts/build_smb_library.py)
+
 build/bfpilot-archive/%.o: %.cpp Makefile
 	$(call run,mkdir -p $(dir $@))
 	$(call run,$(CXX_CMD) $(ARCHIVE_WORKER_CXXFLAGS) $(ARCHIVE_WORKER_DEFINES) $(ARCHIVE_SEVENZ_DEFINES) $(ARCHIVE_WORKER_INCLUDES) -DUNRAR -DBFPILOT_ARCHIVE_INTEGRATED=1 -c $< -o $@)
@@ -275,13 +282,13 @@ build/bfpilot-archive/%.o: %.c Makefile
 	$(call run,$(CC_CMD) $(ARCHIVE_WORKER_CFLAGS) $(ARCHIVE_WORKER_DEFINES) $(ARCHIVE_SEVENZ_DEFINES) $(ARCHIVE_WORKER_INCLUDES) -DBFPILOT_ARCHIVE_INTEGRATED=1 -c $< -o $@)
 
 ifeq ($(HOST_IS_WINDOWS),1)
-$(BFPILOT_BIN): $(BFPILOT_OBJS) $(if $(filter 1,$(ENABLE_ARCHIVE)),$(BFPILOT_ARCHIVE_OBJS)) $(APP_ASSETS)
-	$(file >build/bfpilot-link.rsp,$(BFPILOT_OBJS) $(BFPILOT_LINK_ARCHIVE_OBJS))
+$(BFPILOT_BIN): $(BFPILOT_OBJS) $(if $(filter 1,$(ENABLE_ARCHIVE)),$(BFPILOT_ARCHIVE_OBJS)) $(APP_ASSETS) $(SMB_LIBRARY)
+	$(file >build/bfpilot-link.rsp,$(BFPILOT_OBJS) $(BFPILOT_LINK_ARCHIVE_OBJS) $(SMB_LIBRARY))
 	$(call run,$(WINDOWS_CXX_LD_CMD) -o $@ $(WINDOWS_CXX_LINK_PREFIX) @build/bfpilot-link.rsp $(WINDOWS_CXX_LINK_SUFFIX))
 	$(call run,$(STRIP_CMD) --strip-all $@)
 else
-$(BFPILOT_BIN): $(BFPILOT_OBJS) $(if $(filter 1,$(ENABLE_ARCHIVE)),$(BFPILOT_ARCHIVE_OBJS)) $(APP_ASSETS)
-	$(call run,$(CXX_CMD) $(COMMON_LDFLAGS) -Wl,--no-as-needed -lSceIpmi -o $@ $(BFPILOT_OBJS) $(BFPILOT_LINK_ARCHIVE_OBJS) -lSceAppInstUtil $(ARCHIVE_WORKER_LDFLAGS))
+$(BFPILOT_BIN): $(BFPILOT_OBJS) $(if $(filter 1,$(ENABLE_ARCHIVE)),$(BFPILOT_ARCHIVE_OBJS)) $(APP_ASSETS) $(SMB_LIBRARY)
+	$(call run,$(CXX_CMD) $(COMMON_LDFLAGS) -Wl,--no-as-needed -lSceIpmi -o $@ $(BFPILOT_OBJS) $(BFPILOT_LINK_ARCHIVE_OBJS) $(SMB_LIBRARY) -lSceAppInstUtil $(ARCHIVE_WORKER_LDFLAGS))
 	$(call run,$(STRIP_CMD) --strip-all $@)
 endif
 

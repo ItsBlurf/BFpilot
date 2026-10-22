@@ -16,3 +16,8 @@ their own licenses and notices.
   LGPL-2.1-or-later, with the per-file BSD, public-domain and unRAR terms in
   its `DOC/License.txt` and `CPP/7zip/Bundles/WfmHelper/THIRD_PARTY_NOTICES.md`.
   Its MIT host application does not replace those component licenses.
+- **Ronnie Sahlberg and libsmb2 contributors:** `third_party/libsmb2` is pinned
+  to 6.1.0, commit `d67e213a5c4e7e4969fd81f0b95e4ca5831fbba1`, under
+  LGPL-2.1-or-later and its bundled per-file terms. Keep the corresponding
+  library source, local changes and complete build/relink inputs available.
+  The BFpilot SMB adapter is independently authored under BFpilot's MIT license.

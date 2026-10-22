@@ -29,6 +29,7 @@
 #include "notify.h"
 #include "archive_worker.h"
 #include "fs.h"
+#include "smb.h"
 #include "path_ops.h"
 #include "tree_chmod.h"
 #include "tree_walk.h"
@@ -1692,6 +1693,48 @@ pkg_icon_request(const http_request_t *req) {
   return send_rc;
 }
 
+struct smb_json_entries {json_buf_t *buffer;int first;};
+static int smb_json_record(const bfpilot_smb_record_t *record,void *context) {
+  struct smb_json_entries *list=context;json_buf_t *b=list->buffer;
+  if(!list->first&&json_append(b,",")!=0)return -ENOMEM;
+  list->first=0;
+  if(json_append(b,"{\"id\":")!=0||json_string(b,record->id)!=0||
+     json_append(b,",\"label\":")!=0||json_string(b,record->label)!=0||
+     json_append(b,",\"server\":")!=0||json_string(b,record->server)!=0||
+     json_append(b,",\"user\":")!=0||json_string(b,record->user)!=0||
+     json_append(b,",\"domain\":")!=0||json_string(b,record->domain)!=0||
+     json_appendf(b,",\"dialect\":%u,\"encrypt\":%s}",record->dialect,record->encrypt?"true":"false")!=0)return -ENOMEM;
+  return 0;
+}
+static int smb_records_request(const http_request_t *req) {
+  json_buf_t b={0};
+  if(json_append(&b,"{\"ok\":true,\"connections\":[")!=0)return -1;
+  struct smb_json_entries list={&b,1};int rc=bfpilot_smb_records(smb_json_record,&list);
+  if(rc){free(b.data);return serve_error(req,500,"cannot read SMB connections; preserve the existing configuration for inspection");}
+  if(json_append(&b,"]}")!=0){free(b.data);return -1;}
+  return serve_owned(req,200,b.data,b.len);
+}
+static int smb_json_entry(const bfpilot_smb_entry_t *entry,void *context) {
+  struct smb_json_entries *list=context;json_buf_t *b=list->buffer;
+  if(b->len>32U*1024U*1024U)return -E2BIG;
+  if(!list->first && json_append(b,",")!=0)return -ENOMEM;
+  list->first=0;
+  if(json_append(b,"{\"name\":")!=0 || json_string(b,entry->name)!=0 ||
+     (entry->display_name && (json_append(b,",\"displayName\":")!=0 || json_string(b,entry->display_name)!=0)) ||
+     json_appendf(b,",\"dir\":%s,\"link\":%s,\"remote\":true,\"mode\":0,\"size\":%llu,\"mtime\":%llu}",
+       entry->directory?"true":"false",entry->link?"true":"false",
+       (unsigned long long)entry->size,(unsigned long long)entry->mtime)!=0)return -ENOMEM;
+  return 0;
+}
+static int smb_list_request(const http_request_t *req,const char *path) {
+  json_buf_t b={0};
+  if(json_append(&b,"{\"ok\":true,\"remote\":true,\"path\":")!=0 ||
+     json_string(&b,path)!=0 || json_append(&b,",\"entries\":[")!=0){free(b.data);return -1;}
+  struct smb_json_entries list={&b,1};int rc=bfpilot_smb_list(path,smb_json_entry,&list);
+  if(rc){free(b.data);return serve_error(req,rc==-EINVAL?400:rc==-ENOENT?404:rc==-EACCES?403:502,strerror(-rc));}
+  if(json_append(&b,"]}")!=0){free(b.data);return -1;}
+  return serve_owned(req,200,b.data,b.len);
+}
 static int
 list_request(const http_request_t *req) {
   char path_in[1024];
@@ -1703,6 +1746,7 @@ list_request(const http_request_t *req) {
      !path_is_safe(path_in)) {
     return serve_error(req, 400, "missing or unsafe path");
   }
+  if(bfpilot_smb_path(path_in))return smb_list_request(req,path_in);
   if(path_for_list(path_in, path, sizeof(path)) != 0) {
     return serve_error(req, 404, "path not found");
   }
@@ -2044,13 +2088,15 @@ append_fs_place(json_buf_t *b, int *first, const char *label,
                 const char *path, const char *kind, int custom,
                 int mounted) {
   struct stat st;
-  if(stat(path, &st) != 0 || !S_ISDIR(st.st_mode)) return 0;
+  int network=bfpilot_smb_path(path);
+  memset(&st,0,sizeof(st));
+  if(!network && (stat(path, &st) != 0 || !S_ISDIR(st.st_mode))) return 0;
 
   if(!*first && json_append(b, ",") != 0) return -1;
   *first = 0;
 
   fs_total_info_t fs = {0};
-  fs_totals(path, &fs);
+  if(!network)fs_totals(path, &fs);
 
   if(json_append(b, "{\"label\":") != 0 ||
      json_string(b, label && label[0] ? label : safe_basename_label(path)) != 0 ||
@@ -2102,6 +2148,11 @@ append_mount_candidate(json_buf_t *b, int *first, const char *path,
 }
 
 
+struct smb_places {json_buf_t *buffer;int *first;};
+static int append_smb_place(const bfpilot_smb_record_t *record,void *context) {
+  struct smb_places *places=context;char path[64];snprintf(path,sizeof(path),"/smb/%s",record->id);
+  return append_fs_place(places->buffer,places->first,record->label,path,"network",0,1);
+}
 static int
 places_request(const http_request_t *req) {
   json_buf_t b = {0};
@@ -2137,6 +2188,10 @@ places_request(const http_request_t *req) {
       return -1;
     }
   }
+
+  struct smb_places network={&b,&first};
+  if(append_fs_place(&b,&first,"Network","/smb","network",0,1)!=0||
+     bfpilot_smb_records(append_smb_place,&network)!=0){free(b.data);return serve_error(req,500,"cannot read saved SMB connections");}
 
   shortcut_entry_t shortcuts[BFPILOT_MAX_SHORTCUTS];
   int shortcut_count = read_shortcuts(shortcuts, BFPILOT_MAX_SHORTCUTS);
@@ -3716,7 +3771,31 @@ transfer_action_post_request(const http_request_t *req, const char *url,
   }
 
   int rc;
-  if(!strcmp(url, "/api/fs/copy") || !strcmp(url, "/api/fs/move")) {
+  if(!strcmp(url,"/api/fs/smb/save") || !strcmp(url,"/api/fs/smb/remove")) {
+    bfpilot_smb_record_t record={0};
+    int valid=form_get_arg(body,"id",record.id,sizeof(record.id));
+    if(!strcmp(url,"/api/fs/smb/remove"))rc=valid?bfpilot_smb_remove(record.id):-EINVAL;
+    else {
+      char dialect[8],encrypt[8],replace[8];
+      valid=valid && form_get_arg(body,"label",record.label,sizeof(record.label)) &&
+          form_get_arg(body,"server",record.server,sizeof(record.server)) &&
+          form_get_arg(body,"user",record.user,sizeof(record.user)) &&
+          form_get_arg(body,"domain",record.domain,sizeof(record.domain)) &&
+          form_get_arg(body,"password",record.password,sizeof(record.password)) &&
+          form_get_arg(body,"dialect",dialect,sizeof(dialect)) &&
+          form_get_arg(body,"encrypt",encrypt,sizeof(encrypt)) &&
+          form_get_arg(body,"replacePassword",replace,sizeof(replace));
+      if(valid)valid=(!strcmp(dialect,"0")||!strcmp(dialect,"2")||!strcmp(dialect,"3")) &&
+          (!strcmp(encrypt,"0")||!strcmp(encrypt,"1")) && (!strcmp(replace,"0")||!strcmp(replace,"1"));
+      if(valid){record.dialect=atoi(dialect);record.encrypt=atoi(encrypt);}
+      rc=valid?bfpilot_smb_save(&record,atoi(replace)):-EINVAL;
+    }
+    free(body);memset(record.password,0,sizeof(record.password));
+    if(rc)return serve_error(req,rc==-EINVAL?400:rc==-ENOENT?404:500,strerror(-rc));
+    json_buf_t b={0};
+    if(json_append(&b,"{\"ok\":true,\"id\":")!=0||json_string(&b,record.id)!=0||json_append(&b,"}")!=0){free(b.data);return -1;}
+    return serve_owned(req,200,b.data,b.len);
+  } else if(!strcmp(url, "/api/fs/copy") || !strcmp(url, "/api/fs/move")) {
     char src[1024], dst[1024], overwrite_text[16];
     if(!form_get_arg(body, "src", src, sizeof(src)) ||
        !form_get_arg(body, "dst", dst, sizeof(dst))) {
@@ -4683,6 +4762,7 @@ cancel_handler(const http_request_t *req) {
 
 int
 transfer_request(const http_request_t *req, const char *url) {
+  if(!strcmp(url,"/api/fs/smb/connections"))return smb_records_request(req);
   if(!strcmp(url, "/api/fs/list")) return list_request(req);
   if(!strncmp(url, "/api/fs/search", 14) &&
      (url[14] == 0 || url[14] == '/')) {
