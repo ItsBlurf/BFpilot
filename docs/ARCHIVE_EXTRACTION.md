@@ -34,7 +34,12 @@ existing bounded manual decoder thread selection and output buffering.
 ## Limits
 
 * Destination must be under `/data`, `/mnt/usb0-7`, or `/mnt/ext0-7`
-* Stages to a temp name, renames on success
+* Stages and syncs complete output before publication; new folders rename on success
+* Explicit merge/replace preserves unrelated existing files and directory modes;
+  type conflicts are refused before publication. Each old file remains complete
+  until a complete new file replaces it. Cancellation during publication may
+  retain completed replacements and unattempted originals, with recovery metadata
+  retained for inspection
 * Direct SMB extraction is unavailable; copy the archive locally, extract,
   then copy the result back if needed
 * Free-space check with a margin
@@ -44,15 +49,21 @@ existing bounded manual decoder thread selection and output buffering.
 
 ## UI
 
-Select archive → set Target → Extract → optional password → watch `/api/fs/archive/status`.
+Select up to2048 local archives → Extract → choose separate folders, current
+folder or one custom folder → explicitly enable merge/replace if needed → common
+optional password → Start extraction. Results distinguish completed, failed and
+unattempted items. Closing/refreshing the browser preserves the server-owned queue;
+Results stays available after refresh. Cancel stops the current item cooperatively
+and prevents the next item. A failed archive alone does not stop later archives.
 
 ## Sequential batch API
 
 POST `/api/fs/archive/batch` with repeated ordered `src`, `dst` form pairs
 and optional common `password`, `threads`, `nice`, `cleanupPartial` fields.
-At most2048 local regular archives are accepted, within the12MiB form limit.
-Destinations must be absent and distinct. The browser currently uses the
-single-archive action; the multiple-archive dialog is still in development.
+At most2048 local regular archives are accepted. The bounded form limit covers
+two1023-byte paths per item with UTF8 private byte-token and percent expansion
+(approximately48MiB plus overhead). Destinations must be absent/distinct unless
+`merge=1` is explicit; existing-directory merge and shared targets then run in order.
 
 GET `/api/fs/archive/batch/status` returns queue identity/counts and individual
 outcomes. The server retains its queue across browser refresh/main replacement.
@@ -65,6 +76,14 @@ Batch state lives in the private `batch/` directory. Password and exact path
 spaces are preserved; passwords are not exposed by status. Keep these private
 files when diagnosing recovery. Controlled main replacement is tested; file
 sync is not a guarantee against storage loss during a power cut.
+
+Use `?summary=1` for compact polling; it omits the full list and returns only the
+current item when present. `/api/fs/archive/status` contains the current worker's
+stable `requestId`. Private streamed merge receipts live internally in `merge/`,
+including for USB destinations whose filesystem does not enforce0600 modes.
+They bind source/stage/destination identities so a process reload can reconcile
+partially published complete files without re-decoding or guessing. A partial
+merge failure retains its stage and receipt even when decode cleanup is enabled.
 
 ## Code
 

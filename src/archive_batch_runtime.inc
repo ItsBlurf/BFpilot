@@ -22,6 +22,14 @@ static bool BatchOwnsJob(const std::string &job) {
   BatchLock lock;
   return g_batch.count && job.find(std::string("\nrequestId=") + g_batch.id + "-") != std::string::npos;
 }
+extern "C" int bfpilot_archive_batch_protect_path(const char *path, const struct stat *existing) {
+  (void)existing;
+  BatchLock lock;
+  if(!BatchActive()) return 0;
+  for(unsigned i = g_batch.next; i < g_batch.count; i++)
+    if(!strcmp(path,g_batch.items[i].source)) return -EBUSY;
+  return 0;
+}
 static int BatchEvent(unsigned kind, int result = 0) {
   bfab_event_t e = {};
   snprintf(e.id, sizeof(e.id), "%s", g_batch.id);
@@ -111,7 +119,7 @@ static const char *BatchStateName(unsigned state) {
   default: return "idle";
   }
 }
-extern "C" int bfpilot_archive_batch_status(char **out, size_t *size) {
+static int BatchStatus(char **out, size_t *size, bool summary) {
   if(!out || !size) return -EINVAL;
   *out = NULL; *size = 0;
   BatchLock lock;
@@ -125,8 +133,9 @@ extern "C" int bfpilot_archive_batch_status(char **out, size_t *size) {
       g_batch_init_error ? -g_batch_init_error : g_batch.error);
   std::string body = fields;
   for(unsigned i = 0; i < g_batch.count; i++) {
+    if(summary && i != g_batch.next) continue;
     const bfab_item_t &it = g_batch.items[i];
-    if(i) body += ',';
+    if(!summary && i) body += ',';
     body += "{\"source\":\"" + JsonEscape(it.source) + "\",\"destination\":\"" +
             JsonEscape(it.destination) + "\",\"state\":\"" +
             (it.state == BFAB_DONE ? "done" : it.state == BFAB_FAILED ? "error" :
@@ -139,11 +148,14 @@ extern "C" int bfpilot_archive_batch_status(char **out, size_t *size) {
   memcpy(copy, body.c_str(), body.size() + 1); *out = copy; *size = body.size();
   return 0;
 }
+extern "C" int bfpilot_archive_batch_status(char **out, size_t *size) { return BatchStatus(out,size,false); }
+extern "C" int bfpilot_archive_batch_summary(char **out, size_t *size) { return BatchStatus(out,size,true); }
 static int BatchPublishJob() {
   const bfab_item_t &item = g_batch.items[g_batch.next];
   char options[160];
-  snprintf(options, sizeof(options), "\nthreads=%u\nnice=%d\ncleanupPartial=%u\n",
-           g_batch.threads, g_batch.nice, (g_batch.flags & BFAB_CLEANUP) ? 1 : 0);
+  snprintf(options, sizeof(options), "\nthreads=%u\nnice=%d\ncleanupPartial=%u\nmerge=%u\n",
+           g_batch.threads, g_batch.nice, (g_batch.flags & BFAB_CLEANUP) ? 1 : 0,
+           (g_batch.flags & BFAB_MERGE) ? 1 : 0);
   std::string text = std::string("source=") + item.source + "\ndestination=" +
       item.destination + "\npassword=" + g_batch.password + options +
       "requestId=" + BatchRequestId() + "\n";

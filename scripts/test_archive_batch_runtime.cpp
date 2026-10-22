@@ -124,6 +124,13 @@ int main() {
   assert(runs == 1 && g_batch.state == BFAB_CANCELLED); groups++;
   start("pending-reload", 3, 0); restart(); drain();
   assert(runs == 3 && g_batch.succeeded == 3); groups++;
+  start("summary-protection", 3, 0);
+  assert(bfpilot_archive_batch_protect_path("/data/archive-2.zip",NULL)==-EBUSY);
+  assert(!bfpilot_archive_batch_protect_path("/data/unrelated.zip",NULL));
+  assert(!bfpilot_archive_batch_summary(&json,&size) && strstr(json,"\"count\":3") &&
+    strstr(json,"archive-0.zip") && !strstr(json,"archive-1.zip"));free(json);
+  assert(!bfpilot_archive_batch_cancel());
+  assert(!bfpilot_archive_batch_protect_path("/data/archive-2.zip",NULL));groups++;
   start("completed-reload", 2, 0); assert(!BatchEvent(BFAB_BEGIN));
   std::string expected = BatchRequestId(); terminal(expected, "done");
   restart(); assert(BatchTick());

@@ -29,11 +29,15 @@
       box-sizing: border-box;
     }
     #smb-form label { display:block; }
-    #smb-form input:not([type="checkbox"]), #smb-form select {
+    #smb-form input:not([type="checkbox"]), #smb-form select,
+    #archive-form input:not([type="checkbox"]), #archive-form select {
       display:block; margin-top:5px; width:100%; min-width:0; min-height:36px; padding:7px 9px;
       color:var(--ink); background:var(--paper); border:1px solid #3b4d60;
       border-radius:4px; font:inherit;
     }
+    #archive-overlay [hidden], #job-results[hidden] { display:none !important; }
+    #archive-results article { padding:10px 0;border-bottom:1px solid #344655;overflow-wrap:anywhere; }
+    #archive-results p { margin:4px 0;color:#b5c3d0; }
 
     html,
     body {
@@ -1183,7 +1187,7 @@
 
       <div class="list" id="list">
         <div class="file-head">
-          <span class="chk-col"><input type="checkbox" disabled></span>
+          <span class="chk-col"><input type="checkbox" aria-label="Select all visible items" disabled></span>
           <span>Kind</span>
           <span>Name</span>
           <span class="type-kind">Type</span>
@@ -1236,6 +1240,7 @@
     <strong id="job-verb">Working</strong>
     <div class="meter"><div id="job-fill" class="meter-fill"></div></div>
     <button id="job-cancel">Cancel</button>
+    <button id="job-results" type="button" hidden>Results</button>
     <span id="job-text" class="job-text"></span>
   </section>
 
@@ -1263,6 +1268,35 @@
         <button type="button" id="smb-close">Cancel</button>
       </div>
     </form>
+  </div>
+  <div id="archive-overlay" role="dialog" aria-modal="true" aria-labelledby="archive-title" hidden style="position:fixed;inset:0;background:rgba(0,0,0,.85);z-index:10000;padding:20px;overflow:auto;">
+    <section style="max-width:640px;margin:20px auto;background:#101720;border:1px solid #344655;border-radius:8px;padding:20px;">
+      <h2 id="archive-title" style="margin:0 0 16px;">Extract archives</h2>
+      <p id="archive-selection" style="overflow-wrap:anywhere;"></p>
+      <form id="archive-form" style="display:grid;gap:12px;">
+        <label for="archive-mode">Destination mode</label>
+        <select id="archive-mode">
+          <option value="separate">Separate folder for each archive</option>
+          <option value="current">Current folder</option>
+          <option value="custom">One custom folder</option>
+        </select>
+        <label for="archive-destination">Destination folder</label>
+        <input id="archive-destination" type="text" required autocomplete="off" spellcheck="false">
+        <label style="display:flex;align-items:start;gap:8px;"><input id="archive-merge" type="checkbox">Merge existing folders and replace matching files</label>
+        <p style="margin:0;color:#b5c3d0;">Unrelated files stay. Type conflicts stop before publication. Cancellation during merging keeps completed replacements.</p>
+        <label for="archive-password">Archive password (leave blank if none)</label>
+        <input id="archive-password" type="password" autocomplete="new-password" maxlength="511">
+        <label style="display:flex;align-items:start;gap:8px;"><input id="archive-cleanup" type="checkbox" checked>Clean partial decoded output after failure</label>
+        <p style="margin:0;color:#b5c3d0;">Partial merge receipts are retained for inspection. A failed archive does not stop later archives; cancellation does.</p>
+        <button id="archive-start" class="primary" type="submit">Start extraction</button>
+      </form>
+      <p id="archive-message" role="status" aria-live="polite" style="overflow-wrap:anywhere;"></p>
+      <div id="archive-results" hidden style="max-height:45vh;overflow:auto;"></div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:16px;">
+        <button id="archive-stop" type="button" class="danger" hidden>Cancel extraction</button>
+        <button id="archive-close" type="button">Close</button>
+      </div>
+    </section>
   </div>
   <div id="toast" class="toast"></div>
 
@@ -1582,7 +1616,7 @@
 
     function pathNavigationBlocked() {
       return Boolean(state.loadingPath || state.uploadBusy || state.downloadQueue || state.jobTimer ||
-        !el('smb-overlay').hidden ||
+        !el('smb-overlay').hidden || !el('archive-overlay').hidden ||
         state.archiveTimer || state.pkgTimer || state.searchTimer ||
         el('image-overlay').style.display === 'flex' ||
         el('editor-overlay').style.display === 'flex' ||
@@ -1692,8 +1726,8 @@
     }
 
     function postForm(url, fields) {
-      const body = new URLSearchParams();
-      Object.keys(fields).forEach((key) => body.set(key, fields[key]));
+      const body = fields instanceof URLSearchParams ? fields : new URLSearchParams();
+      if (!(fields instanceof URLSearchParams)) Object.keys(fields).forEach((key) => body.set(key, fields[key]));
       return fetch(url, {
         method: 'POST',
         cache: 'no-store',
@@ -2563,7 +2597,7 @@
       const onePkg = one && !one.dir && isPkgName(one.name);
       setContextAction('pkg-info', !!onePkg);
       el('chmod').disabled = entries.length === 0 || entries.some(entry => entry.remote);
-      setContextAction('extract', !!(one && !one.dir && isArchiveName(one.name)));
+      setContextAction('extract', hasSelection && entries.every(entry => !entry.dir && !entry.virtual && isArchiveName(entry.name)));
       setContextAction('delete', operable);
       el('copy').disabled = !operable;
       el('move').disabled = !operable;
@@ -2882,7 +2916,7 @@
       list.textContent = '';
       const head = document.createElement('div');
       head.className = 'file-head';
-      head.innerHTML = '<span class="chk-col"><input type="checkbox" disabled></span>' +
+      head.innerHTML = '<span class="chk-col"><input type="checkbox" aria-label="Select all visible items" disabled></span>' +
         '<span>Kind</span><span>Name</span><span class="type-kind">Type</span>' +
         '<span class="size">Size</span><span class="mtime">Modified</span>' +
         '<span class="mode">Permissions</span>';
@@ -3470,38 +3504,151 @@
       }
     }
 
+    let archiveSelection = [];
+    let archiveReturnFocus = null;
+    let archiveBatchId = '';
+    function closeArchiveDialog() {
+      el('archive-overlay').hidden = true;
+      el('archive-password').value = '';
+      if (archiveReturnFocus && archiveReturnFocus.isConnected) archiveReturnFocus.focus();
+    }
+    function archiveModeChanged() {
+      const current = el('archive-mode').value === 'current';
+      el('archive-destination').disabled = current;
+      if (current) el('archive-destination').value = state.path;
+    }
+    async function showArchiveResults() {
+      archiveReturnFocus = document.activeElement;
+      el('archive-overlay').hidden = false;
+      el('archive-title').textContent = t('Extraction results');
+      el('archive-form').hidden = true;
+      el('archive-results').hidden = false;
+      el('archive-results').replaceChildren();
+      el('archive-selection').textContent = '';
+      el('archive-close').focus();
+      try {
+        const batch = await api('/api/fs/archive/batch/status');
+        archiveBatchId = batch.id;
+        renderArchiveBatch(batch);
+        batch.items.forEach(item => {
+          const row = document.createElement('article');
+          const source = document.createElement('strong');
+          source.textContent = displayFsText(item.source);
+          const target = document.createElement('p');
+          target.textContent = displayFsText(item.destination);
+          const result = document.createElement('p');
+          result.textContent = item.state === 'done' ? t('Completed') : item.state === 'error'
+            ? t('Failed') + ' (' + Number(item.errno || 0) + ')' : item.state === 'running'
+              ? t('In progress') : t('Not attempted');
+          row.append(source, target, result);
+          el('archive-results').append(row);
+        });
+      } catch (err) { el('archive-message').textContent = err.message; }
+    }
+    function renderArchiveBatch(batch) {
+      const active = ['prepared', 'running', 'recovering'].includes(batch.state);
+      const text = t('{done} completed, {failed} failed, {pending} not attempted', {
+        done: Number(batch.succeeded || 0), failed: Number(batch.failed || 0),
+        pending: Math.max(0, Number(batch.count || 0) - Number(batch.next || 0) - (active && batch.items && batch.items[0] && batch.items[0].state === 'running' ? 1 : 0))
+      });
+      el('archive-message').textContent = text + (batch.state === 'error' ? ' | ' +
+        t('Recovery stopped; inspect retained staging and logs before retrying.') : batch.state === 'cancelled' ? ' | ' + t('Cancelled') : '');
+      el('archive-stop').hidden = !active;
+      el('archive-stop').disabled = Boolean(batch.cancelRequested);
+      return text;
+    }
+    function pollArchiveBatch(identifier, quiet = false) {
+      archiveBatchId = identifier;
+      if (state.archiveTimer) clearInterval(state.archiveTimer);
+      if (state.jobHideTimer) clearTimeout(state.jobHideTimer);
+      el('job').classList.add('show');
+      el('job-results').hidden = false;
+      let inFlight = false;
+      async function tick() {
+        if (inFlight) return;
+        inFlight = true;
+        try {
+          const batch = await api('/api/fs/archive/batch/status?summary=1');
+          if (identifier && batch.id !== identifier) throw new Error(t('Archive queue changed; review current results.'));
+          const active = ['prepared', 'running', 'recovering'].includes(batch.state);
+          const current = await api('/api/fs/archive/status');
+          const matches = current.requestId === batch.id + '-' + batch.next;
+          const currentPercent = matches ? Math.max(0, Math.min(99, Number(current.percent || 0))) : 0;
+          const percent = batch.count ? (Number(batch.next || 0) * 100 + (active ? currentPercent : 0)) / batch.count : 0;
+          el('job-fill').style.width = Math.min(100, percent).toFixed(1) + '%';
+          el('job-verb').textContent = t('Extract');
+          const text = renderArchiveBatch(batch);
+          el('job-text').textContent = (active ? t('Archive {index} of {count}', {
+            index: Math.min(Number(batch.count), Number(batch.next) + 1), count: Number(batch.count)
+          }) + ' | ' : '') + text + (active && matches ? ' | ' + archiveProgressText(current) : '');
+          el('job-cancel').disabled = !active || Boolean(batch.cancelRequested);
+          if (!active) {
+            clearInterval(state.archiveTimer); state.archiveTimer = 0;
+            if (Number(batch.succeeded) && !quiet) refreshCurrentView();
+            if (!quiet) toast(text, batch.failed || batch.state === 'error' ? 'err' : 'ok');
+          }
+        } catch (err) {
+          el('job-text').textContent = t('Waiting for archive status...') + ' ' + err.message;
+        } finally { inFlight = false; }
+      }
+      state.archiveTimer = setInterval(tick, 1000);
+      tick();
+    }
+    async function startArchiveBatch(event) {
+      event.preventDefault();
+      if (!archiveSelection.length) return;
+      const mode = el('archive-mode').value;
+      const target = mode === 'current' ? state.path : cleanPath(el('archive-destination').value);
+      if (!target || target === '/' || target.startsWith('/smb/')) {
+        el('archive-message').textContent = t('Choose a local destination under /data or a USB/ext mount.'); return;
+      }
+      if (!confirmShadowMountWrite(target, 'extract')) return;
+      const merge = el('archive-merge').checked;
+      const form = new URLSearchParams();
+      const destinations = new Set();
+      for (const entry of archiveSelection) {
+        const destination = mode === 'separate' ? joinPath(target, archiveStem(entry.name)) : target;
+        if (!merge && destinations.has(destination)) {
+          el('archive-message').textContent = t('Matching destinations require merge and replace.'); return;
+        }
+        destinations.add(destination);
+        form.append('src', entry.path); form.append('dst', destination);
+      }
+      form.set('password', el('archive-password').value);
+      form.set('threads', '0'); form.set('cleanupPartial', el('archive-cleanup').checked ? '1' : '0');
+      form.set('merge', merge ? '1' : '0');
+      el('archive-start').disabled = true;
+      el('archive-message').textContent = t('Starting extraction...');
+      try {
+        const accepted = await postForm('/api/fs/archive/batch', form);
+        archiveBatchId = accepted.id;
+        el('archive-password').value = '';
+        el('archive-form').hidden = true;
+        pollArchiveBatch(accepted.id);
+      } catch (err) { el('archive-message').textContent = err.message; }
+      finally { el('archive-start').disabled = false; }
+    }
     async function extractSelected() {
       const entries = selectedEntries();
-      if (entries.length !== 1 || entries[0].dir) {
-        toast(t('Select one archive file'), 'err');
+      if (!entries.length || entries.length > 2048 || entries.some(entry => entry.dir || entry.virtual || !isArchiveName(entry.name))) {
+        toast(t('Select up to 2048 supported archive files'), 'err');
         return;
       }
-      if (!isArchiveName(entries[0].name)) {
-        toast(t('Select a RAR, 7z, ZIP, TAR or supported compressed archive'), 'err');
+      if (entries.some(entry => entryPath(entry).startsWith('/smb/'))) {
+        toast(t('Copy archives to local storage before extracting.'), 'err');
         return;
       }
-
-      const source = entryPath(entries[0]);
-      const target = cleanPath(el('target-path').value || '/data');
-      const suggested = joinPath(target, archiveStem(entries[0].name));
-      const destination = cleanPath(prompt(t('Extract to folder'), suggested) || '');
-      if (!destination || destination === '/') return;
-      if (!confirmShadowMountWrite(destination, 'extract')) return;
-      const password = prompt(t('Archive password (leave blank if none)'), '');
-      if (password === null) return;
-
-      try {
-        await postForm('/api/fs/archive/prepare', {
-          src: source,
-          dst: destination,
-          password,
-          threads: '0'
-        });
-        toast(t('Archive extraction started'), 'ok');
-        pollArchiveStatus();
-      } catch (err) {
-        toast('extract: ' + err.message, 'err');
-      }
+      archiveSelection = entries.map(entry => ({ name: entry.name, path: entryPath(entry) }));
+      archiveReturnFocus = document.activeElement;
+      el('archive-title').textContent = t('Extract archives');
+      el('archive-selection').textContent = t('{count} archives selected', { count: entries.length }) + ': ' +
+        entries.slice(0, 6).map(entry => displayFsText(entry.name)).join(', ') + (entries.length > 6 ? '…' : '');
+      el('archive-destination').value = cleanPath(el('target-path').value || '/data');
+      el('archive-mode').value = 'separate'; el('archive-merge').checked = false;
+      el('archive-password').value = ''; el('archive-cleanup').checked = true;
+      el('archive-form').hidden = false; el('archive-results').hidden = true;
+      el('archive-stop').hidden = true; el('archive-message').textContent = '';
+      el('archive-overlay').hidden = false; archiveModeChanged(); el('archive-mode').focus();
     }
 
     async function deleteSelected() {
@@ -3668,9 +3815,6 @@
         };
         readNext();
       });
-      if (!parent && entry.dir) {
-        row.title = t('Double-click to open folder');
-      }
     }
 
     async function droppedUploads(dataTransfer) {
@@ -4590,6 +4734,25 @@
       el('open-folder').addEventListener('click', openSelectedFolder);
       el('chmod').addEventListener('click', chmodSelected);
       el('extract').addEventListener('click', extractSelected);
+      el('archive-form').addEventListener('submit', startArchiveBatch);
+      el('archive-mode').addEventListener('change', archiveModeChanged);
+      el('archive-close').addEventListener('click', closeArchiveDialog);
+      el('archive-stop').addEventListener('click', async () => {
+        el('archive-stop').disabled = true;
+        try { await api('/api/fs/job/cancel'); }
+        catch (err) { el('archive-message').textContent = err.message; el('archive-stop').disabled = false; }
+      });
+      el('job-results').addEventListener('click', showArchiveResults);
+      el('archive-overlay').addEventListener('keydown', event => {
+        if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); closeArchiveDialog(); return; }
+        if (event.key !== 'Tab') return;
+        const focusable = Array.from(el('archive-overlay').querySelectorAll('button, input, select, [tabindex="0"]'))
+          .filter(node => !node.disabled && node.offsetParent !== null);
+        if (!focusable.length) return;
+        const first = focusable[0], last = focusable[focusable.length - 1];
+        if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+        else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+      });
       el('delete').addEventListener('click', deleteSelected);
       el('copy-target').addEventListener('click', () => transferToTarget('copy'));
       el('move-target').addEventListener('click', () => transferToTarget('move'));
@@ -4821,9 +4984,16 @@
       api('/api/fs/job/status').then((job) => {
         if (job.busy) pollJob();
       }).catch(() => {});
-      api('/api/fs/archive/status').then((job) => {
-        if (['prepared', 'starting', 'recovering', 'running', 'finalizing'].includes(job.state)) {
-          pollArchiveStatus();
+      api('/api/fs/archive/batch/status?summary=1').then(async batch => {
+        if (batch.count) { archiveBatchId = batch.id; el('job-results').hidden = false; }
+        if (['prepared', 'running', 'recovering'].includes(batch.state)) pollArchiveBatch(batch.id);
+        else {
+          const job = await api('/api/fs/archive/status');
+          if (['prepared', 'starting', 'recovering', 'running', 'finalizing'].includes(job.state)) pollArchiveStatus();
+          else if (batch.count && !state.jobTimer && !state.pkgTimer && !state.uploadBusy) {
+            const live = await api('/api/status');
+            if (!live.fileJobBusy && !live.pkgBusy) pollArchiveBatch(batch.id, true);
+          }
         }
       }).catch(() => {});
       api('/api/fs/pkg/status').then((status) => {

@@ -56,6 +56,7 @@ Development version **v0.4.5-dev.6**. Tested on PS5 FW **11.60**.
 - 7z + passwords + `.7z.001` splits
 - Extract only under `/data` and USB/ext mounts
 - Password prompt, progress/ETA, cancellation with partial-output cleanup
+- Multiple-archive extraction with separate/current/custom folders, explicit safe merge/replace, durable queue recovery and individual completed/failed/unattempted results
 - Automatic extraction uses the embedded 7-Zip service with bounded read-ahead and output buffering; explicit manual RAR/7z requests retain the integrated decoders and tuning up to eight threads
 
 **Viewers**

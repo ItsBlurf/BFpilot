@@ -4676,6 +4676,7 @@ transfer_archive_prepare_request(const http_request_t *req,
   char threads[32] = {0};
   char nice[32] = {0};
   char cleanup_partial[16] = {0};
+  char merge[16] = {0};
 
   if(atomic_load(&g_job.busy)
 #if BFPILOT_ENABLE_INTEGRATED_ARCHIVE
@@ -4726,6 +4727,7 @@ transfer_archive_prepare_request(const http_request_t *req,
                    sizeof(cleanup_partial))) {
     snprintf(cleanup_partial, sizeof(cleanup_partial), "%s", "0");
   }
+  (void)form_get_arg(body,"merge",merge,sizeof(merge));
   free(body);
 
   if(bfpilot_smb_path(src) || bfpilot_smb_path(dst)) {
@@ -4771,14 +4773,16 @@ transfer_archive_prepare_request(const http_request_t *req,
 #endif
     return rc;
   }
-  if(stat(dst, &st) == 0) {
+  int destination_exists = lstat(dst, &st) == 0;
+  int merge_enabled = archive_bool_text_true(merge);
+  if(destination_exists && !(merge_enabled && S_ISDIR(st.st_mode))) {
     int rc = serve_error(req, 409, "archive destination already exists");
 #if BFPILOT_ENABLE_INTEGRATED_ARCHIVE
     atomic_store(&g_archive_busy, 0);
 #endif
     return rc;
   }
-  if(errno != ENOENT) {
+  if(!destination_exists && errno != ENOENT) {
     int rc = serve_error(req, 500, strerror(errno));
 #if BFPILOT_ENABLE_INTEGRATED_ARCHIVE
     atomic_store(&g_archive_busy, 0);
@@ -4817,6 +4821,7 @@ transfer_archive_prepare_request(const http_request_t *req,
      json_appendf(&job, "%d", normalized_nice) != 0 ||
      json_append(&job, "\ncleanupPartial=") != 0 ||
      json_append(&job, cleanup_partial_enabled ? "1" : "0") != 0 ||
+     json_appendf(&job, "\nmerge=%u",merge_enabled?1:0) != 0 ||
      json_appendf(&job, "\nrequestId=%ld-%lld-%ld-%llu\n", (long)getpid(),
                   (long long)request_time.tv_sec, request_time.tv_nsec,
                   request_sequence) != 0) {
@@ -4907,7 +4912,9 @@ transfer_archive_batch_request(const http_request_t *req, const char *initial,
     drain_body(req->fd, initial_size, content_size);
     return serve_error(req, 409, "another file-manager job is running");
   }
-  const size_t form_limit = BFAB_MAX_ITEMS * (6U * BFAB_PATH_SIZE + 32U) + 4096U;
+  /* Each raw FS byte can use a four-byte UTF8 private byte token, then percent
+     encoding expands that token threefold. Two max-length paths per item. */
+  const size_t form_limit = BFAB_MAX_ITEMS * (24U * BFAB_PATH_SIZE + 32U) + 4096U;
   char *body = NULL;
   int rc = read_request_body(req, initial, initial_size, content_size, form_limit, &body);
   int http = 400;
@@ -4954,9 +4961,7 @@ transfer_archive_batch_request(const http_request_t *req, const char *initial,
       } else if(bit == 2) batch.threads = archive_normalize_threads_text(value);
       else if(bit == 4) batch.nice = archive_normalize_nice_text(value);
       else if(bit == 8 && archive_bool_text_true(value)) batch.flags |= BFAB_CLEANUP;
-      else if(bit == 16 && archive_bool_text_true(value)) {
-        error = "archive merge is not available in this build"; goto fail;
-      }
+      else if(bit == 16 && archive_bool_text_true(value)) batch.flags |= BFAB_MERGE;
     }
     if(!amp) break;
     p = amp + 1;
@@ -4975,11 +4980,12 @@ transfer_archive_batch_request(const http_request_t *req, const char *initial,
     if(lstat(items[i].source, &st) || !S_ISREG(st.st_mode)) {
       error = "archive source is not a regular local file"; http = 404; goto fail;
     }
-    if(lstat(items[i].destination, &st) == 0) {
+    int exists=lstat(items[i].destination, &st)==0;
+    if(exists && !((batch.flags&BFAB_MERGE) && S_ISDIR(st.st_mode))) {
       error = "archive destination already exists"; http = 409; goto fail;
     }
-    if(errno != ENOENT) { error = strerror(errno); http = 500; goto fail; }
-    for(unsigned k = 0; k < i; k++) if(!strcmp(items[k].destination, items[i].destination)) {
+    if(!exists && errno != ENOENT) { error = strerror(errno); http = 500; goto fail; }
+    for(unsigned k = 0; k < i; k++) if(!(batch.flags&BFAB_MERGE) && !strcmp(items[k].destination, items[i].destination)) {
       error = "archive batch contains duplicate destinations"; http = 409; goto fail;
     }
   }
@@ -5042,7 +5048,9 @@ transfer_request(const http_request_t *req, const char *url) {
 #if BFPILOT_ENABLE_INTEGRATED_ARCHIVE
   if(!strcmp(url, "/api/fs/archive/batch/status")) {
     char *body = NULL; size_t size = 0;
-    int rc = bfpilot_archive_batch_status(&body, &size);
+    char summary[8]={0};websrv_get_query_arg(req,"summary",summary,sizeof(summary));
+    int rc = !strcmp(summary,"1") ? bfpilot_archive_batch_summary(&body,&size) :
+                                   bfpilot_archive_batch_status(&body, &size);
     return rc ? serve_error(req, 500, strerror(-rc)) : serve_owned(req, 200, body, size);
   }
 #endif

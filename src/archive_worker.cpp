@@ -6,6 +6,7 @@
 
 #include "archive_worker.h"
 #include "archive_batch_store.h"
+#include "archive_merge.h"
 #include "full_archive_client.h"
 #include "tree_chmod.h"
 #include "tree_walk.h"
@@ -89,6 +90,7 @@ struct ArchiveConfig {
   unsigned threads = 0;
   int priority_nice = 0;
   bool cleanup_partial = false;
+  bool merge = false;
 };
 
 struct WorkerStatus {
@@ -893,6 +895,7 @@ LoadConfig(ArchiveConfig &cfg, std::string &error) {
   cfg.threads = 0;
   cfg.priority_nice = BFPILOT_ARCHIVE_NICE;
   cfg.cleanup_partial = false;
+  cfg.merge = false;
 
   std::string data;
   if(!ReadSmallFile(BFPILOT_ARCHIVE_JOB, data, 64 * 1024)) {
@@ -919,6 +922,7 @@ LoadConfig(ArchiveConfig &cfg, std::string &error) {
     else if(key == "destination") cfg.destination = value;
     else if(key == "password") cfg.password = value;
     else if(key == "requestId") cfg.request_id = value;
+    else if(key == "merge") cfg.merge = Trim(value) == "1";
     else if(key == "threads") cfg.threads = ParseArchiveThreads(Trim(value));
     else if(key == "nice") cfg.priority_nice = ParseArchiveNice(Trim(value));
     else if(key == "cleanupPartial") {
@@ -2286,7 +2290,9 @@ RunArchive(const ArchiveConfig &cfg, ArchiveType type, std::string &error) {
   return 1;
 }
 
+static int FinalizeArchiveMerge(const ArchiveConfig &cfg);
 static int FinalizeArchive(const ArchiveConfig &cfg, ArchiveType type, int rc, std::string &error) {
+  if(rc == 0 && cfg.merge && IsDirPath(cfg.destination)) return FinalizeArchiveMerge(cfg);
   if(rc == 0) {
     SetStatus("finalizing", "checking and syncing extracted files", true);
     bfpilot_tree_totals_t totals = {};
@@ -2311,7 +2317,9 @@ static int FinalizeArchive(const ArchiveConfig &cfg, ArchiveType type, int rc, s
     g_status.error = error.empty() ? "archive extraction failed" : error;
     g_status.errno_code = errno;
     g_status.archive_exit_code = rc;
-    if(cfg.cleanup_partial && g_stage_owned && g_status.helper_quiescent) {
+    const std::string merge_receipt = std::string(BFPILOT_ARCHIVE_DIR "/merge/") + cfg.request_id + ".merge";
+    const bool retained_merge = cfg.merge && PathExists(merge_receipt);
+    if(cfg.cleanup_partial && !retained_merge && g_stage_owned && g_status.helper_quiescent) {
       std::string old_stage = g_status.stage;
       int cleanup_rc = DeleteRecursiveForce(old_stage) ? 0 : -1;
       int cleanup_errno = cleanup_rc == 0 ? 0 : errno;
@@ -2325,6 +2333,7 @@ static int FinalizeArchive(const ArchiveConfig &cfg, ArchiveType type, int rc, s
         g_status.current = "partial extraction cleanup failed";
       }
     }
+    if(retained_merge)g_status.error += "; partial merge receipt and staging retained for inspection";
     ClearActiveFullArchive();
     WriteStatus(true);
     LogLine("extract failed rc=%d errno=%d error=%s stage=%s", rc, errno,
@@ -2370,6 +2379,67 @@ static int FinalizeArchive(const ArchiveConfig &cfg, ArchiveType type, int rc, s
   LogLine("extract done type=%s destination=%s bytes_written=%llu files=%llu",
           ArchiveTypeName(type), cfg.destination.c_str(),
           g_status.bytes_written, g_status.files_done);
+  return 0;
+}
+
+static int MergeProtect(void *opaque, const char *path, const struct stat *existing) {
+  const ArchiveConfig *cfg = (const ArchiveConfig *)opaque;
+  const char *control = BFPILOT_DATA_DIR;
+  const size_t control_size = strlen(control);
+  if(!strncmp(path,control,control_size) && (!path[control_size] || path[control_size]=='/')) return -EPERM;
+  if(!strcmp(path,cfg->source.c_str())) return -EBUSY;
+  struct stat source;
+  if(existing && stat(cfg->source.c_str(),&source)==0 && existing->st_dev==source.st_dev &&
+     existing->st_ino==source.st_ino) return -EBUSY;
+  return bfpilot_archive_batch_protect_path(path,existing);
+}
+static int FinalizeArchiveMerge(const ArchiveConfig &cfg) {
+  if(!g_status.helper_quiescent) return 21;
+  if(cfg.request_id.empty() || cfg.request_id.size() >= 128) {
+    g_status.state="error";g_status.errno_code=EINVAL;
+    g_status.error="merge requires a stable request identity";WriteStatus(true);return 21;
+  }
+  const std::string metadata_directory = BFPILOT_ARCHIVE_DIR "/merge";
+  int directory = bfab_store_open(metadata_directory.c_str());
+  int rc=directory<0?directory:0;
+  if(directory>=0 && close(directory)) rc=-errno;
+  const std::string stage = g_status.stage;
+  const std::string manifest = metadata_directory + "/" + cfg.request_id + ".merge";
+  bfpilot_merge_options_t options = {};
+  options.context=(void *)&cfg;
+  options.cancelled=[](void *) -> int { WriteStatus(false);return __atomic_load_n(&g_archive_cancel,__ATOMIC_RELAXED); };
+  options.protect=MergeProtect;
+  options.progress=[](void *,const char *relative,uint32_t done,uint32_t total) {
+    g_status.current=std::string("publishing merged archive: ")+relative;
+    g_status.percent=total?(int)((uint64_t)done*99/total):99;WriteStatus(false);
+  };
+  bfpilot_merge_result_t result = {};
+  SetStatus("finalizing","checking complete staged output before merge",true);
+  if(!rc) rc=bfpilot_archive_merge(stage.c_str(),cfg.destination.c_str(),cfg.request_id.c_str(),
+                                  manifest.c_str(),&options,&result);
+  g_status.total_bytes=g_status.bytes_written=result.bytes;
+  g_status.total_files=g_status.files_done=result.files;
+  if(rc) {
+    g_status.state="error";g_status.errno_code=-rc;
+    g_status.archive_exit_code=rc==-ECANCELED?RARX_USERBREAK:RARX_FATAL;
+    g_status.current="merge stopped; complete published entries retained, unattempted originals preserved";
+    g_status.error=std::string(rc==-ECANCELED?"archive merge cancelled: ":"archive merge failed: ")+strerror(-rc)+
+      (result.error_path[0]?std::string(" at ")+result.error_path:"")+"; inspect retained staging and merge receipt";
+    WriteStatus(true);
+    if(g_terminal_status_durable) ClearActiveFullArchive();
+    LogLine("archive merge stopped rc=%d published=%u entries=%u receipt=%s",rc,result.published,result.entries,manifest.c_str());
+    return 21;
+  }
+  g_status.stage.clear();g_stage_owned=false;
+  g_status.current=cfg.destination;g_status.state="done";g_status.percent=100;
+  WriteStatus(true);
+  if(!g_terminal_status_durable) return 21;
+  ClearActiveFullArchive();
+  if(!g_full_marker_pending) {
+    int cleanup=bfpilot_archive_merge_forget(stage.c_str(),cfg.destination.c_str(),cfg.request_id.c_str(),manifest.c_str());
+    if(cleanup)LogLine("completed merge receipt retained rc=%d path=%s",cleanup,manifest.c_str());
+  }
+  LogLine("archive merge done destination=%s files=%llu bytes=%llu",cfg.destination.c_str(),result.files,result.bytes);
   return 0;
 }
 
@@ -2438,7 +2508,7 @@ bfpilot_archive_run_prepared_job_impl(void) {
     return 3;
   }
 
-  if(PathExists(cfg.destination)) {
+  if(PathExists(cfg.destination) && !(cfg.merge && IsDirPath(cfg.destination))) {
     g_status.state = "error";
     g_status.error = "destination already exists";
     g_status.errno_code = EEXIST;
@@ -2458,7 +2528,8 @@ bfpilot_archive_run_prepared_job_impl(void) {
   }
 
   char stage_path[1024];
-  if(bfpilot_stage_path(parent.c_str(), "extract", stage_path, sizeof(stage_path)) != 0) {
+  const std::string stage_parent = cfg.merge && IsDirPath(cfg.destination) ? cfg.destination : parent;
+  if(bfpilot_stage_path(stage_parent.c_str(), "extract", stage_path, sizeof(stage_path)) != 0) {
     g_status.state = "error";
     g_status.error = "failed to select private staging on destination filesystem";
     g_status.errno_code = errno;
@@ -2573,7 +2644,9 @@ static bool RecoverActiveFullArchive() {
   g_status.threads=cfg.threads;g_stage_owned=!active.stage_missing;
   WriteStatus(true);
   int rc=RunFullArchive(active.source,active.stage,cfg.password,error,active.id);
-  if(active.stage_missing && rc==0) {
+  if(cfg.merge && IsDirPath(cfg.destination) && rc == 0) {
+    rc = FinalizeArchiveMerge(cfg);
+  } else if(active.stage_missing && rc==0) {
     if(active.published) {
       // The retained helper must confirm success before trusting publication.
       bfpilot_tree_totals_t totals={};
@@ -2683,13 +2756,14 @@ ArchiveDaemonMain(void *arg) {
 
   LogLine("archive daemon started pid=%ld", (long)getpid());
 
+  BatchInitialize();
   const bool recovered=RecoverActiveFullArchive();
   std::string startup_status;
   if(!recovered && ReadSmallFile(BFPILOT_ARCHIVE_STATUS, startup_status, 32768) &&
      StatusLooksInterrupted(startup_status)) {
     MarkInterruptedArchiveStatus(startup_status);
   }
-  BatchInitialize();
+  g_batch_safe_to_release.store(g_status.helper_quiescent && !g_full_marker_pending ? 1 : 0);
 
   std::string last_job;
   for(;;) {
