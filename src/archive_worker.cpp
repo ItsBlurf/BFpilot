@@ -2567,12 +2567,43 @@ static bool RecoverActiveFullArchive() {
 
 static std::atomic<int> g_archive_daemon_exit(0);
 static std::atomic<int> g_archive_daemon_running(0);
+static pthread_mutex_t g_archive_daemon_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t g_archive_daemon_condition = PTHREAD_COND_INITIALIZER;
+static bool g_archive_daemon_pending = false;
+
+extern "C" void
+bfpilot_archive_notify_prepared(void) {
+  pthread_mutex_lock(&g_archive_daemon_mutex);
+  g_archive_daemon_pending = true;
+  pthread_cond_signal(&g_archive_daemon_condition);
+  pthread_mutex_unlock(&g_archive_daemon_mutex);
+}
+
+static void ArchiveDaemonWait(void) {
+  // Retain periodic discovery for standalone/legacy file-based submissions.
+  // A retained predicate covers a notification arriving before we start waiting.
+  struct timespec deadline;
+  if(clock_gettime(CLOCK_REALTIME, &deadline) != 0) {
+    usleep(250000);
+    return;
+  }
+  deadline.tv_nsec += 250000000;
+  if(deadline.tv_nsec >= 1000000000) {
+    deadline.tv_sec++;
+    deadline.tv_nsec -= 1000000000;
+  }
+  pthread_mutex_lock(&g_archive_daemon_mutex);
+  while(!g_archive_daemon_pending && !g_archive_daemon_exit.load()) {
+    if(pthread_cond_timedwait(&g_archive_daemon_condition,
+                             &g_archive_daemon_mutex, &deadline) != 0) break;
+  }
+  g_archive_daemon_pending = false;
+  pthread_mutex_unlock(&g_archive_daemon_mutex);
+}
 
 static void *
 ArchiveDaemonMain(void *arg) {
-  g_archive_daemon_running = 1;
   struct RunningGuard { ~RunningGuard() { g_archive_daemon_running=0; } } running_guard;
-  g_archive_daemon_exit = 0;
   if(!MkdirAll(BFPILOT_ARCHIVE_DIR)) {
     LogLine("archive daemon mkdir failed errno=%d", errno);
     return (void *)(intptr_t)2;
@@ -2636,23 +2667,32 @@ ArchiveDaemonMain(void *arg) {
     } else {
       last_job.clear();
     }
-    usleep(250000);
+    ArchiveDaemonWait();
   }
   close(lock_fd);
-  g_archive_daemon_running = 0;
   return NULL;
 }
 
 
 extern "C" int
 bfpilot_archive_start_daemon(void) {
+  pthread_mutex_lock(&g_archive_daemon_mutex);
+  if(g_archive_daemon_running.exchange(1)) {
+    pthread_mutex_unlock(&g_archive_daemon_mutex);
+    return -EALREADY;
+  }
+  g_archive_daemon_exit = 0;
   struct stat active;
   if(lstat(BFPILOT_FULL_ACTIVE,&active)==0)g_archive_busy.store(1);
   pthread_t thread;
-  if(pthread_create(&thread, NULL, ArchiveDaemonMain, NULL) != 0) {
-    LogLine("archive daemon thread creation failed errno=%d", errno);
-    return -errno;
+  int rc = pthread_create(&thread, NULL, ArchiveDaemonMain, NULL);
+  if(rc != 0) {
+    g_archive_daemon_running = 0;
+    pthread_mutex_unlock(&g_archive_daemon_mutex);
+    LogLine("archive daemon thread creation failed rc=%d", rc);
+    return -rc;
   }
+  pthread_mutex_unlock(&g_archive_daemon_mutex);
 
   LogLine("archive daemon thread started successfully");
 
@@ -2662,7 +2702,10 @@ bfpilot_archive_start_daemon(void) {
 
 extern "C" void
 bfpilot_archive_stop_daemon(void) {
+  pthread_mutex_lock(&g_archive_daemon_mutex);
   g_archive_daemon_exit = 1;
+  pthread_cond_broadcast(&g_archive_daemon_condition);
+  pthread_mutex_unlock(&g_archive_daemon_mutex);
   for(int i = 0; i < 50; i++) {
     if(!g_archive_daemon_running) break;
     usleep(20000);

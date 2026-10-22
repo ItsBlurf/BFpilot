@@ -4764,6 +4764,12 @@ transfer_archive_prepare_request(const http_request_t *req,
   int normalized_nice = archive_normalize_nice_text(nice);
   int cleanup_partial_enabled = archive_bool_text_true(cleanup_partial);
 
+  /* Identical paths/options can represent a new request immediately after a
+     completed extraction. Keep the daemon's durable-job deduplication unique. */
+  static atomic_ullong archive_request_sequence;
+  struct timespec request_time = {0};
+  (void)clock_gettime(CLOCK_MONOTONIC, &request_time);
+  unsigned long long request_sequence = atomic_fetch_add(&archive_request_sequence, 1);
   json_buf_t job = {0};
   if(json_append(&job, "source=") != 0 ||
      json_append(&job, src) != 0 ||
@@ -4777,7 +4783,9 @@ transfer_archive_prepare_request(const http_request_t *req,
      json_appendf(&job, "%d", normalized_nice) != 0 ||
      json_append(&job, "\ncleanupPartial=") != 0 ||
      json_append(&job, cleanup_partial_enabled ? "1" : "0") != 0 ||
-     json_append(&job, "\n") != 0) {
+     json_appendf(&job, "\nrequestId=%ld-%lld-%ld-%llu\n", (long)getpid(),
+                  (long long)request_time.tv_sec, request_time.tv_nsec,
+                  request_sequence) != 0) {
     free(job.data);
     int rc = serve_error(req, 500, "out of memory");
 #if BFPILOT_ENABLE_INTEGRATED_ARCHIVE
@@ -4813,6 +4821,7 @@ transfer_archive_prepare_request(const http_request_t *req,
   bfpilot_search_mark_stale("archive");
 
 #if BFPILOT_ENABLE_INTEGRATED_ARCHIVE
+  bfpilot_archive_notify_prepared();
   bfpilot_log("archive integrated worker job queued");
 #endif
 
