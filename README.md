@@ -160,10 +160,10 @@ Third-party code under `third_party/` keeps its own licenses.
 The upstream audit and adopt/reject rationale are documented in
 [docs/UPSTREAM_FILE_MANAGER_COMPARISON.md](docs/UPSTREAM_FILE_MANAGER_COMPARISON.md).
 
-The interface supports English and Simplified Chinese. Choose a language in
-the header, or use Auto to follow the browser language. Names, paths, file
-contents and diagnostic log contents retain their original text. Finish an
-active task or close the editor/dialog before changing the interface language.
+The interface is English-only. File names, paths, contents and diagnostic logs
+retain their original text, including non-English names. On the PS5, press X
+once to select a focused row and again to open it; Square toggles selection.
+Search remains available through its field/button; it has no controller shortcut.
 
 SMB PKG sources stream through an embedded loopback service and stay available
 across ordinary BFpilot exit/reload. Keep the SMB server and source files

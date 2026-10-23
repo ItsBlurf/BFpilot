@@ -33,7 +33,7 @@ assert(html.includes("api('/api/fs/job/status')") &&
   html.includes('refreshSearchStatus(true)'),
   'browser reopen recovers every active task surface')
 assert(html.includes("fetch('/api/fs/job/cancel')") &&
-  html.includes("toast('Cancelling archive...')") &&
+  html.includes("formatText('Cancelling archive...')") &&
   !html.includes('Archive extraction cannot be cancelled yet'),
   'active archive extraction can be cancelled from the browser')
 assert(worker.includes('atomic_store_explicit(&g_init_done') &&

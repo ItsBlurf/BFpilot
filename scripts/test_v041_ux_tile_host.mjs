@@ -17,6 +17,7 @@ const makefile = read('Makefile')
 const tileBoot = read('src/tile_bootstrap.c')
 const appinst = read('src/appinst_direct.c')
 const pkgWorker = read('src/pkg_worker_main.c')
+const pkgABI = read('src/appinst_pkg_abi.h')
 const pkgClient = read('src/pkg_worker_client.c')
 const transfer = read('src/transfer.c')
 const pathOps = read('src/path_ops.c')
@@ -102,11 +103,12 @@ assert(pkgWorker.includes('"/user%s"') &&
        !pkgWorker.includes('"file:///user%s"'),
        'local PKGs use absolute AppInst paths and map /data to /user/data')
 assert(!pkgWorker.includes('sceAppInstUtilAppInstallPkg') &&
-       pkgWorker.includes('.uri = install_path') &&
+       pkgWorker.includes('.uri = uri') &&
+       pkgWorker.includes('return install_metadata(install_path, "", "", content_id)') &&
        pkgWorker.includes('fresh elfldr'),
        'local PKGs use a fresh full-content worker without hollow-tile fallback')
-assert(pkgWorker.includes('languages[30][8]') &&
-       pkgWorker.includes('sizeof(appinst_playgo_info_t) == 9984'),
+assert(pkgWorker.includes('#include "appinst_pkg_abi.h"') && pkgABI.includes('languages[30][8]') &&
+       pkgABI.includes('sizeof(appinst_playgo_info_t) == 9984'),
        'correct AppInst PlayGo ABI')
 assert(pkgWorker.includes('htonl(INADDR_LOOPBACK)') &&
        pkgWorker.includes('PS5_SYSTEM_INSTALL_AUTHID') &&
