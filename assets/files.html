@@ -40,6 +40,10 @@
       border-radius:4px; font:inherit;
     }
     #archive-overlay [hidden], #job-results[hidden] { display:none !important; }
+    #results-overlay[hidden] { display:none !important; }
+    #results-cards article { border-top:1px solid var(--line);padding:12px 0;overflow-wrap:anywhere; }
+    #results-cards h3 { margin:0 0 8px; }
+    #results-cards p { margin:5px 0;color:#b5c3d0; }
     #archive-results article { padding:10px 0;border-bottom:1px solid #344655;overflow-wrap:anywhere; }
     #archive-results p { margin:4px 0;color:#b5c3d0; }
 
@@ -375,6 +379,11 @@
       padding-right: 0;
     }
 
+    .download-options {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 0 8px; margin: 0 2px; border-left: 1px solid #536171; border-right: 1px solid #536171;
+    }
+    .download-options[hidden] { display: none; }
     .context-actions[hidden] {
       display: none;
     }
@@ -545,15 +554,6 @@
       user-select: none;
     }
 
-    .file-row .name {
-      min-height: 0; height: 100%; width: 100%; padding: 0;
-      text-align: left; color: inherit; font: inherit; border: 0;
-      border-radius: 0; background: transparent; box-shadow: none;
-      -webkit-user-select: none; user-select: none;
-    }
-    .file-row .name:hover { background: transparent; border: 0; }
-    .file-row .name:focus-visible { outline: 2px solid var(--deep-2); outline-offset: -2px; }
-
     /* Sony's desktop-size WebCard benefits from compact controls without page
        zoom. Keep the row metric shared with virtual scrolling and navigation. */
     html.ps5 { --file-row-height: 36px; }
@@ -562,7 +562,6 @@
     .ps5 .shell { grid-template-columns: 150px minmax(0, 1fr) 272px; padding: 10px; gap: 10px; }
     .ps5 .brand { width: 38px; height: 38px; }
     .ps5 .title > strong { font-size: 16px; }
-    .ps5 .file-row .name { min-height: 0; }
     .ps5 .chk-col input { width: 16px; height: 16px; min-height: 0; }
     @media (max-width: 1240px) {
       .ps5 .shell { grid-template-columns: 132px minmax(0, 1fr); }
@@ -902,6 +901,8 @@
       .brand { grid-row: 1; grid-column: 1; }
       .title { grid-row: 1; grid-column: 2; }
 
+      #job-results { grid-row: 2; grid-column: 3 / -1; }
+
       #view-logs {
         grid-row: 1;
         grid-column: 3;
@@ -1137,6 +1138,7 @@
         </div>
       </div>
       <div class="status" id="status"><span class="dot"></span><span>Connecting</span></div>
+      <button id="job-results" type="button" title="View latest operation results">Results</button>
       <button id="view-logs" class="button" title="View System Logs">Logs</button>
       <button id="terminate-top" class="danger" title="Terminate Payload">Exit</button>
     </div>
@@ -1181,11 +1183,13 @@
         <span id="context-actions" class="action-group context-actions" hidden>
           <button id="open-folder" title="Open the selected folder">Open</button>
           <button id="rename">Rename</button>
+          <span id="download-options" class="download-options" role="group" aria-label="Download settings">
           <button id="download">Download</button>
           <select id="download-mode" aria-label="Download mode" title="Individual items may require your browser to allow multiple downloads. Folders download as TAR.">
             <option value="combined">Combined TAR</option>
             <option value="individual">Individual items</option>
           </select>
+          </span>
           <button id="edit-file" class="primary">Edit</button>
           <button id="load-payload" class="primary" title="Send selected .elf/.bin/.js to elfldr on port 9021">Load payload</button>
           <button id="pkg-info" class="primary" title="View PKG metadata and icon" hidden>PKG Info</button>
@@ -1200,7 +1204,6 @@
             <button id="chmod" title="Set permissions on selected paths">Change Permissions</button>
           </div>
         </details>
-        <button id="job-results" type="button" title="View the previous extraction batch" hidden>Extraction results</button>
       </div>
 
       <div id="upload-drop" class="upload-drop">
@@ -1289,6 +1292,21 @@
         <button type="button" id="smb-close">Cancel</button>
       </div>
     </form>
+  </div>
+  <div id="results-overlay" role="dialog" aria-modal="true" aria-labelledby="results-title" hidden style="position:fixed;inset:0;background:rgba(0,0,0,.85);z-index:10000;padding:20px;overflow:auto;">
+    <section style="max-width:760px;margin:4vh auto;background:#111821;color:#e3e8ed;border:1px solid #3b4d60;border-radius:8px;padding:20px;">
+      <h2 id="results-title" style="margin-top:0;">Results</h2>
+      <p>Latest retained operation status. Package submissions are separate from completed Sony installations.</p>
+      <div id="results-cards" aria-live="polite">
+        <article><h3>File operations</h3><div id="results-files">Loading...</div></article>
+        <article><h3>Archives</h3><div id="results-archives">Loading...</div></article>
+        <article><h3>Packages</h3><div id="results-packages">Loading...</div></article>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;">
+        <button id="results-archive-details" type="button" disabled>Archive details</button>
+        <button id="results-close" type="button">Close</button>
+      </div>
+    </section>
   </div>
   <div id="archive-overlay" role="dialog" aria-modal="true" aria-labelledby="archive-title" hidden style="position:fixed;inset:0;background:rgba(0,0,0,.85);z-index:10000;padding:20px;overflow:auto;">
     <section style="max-width:640px;margin:20px auto;background:#101720;border:1px solid #344655;border-radius:8px;padding:20px;">
@@ -1497,7 +1515,7 @@
   </div>
 
   <div id="controller-legend" class="controller-legend">
-    <span class="legend-item" id="legend-open" title="Open / Enter (Cross)"><kbd class="btn-ps5 btn-cross"><svg width="11" height="11" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M2.5 2.5L9.5 9.5M9.5 2.5L2.5 9.5"/></svg></kbd> Open</span>
+    <span class="legend-item clickable" id="legend-open" title="Open the highlighted row (R1)"><kbd class="btn-ps5">R1</kbd> Open</span>
     <span class="legend-item clickable" id="legend-select" title="Toggle Selection (Square / Space)"><kbd class="btn-ps5 btn-square"><svg width="11" height="11" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><rect x="2" y="2" width="8" height="8" rx="1"/></svg></kbd> Select</span>
   </div>
 
@@ -1511,7 +1529,6 @@
     const state = {
       path: '/data',
       focusedIndex: 0,
-      activationKey: '',
       entries: [],
       places: [
         { label: formatText('Root'), path: '/', kind: 'root' },
@@ -1634,7 +1651,7 @@
 
     function pathNavigationBlocked() {
       return Boolean(state.loadingPath || state.uploadBusy || state.downloadQueue || state.jobTimer ||
-        !el('smb-overlay').hidden || !el('archive-overlay').hidden ||
+        !el('smb-overlay').hidden || !el('archive-overlay').hidden || !el('results-overlay').hidden ||
         state.archiveTimer || state.pkgTimer || state.searchTimer ||
         el('image-overlay').style.display === 'flex' ||
         el('editor-overlay').style.display === 'flex' ||
@@ -2604,6 +2621,7 @@
       setContextAction('open-folder', !!(one && one.dir));
       setContextAction('rename', !!one && !one.virtual);
       setContextAction('download', operable);
+      el('download-options').hidden = !operable;
       setContextAction('download-mode', entries.length > 1 && operable);
       el('download').disabled = !operable || Boolean(state.downloadQueue);
       el('download-mode').disabled = Boolean(state.downloadQueue);
@@ -2732,7 +2750,7 @@
       if (itemIndex !== undefined) row.dataset.index = itemIndex;
       row.tabIndex = -1;
       row.innerHTML = chkHtml +
-        '<span class="tag"></span><button type="button" class="name"></button>' +
+        '<span class="tag"></span><span class="name"></span>' +
         '<span class="muted-cell type-kind"></span><span class="muted-cell size"></span>' +
         '<span class="muted-cell mtime"></span><span class="muted-cell mode"></span>';
 
@@ -2785,11 +2803,6 @@
           if (state.selected.has(key)) state.selected.delete(key);
           else state.selected.add(key);
         } else {
-          if (IS_PS5_BROWSER) {
-            if (!nativeRowActivation()) return;
-            selectOrActivateItem(entry);
-            return;
-          }
           if (state.selected.size === 1 && state.selected.has(key)) return;
           state.selected.clear();
           state.selected.add(key);
@@ -2800,7 +2813,7 @@
       row.addEventListener('dblclick', (event) => {
         if (event.target.closest('.chk-col, .mode-clickable')) return;
         if (parent) return;
-        if (!IS_PS5_BROWSER) activateItem(entry);
+        activateItem(entry);
       });
 
       return row;
@@ -3095,7 +3108,6 @@
         savePath(state.path);
         state.entries = sortEntries(data.entries || []);
         state.focusedIndex = 0;
-        state.activationKey = '';
         state.selected.clear();
         drawList();
         refreshShareCapacity();
@@ -3514,6 +3526,67 @@
       }
     }
 
+    let resultsTimer = 0;
+    let resultsEpoch = 0;
+    let resultsReturnFocus = null;
+    function closeOperationResults() {
+      el('results-overlay').hidden = true;
+      ++resultsEpoch;
+      if (resultsTimer) clearInterval(resultsTimer);
+      resultsTimer = 0;
+      if (resultsReturnFocus && resultsReturnFocus.isConnected) resultsReturnFocus.focus();
+    }
+    function resultLines(id, lines) {
+      const box = el(id); box.replaceChildren();
+      for (const [label, value] of lines) {
+        if (value === undefined || value === null || value === '') continue;
+        const p = document.createElement('p'), strong = document.createElement('strong');
+        strong.textContent = label + ': '; p.append(strong, document.createTextNode(String(value)));box.append(p);
+      }
+    }
+    function showOperationResults() {
+      resultsReturnFocus = document.activeElement;
+      el('results-overlay').hidden = false;
+      el('results-close').focus();
+      const epoch = ++resultsEpoch;
+      let inFlight = false;
+      async function update() {
+        if (inFlight || epoch !== resultsEpoch || document.hidden) return;
+        inFlight = true;
+        try {
+          const responses = await Promise.allSettled([
+            api('/api/fs/job/status'), api('/api/fs/archive/batch/status?summary=1'), api('/api/fs/pkg/status')
+          ]);
+          if (epoch !== resultsEpoch) return;
+          const [files, archives, packages] = responses;
+          if (files.status === 'fulfilled') {
+            const job = files.value;
+            resultLines('results-files', job.verb ? [
+              ['Operation', jobVerbLabel(job.verb)], ['State', job.busy ? (job.cancelling ? 'Cancelling' : 'Running') : job.error ? 'Failed or cancelled' : 'Completed'],
+              ['Progress', jobProgressText(job)], ['Source', displayFsText(job.source || '')], ['Destination', displayFsText(job.destination || '')], ['Error', job.error]
+            ] : [['Status', 'No retained file operation']]);
+          } else resultLines('results-files', [['Status', 'Unavailable'], ['Error', files.reason.message]]);
+          if (archives.status === 'fulfilled') {
+            const batch = archives.value;
+            resultLines('results-archives', batch.count ? [
+              ['State', batch.state], ['Completed', Number(batch.succeeded || 0)], ['Failed', Number(batch.failed || 0)],
+              ['Total archives', Number(batch.count || 0)]
+            ] : [['Status', 'No retained archive batch']]);
+            el('results-archive-details').disabled = !batch.count;
+          } else {
+            resultLines('results-archives', [['Status', 'Unavailable'], ['Error', archives.reason.message]]);
+            el('results-archive-details').disabled = true;
+          }
+          if (packages.status === 'fulfilled') {
+            const pkg = packages.value;
+            resultLines('results-packages', [['State', pkg.state || 'idle'], ['Queue', pkgProgressText(pkg)]]);
+          } else resultLines('results-packages', [['Status', 'Unavailable'], ['Error', packages.reason.message]]);
+        } finally { inFlight = false; }
+      }
+      if (resultsTimer) clearInterval(resultsTimer);
+      resultsTimer = setInterval(update, 2000);update();
+    }
+
     let archiveSelection = [];
     let archiveReturnFocus = null;
     let archiveBatchId = '';
@@ -3573,7 +3646,7 @@
       if (state.archiveTimer) clearInterval(state.archiveTimer);
       if (state.jobHideTimer) clearTimeout(state.jobHideTimer);
       if (!quiet) el('job').classList.add('show');
-      el('job-results').hidden = false;
+
       let inFlight = false;
       async function tick() {
         if (inFlight) return;
@@ -3616,7 +3689,7 @@
       archiveResumePending = true;
       try {
         const batch = await api('/api/fs/archive/batch/status?summary=1');
-        el('job-results').hidden = !batch.count;
+
         if (batch.count) archiveBatchId = batch.id;
         if (['prepared', 'running', 'recovering'].includes(batch.state)) {
           pollArchiveBatch(batch.id, true);
@@ -4327,7 +4400,6 @@
         return;
       }
       const nextIndex = Math.max(0, Math.min(items.length - 1, idx));
-      if (nextIndex !== state.focusedIndex) state.activationKey = '';
       state.focusedIndex = nextIndex;
       const list = el('list');
       const rowHeight = fileRowHeight();
@@ -4345,11 +4417,7 @@
           r.classList.add('gamepad-focus');
         }
       });
-      requestAnimationFrame(() => {
-        if (!fileNavigationAllowed()) return;
-        const button = el('list').querySelector('.file-row[data-index="' + state.focusedIndex + '"] .name');
-        if (button) button.focus({ preventScroll: true });
-      });
+
     }
 
     function activateFocusedItem() {
@@ -4360,7 +4428,6 @@
 
     function activateItem(item) {
       if (pathNavigationBlocked()) return;
-      state.activationKey = '';
       if (item.isParent) {
         navigateParent();
         return;
@@ -4381,44 +4448,25 @@
       }
     }
 
-    function selectOrActivateItem(item) {
-      if (pathNavigationBlocked()) return;
-      if (item.isParent) { activateItem(item); return; }
-      const key = entryKey(item);
-      if (state.activationKey === key && state.selected.size === 1 && state.selected.has(key)) {
-        activateItem(item);
-      } else {
-        state.activationKey = key;
-        state.selected.clear(); state.selected.add(key);
-        syncSelectionRows();
-      }
-    }
-
-    function confirmFocusedItem() {
-      const items = getVisibleItems();
-      if (state.focusedIndex >= 0 && state.focusedIndex < items.length) selectOrActivateItem(items[state.focusedIndex]);
-    }
-
     function fileNavigationAllowed(target = document.activeElement) {
       return !pathNavigationBlocked() && !(target && target.closest &&
         target.closest('input,textarea,select,button:not(.name),a,summary,[contenteditable="true"]'));
     }
 
-    let pendingPadActivation = 0;
-    let lastNativeActivationAt = 0;
-    let lastPadActivationAt = 0;
-    function nativeRowActivation() {
-      if (pendingPadActivation) clearTimeout(pendingPadActivation);
-      pendingPadActivation = 0;
-      lastNativeActivationAt = performance.now();
-      // Some browsers expose both a Gamepad edge and a delayed synthetic click.
-      if (lastNativeActivationAt - lastPadActivationAt < 180) return false;
-      return true;
+    let lastR1Source = '';
+    let lastR1At = -Infinity;
+    function openFocusedFromR1(source) {
+      const target = document.activeElement;
+      if (pathNavigationBlocked() || document.hidden || (target && target.closest &&
+          target.closest('input:not([type="checkbox"]),textarea,select,[contenteditable="true"]'))) return;
+      const now = performance.now();
+      if (source !== lastR1Source && now - lastR1At < 180) return;
+      lastR1Source = source; lastR1At = now;
+      activateFocusedItem();
     }
 
     function toggleFocusedSelection() {
       if (!fileNavigationAllowed()) return;
-      state.activationKey = '';
       const items = getVisibleItems();
       if (state.focusedIndex < 0 || state.focusedIndex >= items.length) return;
       const item = items[state.focusedIndex];
@@ -4473,16 +4521,9 @@
           else setFocusedIndex(state.focusedIndex + 1);
         }
 
-        // Prefer a native click/Enter if Sony emits one; otherwise use the pad edge.
-        if (allowed && justPressed(0) && performance.now() - lastNativeActivationAt >= 180) {
-          if (pendingPadActivation) clearTimeout(pendingPadActivation);
-          pendingPadActivation = setTimeout(() => {
-            pendingPadActivation = 0;
-            if (!fileNavigationAllowed() || document.hidden) return;
-            lastPadActivationAt = performance.now();
-            confirmFocusedItem();
-          }, 120);
-        }
+        // R1 opens the highlighted row, independently of multi-selection.
+        // Cross and L1 have no BFpilot action; normal browser interaction stays native.
+        if (justPressed(5)) openFocusedFromR1('gamepad');
         // Square (button 2): toggle multi-select checkbox (Issue #11)
         if (allowed && justPressed(2)) {
           toggleFocusedSelection();
@@ -4500,8 +4541,6 @@
 
     async function boot() {
       document.addEventListener('visibilitychange', () => {
-        if (pendingPadActivation) clearTimeout(pendingPadActivation);
-        pendingPadActivation = 0;
         lastPadButtons = {};
         if (!document.hidden) reconcileArchiveView();
       });
@@ -4837,7 +4876,17 @@
         try { await api('/api/fs/job/cancel'); }
         catch (err) { el('archive-message').textContent = err.message; el('archive-stop').disabled = false; }
       });
-      el('job-results').addEventListener('click', showArchiveResults);
+      el('job-results').addEventListener('click', showOperationResults);
+      el('results-close').addEventListener('click', closeOperationResults);
+      el('results-archive-details').addEventListener('click', () => { closeOperationResults();showArchiveResults(); });
+      el('results-overlay').addEventListener('keydown', event => {
+        if (event.key === 'Escape') { event.preventDefault();closeOperationResults();return; }
+        if (event.key !== 'Tab') return;
+        const buttons = Array.from(el('results-overlay').querySelectorAll('button')).filter(button => !button.disabled && !button.hidden);
+        const first = buttons[0], last = buttons[buttons.length - 1];
+        if (event.shiftKey && document.activeElement === first) { event.preventDefault();last.focus(); }
+        else if (!event.shiftKey && document.activeElement === last) { event.preventDefault();first.focus(); }
+      });
       el('archive-overlay').addEventListener('keydown', event => {
         if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); closeArchiveDialog(); return; }
         if (event.key !== 'Tab') return;
@@ -5002,6 +5051,12 @@
         const code = event.keyCode || event.which || 0;
         const key = event.key || '';
         const tag = (event.target && event.target.tagName) || '';
+        if (IS_PS5_BROWSER && (code === 116 || key === 'F5' || key === 'L1')) {
+          event.preventDefault(); return;
+        }
+        if (IS_PS5_BROWSER && (code === 117 || key === 'F6' || key === 'R1')) {
+          event.preventDefault(); if (!event.repeat) openFocusedFromR1('keyboard'); return;
+        }
         if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') {
           if (key === 'Escape' || code === 27) event.target.blur();
           return;
@@ -5024,10 +5079,7 @@
           const jump = Math.max(1, Math.floor((el('list').clientHeight || 400) / fileRowHeight()));
           setFocusedIndex(state.focusedIndex + jump);
         } else if (code === 13 || key === 'Enter') {
-          event.preventDefault();
-          if (event.repeat || !nativeRowActivation()) return;
-          if (IS_PS5_BROWSER) confirmFocusedItem();
-          else activateFocusedItem();
+          if (!IS_PS5_BROWSER) { event.preventDefault(); if (!event.repeat) activateFocusedItem(); }
         } else if (code === 113 || key === 'F2' || code === 32 || key === ' ' || key === 'Spacebar') {
           // Square on PS5 DualSense (F2 / 113) & Space on PC keyboard
           event.preventDefault();
@@ -5072,7 +5124,7 @@
         if (job.busy) pollJob();
       }).catch(() => {});
       api('/api/fs/archive/batch/status?summary=1').then(async batch => {
-        if (batch.count) { archiveBatchId = batch.id; el('job-results').hidden = false; }
+        if (batch.count) archiveBatchId = batch.id;
         if (['prepared', 'running', 'recovering'].includes(batch.state)) pollArchiveBatch(batch.id);
         else {
           const job = await api('/api/fs/archive/status');

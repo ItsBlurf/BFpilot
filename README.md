@@ -161,8 +161,8 @@ The upstream audit and adopt/reject rationale are documented in
 [docs/UPSTREAM_FILE_MANAGER_COMPARISON.md](docs/UPSTREAM_FILE_MANAGER_COMPARISON.md).
 
 The interface is English-only. File names, paths, contents and diagnostic logs
-retain their original text, including non-English names. On the PS5, press X
-once to select a focused row and again to open it; Square toggles selection.
+retain their original text, including non-English names. On the PS5, R1 opens the highlighted row, even during multi-selection;
+Square toggles selection. X keeps its normal browser behavior.
 Search remains available through its field/button; it has no controller shortcut.
 
 SMB PKG sources stream through an embedded loopback service and stay available
