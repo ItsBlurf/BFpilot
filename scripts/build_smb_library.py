@@ -1,15 +1,19 @@
 """PS5 libsmb2 build; pinned source and complete relink inputs stay bundled."""
 import concurrent.futures,hashlib,json,os,re,shutil,subprocess
 from pathlib import Path
+from build_toolchain import ensure_stamp
 root=Path(__file__).resolve().parents[1];source=root/'third_party/libsmb2'
 build=root/'build/smb2';build.mkdir(parents=True,exist_ok=True)
 assert os.environ.get('PS5_PAYLOAD_SDK'),'load the PS5 environment first'
-assert shutil.which('ps5-clang.cmd') if os.name=='nt' else True
-compiler='ps5-clang.cmd' if os.name=='nt' else str(Path(os.environ['PS5_PAYLOAD_SDK'])/'bin/prospero-clang')
+sdk=Path(os.environ['PS5_PAYLOAD_SDK'])
+compiler=str(sdk/'win/prospero-clang.cmd') if os.name=='nt' else str(sdk/'bin/prospero-clang')
+assert Path(compiler).is_file(),'PS5 SDK compiler wrapper is missing'
 names=list(dict.fromkeys(re.findall(r'\b([a-zA-Z0-9_-]+\.c)\b',(source/'lib/Makefile.am').read_text())))
 names=[name for name in names if name!='krb5-wrapper.c']
 headers=list((source/'include').rglob('*.h'))+list((source/'lib').glob('*.h'))+[source/'ps5/config.h',Path(__file__)]
-latest=max(p.stat().st_mtime_ns for p in headers)
+stamp=build/'toolchain.json'
+ensure_stamp(stamp)
+latest=max(p.stat().st_mtime_ns for p in headers+[stamp])
 def compile_one(name):
  obj=build/(name[:-2]+'.o');path=source/'lib'/name
  if obj.exists() and obj.stat().st_mtime_ns>=max(latest,path.stat().st_mtime_ns):return

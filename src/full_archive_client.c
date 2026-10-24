@@ -1,5 +1,5 @@
-/* BFpilot-owned framing client. WFM/7-Zip remains a separately linked LGPL
- * service; no public network listener or dependency on WFM's process/socket. */
+/* Client for the separately linked WFM 7-Zip Helper (LGPL).
+ * The service uses a private local socket. See NOTICE.md for source/licenses. */
 #include "full_archive_client.h"
 #include "diag.h"
 #include "payload_launch.h"

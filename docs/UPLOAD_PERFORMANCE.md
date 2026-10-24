@@ -1,49 +1,29 @@
-# Upload performance
+# Upload troubleshooting
 
-## What the PS5 actually does
+Upload speed depends on the network, firmware, destination filesystem and drive.
+Raw SSD speed does not predict the speed of a write through the PS5 filesystem.
 
-| | |
-|---|---|
-| Gigabit LAN | ~110–112 MiB/s ceiling |
-| `/data` writes | Usually way slower than raw SSD (PFS / crypto / scheduler) |
-| USB/ext | Sometimes faster than `/data` |
-| FW variance | zftpd-style uploads land roughly 20–113 MB/s depending on FW |
+BFpilot uses a 2 MiB upload buffer, HTTP keep-alive, a requested 4 MiB receive
+window and a free-space check before writing. Data goes to a temporary file,
+with a flush every 256 MiB, before it is renamed into place.
 
-## What we ship
+## Finding a bottleneck
 
-* Single-buffer STOR: `recv` → `write` (2 MiB, 16 KiB aligned)
-* HTTP keep-alive, up to 64 requests per connection
-* Download stream buffer 2 MiB (16 KiB aligned)
-* Listen SO_RCVBUF 4 MiB, SO_SNDBUF 4 MiB, backlog 32
-* Free-space check + temp file then rename
-* A writeback checkpoint every 256 MiB bounds dirty pages on very large files
-* UI stops spamming toasts every file on multi-upload
+1. Use wired LAN where possible and avoid other large transfers.
+2. Upload a file of at least 500 MB to `/data`, then repeat on USB.
+3. Compare `averageMBps`, `recvMs`, `writeMs`, `syncMs` and `syncCount` in the response.
+4. Check the transfer log for errors and compare several runs.
 
-## What we don't do
+Example log fields:
 
-* Parallel writers into `/data` (often slower)
-* Double-buffer upload
-* Whole-file `posix_fallocate` while the browser is still POSTing
-* `TCP_NODELAY` on bulk transfer
-* `sendfile` / aggressive `F_NOCACHE` (panic risk on some media)
-
-## Measuring
-
-1. Inject `bfpilot.elf`
-2. Upload something big (≥500 MB) to `/data` and check `averageMBps`,
-   `recvMs`, `writeMs`, `syncMs`, and `syncCount` in the response
-3. Multi-file uploads should gain most from keep-alive
-4. Wired beats Wi-Fi
-
-Log line looks like:
-
-```
-upload end ... average_mbps=… recv_ms=… write_ms=… sync_ms=… sync_count=… buf_size=2097152 aligned=1
+```text
+upload end ... average_mbps=... recv_ms=... write_ms=... sync_ms=... sync_count=... buf_size=2097152 aligned=1
 ```
 
-`write_ms` >> `recv_ms` → disk bound. The other way around → network / window.
+High `write_ms` or `sync_ms` points toward storage time. High `recv_ms` points
+toward waiting for incoming data, which can involve the network or client.
+These timings help narrow the cause; they do not identify it on their own.
 
-Code: `src/transfer.c`, `src/websrv_lite.c`, `src/fs.c`, `assets/files.html`.
-
-The full reasoning, exclusions, telemetry, and hardware matrix are in
-`docs/PERFORMANCE_STABILITY.md`.
+Implementation: `src/transfer.c`, `src/websrv_lite.c`, `src/fs.c` and
+`assets/files.html`. See [transfer implementation](PERFORMANCE_STABILITY.md)
+for buffers, copy behavior and a repeatable transfer check.

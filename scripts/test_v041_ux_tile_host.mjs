@@ -121,7 +121,7 @@ assert(pkgWorker.includes('INIT_TIMEOUT_SENTINEL') &&
        'AppInst init is bounded and clean shutdown retires the private worker')
 assert(tileBoot.includes('bfpilot_appinst_install_tile'), 'tile uses direct AppInst')
 assert(html.includes("lower.endsWith('.shn')") && transfer.includes('".shn"'),
-       'upstream .shn text support exists in both UI and server validation')
+       '.shn text support exists in both UI and server validation')
 
 // --- Prior issue surface (#7-12, #10) ---
 assert(html.includes("row.addEventListener('dblclick'") &&

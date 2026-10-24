@@ -1,43 +1,24 @@
 # BFpilot v0.4.2 Test Build
 
-This prerelease contains the file-manager improvements from the complete
-`ps5-web-file-manager`, Elf Arsenal, ps5upload, and PS5 filesystem-stability
-audit. It remains English-only.
+This test build added text editing, folder uploads and safer file operations.
+These notes describe v0.4.2; use the current README for setup instructions.
 
 ## Payloads
 
-- `bfpilot.elf`: file manager and integrated archive extraction on port 5905.
-  This payload intentionally contains no AppInst imports.
-- `bfpilot-launcher-installer.elf`: optional separate Media-tile installer.
+- `bfpilot.elf`: file manager and archive extraction on port 5905.
+- `bfpilot-launcher-installer.elf`: separate optional Media-tile installer.
 
-Inject `bfpilot.elf` first. Inject the installer separately only if the Media
-tile is wanted.
+Load the file manager first, then the installer if you want the Media tile.
 
-## Highlights
+## Changes
 
-- Create and safely edit common UTF-8 source/config/text files.
-- Preserve existing UTF-8 BOM and dominant LF/CRLF/CR newline style.
-- Detect edit conflicts and use same-directory atomic replacement.
-- Drag-and-drop files or recursively enumerated folders for upload.
-- Use bounded POST bodies for copy, move, and delete paths.
-- Preserve an existing destination until a staged copy is complete.
-- Validate and stage existing-directory merges.
-- Add `lstat`, no-symlink, same-device, checked-path, inode revalidation, and
-  64-level depth protections to recursive operations.
-- Serialize upload, copy, delete, text-edit, and archive mutations through the
-  single-writer gate.
-- Warn before writing into common ShadowMountPlus scan locations.
-
-## Test-build warning
-
-The payloads pass host regressions, PS5 cross-compilation with `-Werror`, ELF
-header/import validation, and UI JavaScript parsing. This exact build has not
-yet completed the PS5 hardware test ladder. Back up important data, test a
-small operation first, and do not stack other debug/file-manager payloads while
-evaluating it.
-
-The full upstream adoption/rejection rationale is in
-`docs/UPSTREAM_FILE_MANAGER_COMPARISON.md`.
+- Create and edit UTF-8 text, source and configuration files.
+- Preserve existing text encoding markers and newline style; detect conflicting edits.
+- Upload files and folders with drag-and-drop in supported browsers.
+- Keep an existing file until its replacement is complete.
+- Check paths, filesystem boundaries and symbolic links during folder operations.
+- Run file-changing operations one at a time.
+- Warn before writes to common ShadowMountPlus scan folders.
 
 ## SHA-256
 

@@ -1,183 +1,94 @@
 # BFpilot
 
-PS5 payload that runs a browser file manager on port **5905**:
+Web-based file manager for the PS5. Runs as a single `bfpilot.elf`, accessible
+from the console browser or another device on the same network.
 
-```
-http://<PS5_IP>:5905/
-```
-
-Works from the PS5 browser or any PC/phone on the same network.
-
-Development version **v0.4.5-dev.6**. Tested on PS5 FW **11.60**.
-
-## Payloads
-
-| File | What it is |
-|------|------------|
-| `bfpilot.elf` | All-in-one file manager, archive extractor, PKG installer, and **Media** tile installer on port **5905**. |
-
-**Typical use:** inject `bfpilot.elf`. It starts the UI first, then installs or refreshes the `BFPL00001` Media tile when needed. There is no second installer ELF.
-
-**Data layout:** everything lives under **`/data/BFpilot`** only (logs, search index, shortcuts, archive jobs).
+[Downloads](https://github.com/ItsBlurf/BFpilot/releases) · [Release notes](docs/RELEASE_NOTES_NEXT.md) · [Changelog](CHANGELOG.md)
 
 ## Features
 
-**Browse & transfer**
-- Two transfer flows: copy or move straight to a target, or stage items, navigate, and choose Paste Here
-- Places: `/`, `/data`, `/data/homebrew`, `/user`, `/mnt`, USB/ext when plugged in, custom shortcuts
-- Upload files or a whole folder using the picker or drag-and-drop (recursive
-  dropped folders need the browser's WebKit entry API)
-- Download, copy, move, rename, mkdir, recursive delete
-- **Load payload**: double-click `.elf`/`.bin`/`.js` (or toolbar) to send it to elfldr on port **9021**
-- Progress + cancel on big jobs; overwrite/merge/skip when the destination already exists
-- Free space check before copy/move when size is known
-- Same-device, no-symlink recursive traversal with a 64-level depth cap and immediate abort on fatal storage/vnode errors
-- ShadowMountPlus warning before writes to its common scan roots
-- Single-click selects; double-click opens folders; the Open button works with controllers
-- Circle/browser Back returns through folder history; active operations block accidental navigation, and returning to a parent reveals the folder just left
-- The last successful folder and sort mode survive a browser reload; long paths keep their rightmost component visible
-- Folder size is calculated in the background when a folder is selected
-- Large folder copies start without waiting for a complete source scan;
-  progress reports completed files while discovering the remaining items
+- Browse, copy, move, rename, delete and change permissions.
+- Upload files and folders; download selections individually or as a TAR.
+- Connect to SMB2/3 shares for file transfers, editing and PKG access.
+- Extract ZIP/ZIPX, RAR, 7z and [other formats](docs/ARCHIVE_EXTRACTION.md),
+  including supported encrypted and split archives.
+- Queue multiple extractions, merge folders and review operation results.
+- Search indexed paths, edit text files and view images.
+- Load ELF/BIN/JS payloads and submit local or SMB-hosted PKGs for installation.
 
-**Selection**
-- Checkboxes + select all (works fine with a controller)
+## Usage
 
-**Search**
-- **Index All** crawls some useful mounts into RAM (Everything-style queries after that)
-- Priority roots first (`/data`, `/user`, USB/ext), then system paths; stays on the same filesystem (`st_dev`) so it doesn't walk sandbox/nullfs nonsense
-- Bad roots are skipped instead of killing the whole index
-- Cap about 2 million entries; cache at `/data/BFpilot/search.idx`
-- Case-insensitive multi-word search, match highlighting
-
-**Archives** (built into `bfpilot.elf`)
-- ZIP (stored/deflate/ZIP64, ZipCrypto and AES), ZIPX and broader 7-Zip formats
-- RAR4/RAR5 + passwords + multipart
-- 7z + passwords + `.7z.001` splits
-- Extract only under `/data` and USB/ext mounts
-- Password prompt, progress/ETA, cancellation with partial-output cleanup
-- Multiple-archive extraction with separate/current/custom folders, explicit safe merge/replace, durable queue recovery and individual completed/failed/unattempted results
-- Automatic extraction uses the embedded 7-Zip service with bounded read-ahead and output buffering; explicit manual RAR/7z requests retain the integrated decoders and tuning up to eight threads
-
-**Viewers**
-- Images: png/jpg/gif/bmp/webp/ico/svg — pan, zoom, rotate
-- Create/edit common source, config, markup, script, CSV, and `.shn` text files, max 5 MB; UTF-8 validation, change-conflict detection, atomic save, and preservation of an existing UTF-8 BOM/newline style
-- Logs button: BFpilot logs, archive/search/boot logs, VSH log, error history
-
-**Other**
-- Shortcuts saved to `/data/BFpilot/shortcuts.txt`
-- Installs standard `7F CNT` packages and PS5-native `7F FIH` fake packages through the embedded private worker
-- Exit button shuts down cleanly and frees port 5905 (loader on 9021 stays up)
-- New files/dirs get mode `0777`
-
-### Transfer performance
-
-- HTTP keep-alive (up to 64 requests per connection)
-- 2 MiB page-aligned upload and download buffers
-- Listen socket asks for 4 MiB RCVBUF / 4 MiB SNDBUF
-- Large copies use a bounded two-slot 8 MiB read/write pipeline; small files
-  use the serial fallback
-- Sustained copy/upload/ZIP output checkpoints writeback every 256 MiB
-- No bulk `TCP_NODELAY`, no multi-GB `posix_fallocate` while uploading
-
-More detail: [upload tuning](docs/UPLOAD_PERFORMANCE.md) and the
-[performance/stability design](docs/PERFORMANCE_STABILITY.md).
-
-## Install
-
-Grab the latest release: https://github.com/ItsBlurf/BFpilot/releases
+Load `bfpilot.elf` through your ELF loader on port **9021**:
 
 ```sh
 python3 payload_sender.py <PS5_IP> 9021 bfpilot.elf
 ```
 
-Or send the ELFs with [ps5-payload-manager](https://github.com/itsPLK/ps5-payload-manager) / [Blurfer](https://github.com/ItsBlurf/Blurfer).
+Open **`http://<PS5_IP>:5905/`**. BFpilot registers a Media tile automatically;
+no separate installer is needed. Reload the browser page after updating.
 
-Then open `http://<PS5_IP>:5905/`.
+### Controller
 
-Quick checks: `/api/status`, `/api/diag`, `/api/fs/places`
+| Button | Action |
+| --- | --- |
+| R1 | Open the highlighted item |
+| Square | Toggle selection |
+| X | Normal browser interaction |
 
-## Build
-
-Needs [ps5-payload-sdk](https://github.com/ps5-payload-dev/sdk):
-
-```sh
-export PS5_PAYLOAD_SDK=/path/to/ps5-payload-sdk
-make clean all
-make inspect-imports
-```
-
-Windows: `build.cmd` if your toolchain is already set up.
-
-Output: `bfpilot.elf`
-
-`inspect-imports` verifies the one-ELF PS5 ABI, requires both AppInstUtil and its
-IPMI dependency, and rejects obsolete helper artifacts.
-
-## Logs on the PS5
-
-```
-/data/BFpilot/log.txt
-/data/BFpilot/boot.log
-/data/BFpilot/crash.log
-/data/BFpilot/search_crawl.log
-/data/BFpilot/search.idx
-/data/BFpilot/shortcuts.txt
-/data/BFpilot/archive-integrated/archive-worker.log
-/data/BFpilot/archive-integrated/status.json
-```
-
-## Dev tests (optional)
-
-```sh
-PS5_IP=<PS5_IP> BF_WEB_PORT=5905 make ps5-diag
-PS5_IP=<PS5_IP> BF_WEB_PORT=5905 BF_ALLOW_PS5_WRITE=1 make ps5-smoke
-python3 scripts/goal_verify_io.py
-BF_ALLOW_PS5_WRITE=1 PS5_IP=<PS5_IP> make ps5-transfer-perf
-```
+R1 opens the highlighted item regardless of multi-selection.
 
 ## Compatibility
 
-BFpilot follows the established one-payload installer pattern: AppInstUtil and
-SceIpmi are linked for the direct Media-tile path. Full-content PKG installation
-uses a fresh loopback-only worker embedded inside the same `bfpilot.elf`; there
-is still no second file to install or inject. The HTTP listener is brought up
-before tile work, AppInst initialization is bounded, and clean reinjection stops
-the private worker before handing over port 5905.
+Tested on firmware **11.60**.
 
-See [docs/COMPATIBILITY_STRATEGY.md](docs/COMPATIBILITY_STRATEGY.md). Archives: [docs/ARCHIVE_EXTRACTION.md](docs/ARCHIVE_EXTRACTION.md). Changelog: [CHANGELOG.md](CHANGELOG.md).
+Direct SMB extraction is unsupported; copy the archive locally first. For SMB
+installs, keep the server and source file available until installation finishes.
+PKG queue acceptance does not confirm completed installation.
 
-## Credits
+See [known limitations](docs/COMPATIBILITY_STRATEGY.md#known-limitations).
+Keep backups of important files.
 
-- [Elf Arsenal](https://git.etawen.dev/soniciso/elf-arsenal) — recursive drag-and-drop upload concept
-- [ps5upload](https://github.com/phantomptr/ps5upload) — PS5 transfer/traversal reference
-- [ps5-payload-dev](https://github.com/ps5-payload-dev) — SDK / websrv
-- [UnRAR](https://www.rarlab.com/rar_add.htm) (Alexander Roshal)
-- [miniz](https://github.com/richgel999/miniz)
-- [LZMA SDK](https://www.7-zip.org/sdk.html) (Igor Pavlov)
+## Build
 
-Third-party code under `third_party/` keeps its own licenses.
-The upstream audit and adopt/reject rationale are documented in
-[docs/UPSTREAM_FILE_MANAGER_COMPARISON.md](docs/UPSTREAM_FILE_MANAGER_COMPARISON.md).
+Built with [PS5 payload SDK 0.45](https://github.com/ps5-payload-dev/sdk/releases/tag/v0.45)
+and LLVM 23.1.4. GNU Make and Python are also required.
 
-The interface is English-only. File names, paths, contents and diagnostic logs
-retain their original text, including non-English names. On the PS5, R1 opens the highlighted row, even during multi-selection;
-Square toggles selection. X keeps its normal browser behavior.
-Search remains available through its field/button; it has no controller shortcut.
+```sh
+export PS5_PAYLOAD_SDK=/path/to/ps5-payload-sdk
+make all
+make inspect-imports
+```
 
-SMB PKG sources stream through an embedded loopback service and stay available
-across ordinary BFpilot exit/reload. Keep the SMB server and source files
-available until the PS5 finishes installing. Queue progress reports accepted
-submissions, not completed installations. If a submission response is lost,
-check PS5 notifications before retrying; its source is retained because Sony
-may already have accepted it. Sources expire after 24 hours without activity.
+Windows: set `PS5_PAYLOAD_SDK` and run `build.cmd` from a configured toolchain
+environment. Output: `bfpilot.elf`.
 
-The controller-friendly layout and PKG installation implementation were inspired by
-[owendswang/ps5-web-file-manager](https://github.com/owendswang/ps5-web-file-manager).
+## Documentation
+
+- [Archives](docs/ARCHIVE_EXTRACTION.md)
+- [Installation and compatibility](docs/COMPATIBILITY_STRATEGY.md)
+- [Temporary files and recovery](docs/PRIVATE_STAGING.md)
+- [Transfers](docs/PERFORMANCE_STABILITY.md) and [upload troubleshooting](docs/UPLOAD_PERFORMANCE.md)
+- [Folder-size API](docs/BACKGROUND_SIZE_API.md)
+
+Settings and logs: `/data/BFpilot`. Binary checksums: [SHA256SUMS](SHA256SUMS).
 
 ## License
 
-This project is licensed under the **MIT License**. See [LICENSE](./LICENSE) for the full text.
+[MIT](LICENSE). See [NOTICE.md](NOTICE.md) for contributors and third-party licenses.
 
-Copyright (c) ItsBlurf and contributors.  
-**No warranty** — the software is provided "as is", without warranty of any kind; authors are not liable for claims arising from use of the software.
+## Support
+
+- [PayPal](https://paypal.me/nblurf)
+- Bitcoin (BTC): `1CW8JWSnWc5w7yKhYk7ixAFG487nU5Jrzc`
+- USDT (Tron / TRC20): `TRcrCeonXzgyxjR4LGzo4JdfEHYGGqD3gX`
+
+## Disclaimer
+
+BFpilot is independent homebrew, not affiliated with or endorsed by Sony
+Interactive Entertainment. PlayStation and PS5 are trademarks of their respective
+owners. Intended for lawful file management and homebrew use; piracy and
+unauthorized distribution of copyrighted content are not endorsed. You are
+responsible for complying with applicable laws and third-party terms and for
+using only content you are authorized to access. Keep backups. Provided "as is",
+without warranty; liability is limited as stated in [LICENSE](LICENSE), subject
+to applicable law.

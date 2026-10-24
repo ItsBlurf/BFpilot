@@ -1,197 +1,118 @@
 # Changelog
 
-## v0.4.4 (2026-09-10)
+## 0.5.0
 
-* Converted BFpilot to a Fullscreen Native PS5 WebApp (Category 66048 / Web Based Media App)
-  with 1080p/4K GPU WebKit hardware acceleration, eliminating the ShellUI webcard constraint
-* Hardened Universal Tile Installer across all PS5 firmwares (3.xx–11.xx) with non-fatal authid
-  acquisition, 0755/0644 inode permissions, and automatic fallback to sceAppInstUtilAppInstallAll
-* Implemented in-memory PKG metadata and icon extraction engine (CNT/FIH/LIH container parsing)
-  with live single-pass PNG streaming (/api/fs/pkg/icon) without intermediate disk staging
-* Added interactive PKG Inspector dialog with embedded game icon preview, Title ID, Content ID,
-  App Version, Min FW, raw SFO table, and 1-click Install/Download
-* Added interactive 3x3 CHMOD permission matrix (Owner/Group/Others) with live octal sync,
-  presets (0755, 0777, 0644, 0444), direct column-click activation, and panic-safe directory recursion
-* Added interactive navigation buttons for storage summaries (Data, USB0, USB1, M.2)
-* Upgraded transfer buffer pipeline to 8 MiB for maximum sustained SSD/USB throughput
-* Clean exit flow returning smoothly to PS5 Home screen via psbase:shell?c=play_go_resume
-* Surpassed owendswang/ps5-web-file-manager v1.8 across all display, performance, and ergonomic metrics
-* Combined the server, Media tile installer, archive support, and private PKG
-  worker into one `bfpilot.elf`
-* Added direct, idempotent Media-tile installation and clean reinjection without
-  leaving duplicate services or helper processes behind
-* Added PS5-native `7F FIH` PKG support alongside strict `7F CNT` validation,
-  NPXS rejection, correct `/data` path mapping, and the FW 11+ AppInst identity
-* Added bounded AppInst startup and clean private-worker shutdown
-* Added archive cancellation and partial-output cleanup; automatic RAR/7z
-  extraction uses four threads, with up to eight available manually
-* Added persistent path and sort state, guarded Circle/back navigation,
-  parent-folder reveal, and right-biased display for long paths
-* Made the file toolbar selection-aware so only valid actions are shown while
-  the selection count stays visible
-* Hardened transfer, archive, reinjection, diagnostics, and worker concurrency
-* Made clean Windows builds byte-for-byte reproducible
-* Verified on PS5 FW 11.60 with a native FIH PKG, ZIP/RAR/7z extraction,
-  archive cancellation, and sustained 512 MiB transfers
+See the [release notes](docs/RELEASE_NOTES_NEXT.md) for details and known limitations.
 
-## v0.4.4 Alpha 2 (2026-08-11)
+- Updated the build to SDK 0.45 and LLVM 23.1.4; corrected firmware detection
+  and Windows helper linking, with rebuilds when the toolchain changes.
+- Added SMB2/3 connections, share browsing, file operations, transfers, previews,
+  text editing, space information and remote PKG support.
+- Added more archive formats, AES ZIP, multiple-archive extraction and recovery
+  of saved queues and partial folder merges.
+- Added individual or combined downloads and top-bar Results.
+- Improved large-folder copies, temporary files, overwrite handling, cancellation,
+  archive permissions, long paths and PKG request handling.
+- Included oz5hk's RAR cancellation fix.
+- Kept the interface English-only and removed the Triangle/F1 search shortcut.
+- Assigned R1 to open the highlighted item while keeping Square selection and
+  normal X behavior.
+- Reduced the console layout size and removed the extra filename outline.
+- Fixed old archive progress reappearing after reload and delayed replies after sleep.
 
-* Added PS5-native `7F FIH` PKG support while retaining strict `7F CNT` validation
-* Corrected the FW 11+ AppInst identity boundary and bounded direct tile initialization
-* Added archive cancellation with cleanup and tuned RAR/7z automatic threading to four
-* Hardened reinjection, diagnostics, and server worker synchronization
-* Made clean Windows builds byte-for-byte reproducible
-* Verified on FW 11.60 with the Internet Browser PKG, ZIP/RAR/7z extraction, and sustained 512 MiB transfers
+## v0.4.4 — 2026-09-10
 
-## v0.4.4 Alpha 1 (2026-08-11)
+- Added Media-tile registration and a single payload containing the file manager,
+  archive support and package worker.
+- Added PKG details, icon preview, installation and download actions.
+- Added a permissions dialog with presets and recursive changes.
+- Added clickable storage summaries and improved console navigation.
+- Added PS5-native FIH packages alongside CNT support, with system-package checks
+  and internal-storage path mapping.
+- Improved startup, shutdown, reinjection, archive cancellation and concurrency.
+- Saved the last path and sort order; improved long-path display and file actions.
+- Checked ZIP/RAR/7z, a FIH package and 512 MiB transfers on firmware 11.60.
 
-* Replaced separate release helpers with one all-in-one `bfpilot.elf`
-* Kept Media-tile AppInst direct and embedded a private fresh-process worker for
-  reliable full-content PKG installation
-* Added bounded AppInst initialization, loopback-only worker control, and clean
-  worker shutdown during exit or reinjection
-* Added strict PKG validation, NPXS rejection, and `/data` to `/user/data` local-path mapping
-* Kept tile reinjection idempotent with exact assets plus a successful-registration marker
-* Added persistent path/sort state, guarded Circle/back navigation, parent-folder
-  reveal, and right-biased long-path display from the upstream v1.0-v1.4 audit
-* Integrated the latest file-manager safety, transfer, archive, and UX fixes
+## v0.4.4 Alpha 2 — 2026-08-11
 
-## v0.4.3 (2026-07-27)
+- Added FIH packages and corrected installer identity on firmware 11 and newer.
+- Limited installer startup waits and improved archive cancellation.
+- Improved reinjection, diagnostics and worker synchronization.
+- Checked the Internet Browser PKG, archives and 512 MiB transfers on firmware 11.60.
 
-* Added create/edit text files and recursive folder uploads
-* Added safer staged copy, move, delete, upload, and archive operations
-* Kept direct-target and navigate-then-paste transfer workflows together
-* Improved large-file transfer speed, search response time, and diagnostics
-* Refined the dark file-manager layout; New Text File and Delete stay visible
+## v0.4.4 Alpha 1 — 2026-08-11
 
-## v0.4.3 Alpha 3 (2026-07-27)
+- Combined separate helpers into one `bfpilot.elf` with an included package worker.
+- Added package validation, system-package rejection and internal-storage path mapping.
+- Improved tile registration, startup limits and shutdown.
+- Saved path/sort preferences and improved back navigation and parent-folder reveal.
 
-* Reworked the file toolbar into one compact desktop row with secondary actions
-  in a More menu and responsive wrapping on narrower displays
-* Darkened the interface and reduced decorative color for a more restrained
-  file-manager appearance
-* Made the direct target and clipboard transfer workflows visually distinct
-  while keeping both available together
+## v0.4.3 — 2026-07-27
 
-## v0.4.3 Alpha 2 (2026-07-27)
+- Added text creation/editing and recursive folder uploads.
+- Improved copy, move, delete, upload and archive handling.
+- Kept direct-target transfers alongside Copy/Move/Paste.
+- Improved large-file transfers, search and the dark interface.
 
-* The drag-to-upload strip stays hidden until files enter the browser
-* Restored direct Copy/Move to an editable target alongside the clipboard
-  navigate-and-paste workflow
-* Target shortcuts now fill the direct target instead of changing the current
-  folder
+## v0.4.3 Alpha 3 — 2026-07-27
 
-## v0.4.3 Alpha 1 (2026-07-26)
+- Made the toolbar more compact, with secondary actions in More.
+- Adjusted the dark theme and layout for smaller screens.
+- Made target transfers and clipboard transfers easier to distinguish.
 
-* Copy and Move now work like a file-manager clipboard: select items, stage the
-  action, navigate to a destination, then choose **Paste Here**
-* Restored double-click folder opening while keeping single-click selection and
-  the explicit **Open** button
-* Fixed the upload drop area consuming the file-list height in short or empty
-  folders
-* Dragging files anywhere over the browser now reveals the upload state and
-  accepts the drop
-* Fixed virtual scrolling to listen to the actual file-list scroller
-* Reorganized file actions and disabled controls that do not apply to the
-  current selection
-* The clipboard panel now explains the workflow, shows staged items and the
-  current destination, and includes quick destination shortcuts
-* The three-column layout collapses earlier so the clipboard no longer gets
-  clipped on common laptop-sized browser windows
+## v0.4.3 Alpha 2 — 2026-07-27
 
-* Large regular-file copies overlap sequential reads with one writer through
-  two fixed 8 MiB, PS5-page-aligned slots; small files and initialization
-  failures retain the serial path
-* Copy/upload/large ZIP output adds coarse 256 MiB writeback checkpoints to
-  prevent unbounded dirty-page growth during sustained multi-gigabyte writes
-* Upload, serial copy, pipelined copy, and ZIP buffers request 16 KiB alignment
-* Downloads use a 2 MiB aligned sequential buffer and request a 4 MiB TCP send
-  window; filesystem-dependent `sendfile` remains disabled for PS5 safety
-* Directory listing and Index All metadata lookups are anchored to the open
-  parent directory with `AT_SYMLINK_NOFOLLOW`
-* Search returns as soon as the requested page plus one match is known and
-  reports whether the match count is exact, avoiding full two-million-entry
-  scans for common first-page queries
-* Transfer telemetry now exposes copy mode, checkpoint count, buffer alignment,
-  per-stage timing, effective socket buffers, and last-download throughput
+- Showed upload feedback only while dragging files.
+- Restored direct Copy/Move alongside Paste Here.
+- Made target shortcuts set the destination without navigating away.
 
-## v0.4.2 Test Build (2026-07-22)
+## v0.4.3 Alpha 1 — 2026-07-26
 
-* Create and edit common UTF-8 text/source files (`.txt`, `.ini`, `.json`,
-  `.xml`, `.cfg`, `.log`, `.sh`, `.bat`, `.py`, `.c`, `.cpp`, `.h`, `.hpp`,
-  `.html`, `.htm`, `.css`, `.js`, `.lua`, `.md`, `.csv`, `.yaml`, `.yml`,
-  `.conf`, `.sql`) with a 5 MiB server limit, optimistic version checking,
-  permission preservation, `fsync`, and atomic replacement; existing UTF-8
-  BOM and dominant newline style are preserved
-* Upload drop zone accepts files and recursively enumerates dropped folders
-  when the browser exposes the WebKit entry API; folder uploads remain
-  sequential and preserve relative paths
-* Copy overwrite keeps the existing file until the staged replacement succeeds
-* Existing directory conflicts now use validated staged merge semantics
-* Copy/delete preparation and recursion are physical, same-device walks with
-  checked paths, a 64-level depth cap, and first-error abort behavior
-* Copy/move/delete UI actions use form POST bodies to avoid long encoded URLs
-* Upload/copy staging names are collision-resistant within the same second
-* ShadowMountPlus warning before writes to its common scan locations
-* Upload, copy, delete, editor-save, and integrated archive jobs are mutually
-  excluded; uploads report backend byte progress, and copied source files are
-  reopened with no-follow and inode/device verification
-* Windows launcher builds now use the PS5 FreeBSD PIE linker profile, with
-  automated ELF-header validation for every produced payload
+- Added clipboard-style Copy/Move/Paste and restored double-click opening.
+- Fixed the empty-folder layout, upload feedback and virtual scrolling.
+- Improved action availability and the clipboard panel.
+- Added buffered large-file copying, periodic output flushing and transfer timing.
+- Improved search paging and directory-relative file checks.
+
+## v0.4.2 Test Build — 2026-07-22
+
+- Added UTF-8 text editing with conflict checks and newline preservation.
+- Added recursive drag-and-drop uploads in supported browsers.
+- Kept existing files until their replacements were complete.
+- Improved path, symbolic-link and filesystem-boundary checks.
+- Added ShadowMountPlus write warnings and serialized file-changing operations.
+- Added ELF-header validation to Windows builds.
 
 ## v0.4.1
 
-* **Separate payloads** (stable model): `bfpilot.elf` = file manager only; `bfpilot-launcher-installer.elf` = home **Media** tile (`applicationCategoryType` 65536, `BFPL00001` → `http://127.0.0.1:5905/`)
-* Main ELF does **not** link AppInst (loaders reject all-in-one); inject the installer separately or place it under `/data/BFpilot/` so the main ELF can auto-start it after the UI is up
-* **One data directory**: all logs/index/shortcuts/archive state under `/data/BFpilot` only
-* Action bar wraps (no horizontal scrollbar) for New Folder / Rename / Download / Load payload / chmod / Extract / Upload / Delete
-* **Load payload**: double-click `.elf`/`.bin`/`.js` or toolbar — streams to elfldr on `127.0.0.1:9021`
-* New API: `GET /api/fs/launch?path=...`
-* **chmod** UI + `GET /api/fs/chmod?path=&mode=` (presets 444/644/755/777) (#10)
-* Single-click folder name opens directory (#7); checkboxes multi-select (#11)
-* Case-insensitive path resolve on list/Go (#8)
-* Extract zip/rar/7z including `.7z.001` (#9)
-* Version strings locked to **v0.4.1** (#12)
+- Used separate file-manager and Media-tile installer payloads.
+- Added payload loading, permissions, multi-selection and case-insensitive paths.
+- Added split 7z archives and improved toolbar wrapping.
+- Stored logs, index, shortcuts and archive state under `/data/BFpilot`.
 
-## v0.4.0 Stable (2026-07-14)
+## v0.4.0 — 2026-07-14
 
-Upload speed + Index All stability. Tested on FW 11.60.
-
-* HTTP keep-alive (64 req/conn)
-* 2 MiB upload buffer, 1 MiB download buffer
-* Listen SO_RCVBUF 4 MiB / SO_SNDBUF 2 MiB, backlog 32
-* No multi-GB fallocate during upload, no bulk TCP_NODELAY
-* Index All multi-root + XDEV + soft-fail roots (from 0.3.9)
-* Copy/move free-space preflight
-* See `docs/UPLOAD_PERFORMANCE.md`
+- Improved upload buffering and connection reuse.
+- Improved Index All and copy/move free-space checks.
+- Tested on firmware 11.60.
 
 ## v0.3.10
 
-* Keep-alive + larger upload/download buffers
-* Less toast spam on multi-file upload
+- Increased transfer buffers and reduced repeated upload notifications.
 
 ## v0.3.9
 
-* STOR-style web upload path
-* Index All multi-root crawl, XDEV, soft-fail
-* Copy/move free-space preflight + larger buffers
-* `make bfpilot-lite` / `ENABLE_ARCHIVE=0`
-* `scripts/goal_verify_io.py`
+- Improved uploads and multi-root indexing.
+- Added copy/move free-space checks and larger buffers.
+- Added I/O source checks in `scripts/check_io.py`.
 
 ## v0.3.8
 
-* Overwrite / merge / skip on copy-move conflicts
-* Checkbox multi-select + select all
-* Image viewer (pan/zoom/rotate)
-* Log dropdown + PS5 error history
-* umask 0 + 0777 on created files
-* ZIP ZipCrypto/ZIP64; extract defaults to Target path
-* Single Index All mode
+- Added overwrite/merge/skip choices, checkboxes and select-all.
+- Added image pan/zoom/rotation and log selection.
+- Used `0777` for new files and added ZipCrypto/ZIP64 support.
 
 ## Earlier
 
-* Exit / re-inject without reboot
-* Archives inside main ELF (RAR / 7z / ZIP)
-* Dark UI + virtual scrolling
-* Search index without duplicated lowercase paths
-* Launcher tile split into its own ELF
+- Added exit/reload, archives, dark theme, virtual scrolling and indexed search.
+- Introduced a separate launcher installer, later combined into the main payload.

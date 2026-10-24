@@ -1,9 +1,9 @@
 #pragma once
 #include <stddef.h>
 #include <stdint.h>
-/* Layout used by the pinned WFM v1.11b installer. Keep the six-pointer prefix
- * and explicitly initialize the trailing slot/PlayGo fields. SDK export stubs
- * alone do not describe this private structure. */
+/* AppInst metadata ABI: keep the six-pointer prefix and explicitly initialize
+ * the trailing slot/PlayGo fields. SDK export stubs do not describe this
+ * private structure. */
 typedef struct appinst_metadata {
   const char *uri;
   const char *ex_uri;

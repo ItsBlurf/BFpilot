@@ -24,13 +24,21 @@ PYTHON ?= python3
 # Ship / daily use must stay 5905.
 WEB_PORT ?= 5905
 
-VERSION_TAG := bfpilot-v0.4.5-dev.27
-BUILD_VERSION ?= v0.4.5-dev.27
+VERSION_TAG := bfpilot-v0.5.0
+BUILD_VERSION ?= v0.5.0
 
 LLVM_CONFIG ?= $(if $(wildcard $(PS5_PAYLOAD_SDK)/bin/prospero-llvm-config),$(PS5_PAYLOAD_SDK)/bin/prospero-llvm-config,$(CURDIR)/build-tools/llvm-config)
 LLVM_BINDIR ?= $(shell "$(LLVM_CONFIG)" --bindir 2>/dev/null || dirname "$$(command -v clang 2>/dev/null || command -v clang.exe 2>/dev/null || command -v llvm-strip 2>/dev/null || command -v llvm-strip.exe 2>/dev/null || echo clang)" 2>/dev/null || echo .)
 export LLVM_BINDIR
 export LLVM_CONFIG
+
+ifneq ($(strip $(PS5_PAYLOAD_SDK)),)
+TOOLCHAIN_STAMP := build/toolchain.json
+TOOLCHAIN_ID := $(shell $(PYTHON) scripts/build_toolchain.py --stamp $(TOOLCHAIN_STAMP) --sdk "$(PS5_PAYLOAD_SDK)" --llvm-bindir "$(LLVM_BINDIR)")
+ifeq ($(strip $(TOOLCHAIN_ID)),)
+$(error Could not identify the PS5 toolchain; check PS5_PAYLOAD_SDK and LLVM_BINDIR)
+endif
+endif
 
 BFPILOT_BIN := bfpilot.elf
 FULL_ARCHIVE_BIN := build/internal/bfpilot-full-archive.elf
@@ -246,6 +254,8 @@ endif
 
 all: bfpilot
 
+$(BFPILOT_OBJS) $(BFPILOT_ARCHIVE_OBJS) $(PKG_WORKER_OBJ) $(PKG_WORKER_BIN) $(PKG_SOURCE_BIN) $(FULL_ARCHIVE_BIN) $(SMB_LIBRARY): $(TOOLCHAIN_STAMP)
+
 bfpilot: $(BFPILOT_BIN)
 
 gen/assets:
@@ -254,13 +264,13 @@ gen/assets:
 gen/assets/%.c: assets/% | gen/assets
 	$(call run,$(PYTHON) gen-asset-module.py --path $* $< > $@)
 
-build/bfpilot/%.o: %.c Makefile
+build/bfpilot/%.o: %.c Makefile compile_wrapper.py
 	$(call run,mkdir -p $(dir $@))
 	$(call run,$(CC_CMD) $(BFPILOT_CFLAGS) -c $< -o $@)
 
 # The worker is embedded as bytes in the public bfpilot.elf. It is never a
 # release artifact and exists in build/ only long enough to feed .incbin.
-$(PKG_WORKER_OBJ): src/pkg_worker_main.c src/pkg_protocol.h src/appinst_pkg_abi.h src/pkg_worker_uri.h src/pkg_source_wire.h Makefile
+$(PKG_WORKER_OBJ): src/pkg_worker_main.c src/pkg_protocol.h src/appinst_pkg_abi.h src/pkg_worker_uri.h src/pkg_source_wire.h src/firmware.h Makefile
 	$(call run,mkdir -p $(dir $@))
 	$(call run,$(CC_CMD) -Os -Wall -Wextra -Werror -MMD -MP -Isrc -c $< -o $@)
 
@@ -289,11 +299,11 @@ build/bfpilot/src/full_archive_client.o: $(FULL_ARCHIVE_BIN)
 $(SMB_LIBRARY): $(SMB_INPUTS) scripts/build_smb_library.py
 	$(call run,$(PYTHON) scripts/build_smb_library.py)
 
-build/bfpilot-archive/%.o: %.cpp Makefile
+build/bfpilot-archive/%.o: %.cpp Makefile compile_wrapper.py
 	$(call run,mkdir -p $(dir $@))
 	$(call run,$(CXX_CMD) $(ARCHIVE_WORKER_CXXFLAGS) $(ARCHIVE_WORKER_DEFINES) $(ARCHIVE_SEVENZ_DEFINES) $(ARCHIVE_WORKER_INCLUDES) -DUNRAR -DBFPILOT_ARCHIVE_INTEGRATED=1 -c $< -o $@)
 
-build/bfpilot-archive/%.o: %.c Makefile
+build/bfpilot-archive/%.o: %.c Makefile compile_wrapper.py
 	$(call run,mkdir -p $(dir $@))
 	$(call run,$(CC_CMD) $(ARCHIVE_WORKER_CFLAGS) $(ARCHIVE_WORKER_DEFINES) $(ARCHIVE_SEVENZ_DEFINES) $(ARCHIVE_WORKER_INCLUDES) -DBFPILOT_ARCHIVE_INTEGRATED=1 -c $< -o $@)
 

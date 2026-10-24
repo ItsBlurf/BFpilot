@@ -27,6 +27,7 @@
 #include "appinst_direct.h"
 #include "diag.h"
 #include "paths.h"
+#include "firmware.h"
 
 #define PS5_SHELLCORE_AUTHID UINT64_C(0x3800000000000010)
 #define PS5_SYSTEM_INSTALL_AUTHID UINT64_C(0x4801000000000013)
@@ -125,6 +126,8 @@ parse_firmware_major(const char *version) {
 
 int
 bfpilot_appinst_firmware_major(void) {
+  int major = bfpilot_firmware_major_from_sdk(kernel_get_fw_version());
+  if(major) return major;
   char version[256];
   size_t size = sizeof(version) - 1;
   if(sysctlbyname("kern.version", version, &size, NULL, 0) != 0) return 0;

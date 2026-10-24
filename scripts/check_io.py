@@ -1,9 +1,7 @@
 #!/usr/bin/env python3
-"""Structural + pure-logic verification for BFpilot I/O and index safety.
+"""Check I/O source rules and filesystem traversal.
 
-Drives the real source files in the current BFpilot working tree (not a
-reimplementation of upload). Exit 0 only if all checks pass. Writes a report
-path if --out is given.
+Exit 0 when all checks pass. Use --out to save the results.
 """
 from __future__ import annotations
 
@@ -97,49 +95,36 @@ def check_copy(failures: list[str]) -> None:
     must("COPY_BUF_SIZE" in t, "copy buffer missing", failures)
     must("copy_file" in t, "copy_file missing", failures)
     must("fs_error_is_fatal" in t or "EIO" in t, "fatal FS error handling missing", failures)
-    # Free-space preflight must live on the copy/move worker path (not only upload).
+    # Streaming copies check available space for each file before copying it.
     cw = t.split("copy_worker", 1)
     must(len(cw) == 2, "copy_worker missing", failures)
-    # Region from copy_worker definition through a generous window / next major fn.
+    if len(cw) != 2:
+        return
     body = cw[1]
-    end = body.find("\nspawn_copy_or_move")
-    if end < 0:
-        end = body.find("\ndelete_handler")
-    if end < 0:
-        end = min(len(body), 12000)
-    body = body[:end]
+    body = body.split("\nstruct delete_arg", 1)[0]
+    must("copy_recursive(a->src, staging_dst" in body,
+         "copy worker does not use the staged tree copy", failures)
+    start = t.find("static int copy_entry(")
+    end = t.find("static int copy_recursive(", start)
+    must(start >= 0 and end > start, "copy entry callback missing", failures)
+    if start < 0 or end <= start:
+        return
+    entry = t[start:end]
+    space = entry.find("check_free_space_for_bytes(")
+    write = entry.find("copy_file(")
     must(
-        "check_free_space_for_bytes" in body,
-        "copy_worker missing check_free_space_for_bytes preflight",
+        space >= 0 and write > space,
+        "copy entry must check space before writing",
         failures,
     )
     must(
-        "not enough free space" in body or "space preflight" in body,
-        "copy_worker missing free-space failure path",
+        "if(space != 0) return space > 0 ? -ENOSPC : -errno;" in entry,
+        "copy entry must return the free-space error",
         failures,
     )
-
-
-def pure_visited_set_test(failures: list[str]) -> None:
-    """Open-addressed visited set semantics used by search.c (unit of the algorithm)."""
-    # Mirror the membership rule: (dev,ino) unique; used flag required when dev==0.
-    class Visited:
-        def __init__(self) -> None:
-            self.s: set[tuple[int, int]] = set()
-
-        def add(self, dev: int, ino: int) -> int:
-            key = (dev, ino)
-            if key in self.s:
-                return 0
-            self.s.add(key)
-            return 1
-
-    v = Visited()
-    must(v.add(0, 1) == 1, "dev0 first insert failed", failures)
-    must(v.add(0, 1) == 0, "dev0 duplicate not detected", failures)
-    must(v.add(0, 2) == 1, "dev0 different ino failed", failures)
-    must(v.add(5, 1) == 1, "normal dev insert failed", failures)
-    must(v.add(5, 1) == 0, "normal duplicate failed", failures)
+    walker = t[end:].split("\nstruct delete_context", 1)[0]
+    must("bfpilot_tree_walk(src, root_dev, copy_entry," in walker,
+         "tree copy does not use the checked entry callback", failures)
 
 
 def main() -> int:
@@ -150,7 +135,6 @@ def main() -> int:
     check_upload(failures)
     check_index(failures)
     check_copy(failures)
-    pure_visited_set_test(failures)
     lines = []
     if failures:
         lines.append("FAIL")
@@ -158,10 +142,9 @@ def main() -> int:
         code = 1
     else:
         lines.append("PASS")
-        lines.append("upload: no fallocate stall path; no TCP_NODELAY thrash")
-        lines.append("index: multi-root + visited used-flag + same_device fence")
-        lines.append("copy: large buffer + fatal FS abort path present")
-        lines.append("visited pure: dev0-safe membership ok")
+        lines.append("upload: buffered transfer and keep-alive checks passed")
+        lines.append("index: root, visited-directory and filesystem checks passed")
+        lines.append("copy: per-file space check and error handling passed")
         code = 0
     text = "\n".join(lines) + "\n"
     sys.stdout.write(text)

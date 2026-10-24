@@ -1,4 +1,4 @@
-"""Extract the exact product log serializer for guarded host/native controls."""
+"""Generate a test harness for the diagnostic log serializer."""
 import argparse
 from pathlib import Path
 

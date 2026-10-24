@@ -2,15 +2,11 @@
 
 Changes since v0.4.0:
 
-- Separate Media installer, one `/data/BFpilot` data directory, and clean
-  reinjection
-- Payload loading, chmod, case-insensitive paths, text editing, folder upload,
-  and RAR/7z/ZIP extraction
-- Safer recursive file operations, conflict handling, and faster large-file
-  copy and download paths
-- Direct target transfers plus clipboard-style Copy, Move, and Paste Here
-- Double-click folder opening, selection-aware controls, responsive layout,
-  and drag feedback that appears only while dragging files
+- Separate Media-tile installer and settings/log directory under `/data/BFpilot`.
+- Payload loading, permissions, case-insensitive paths, text editing and archives.
+- Safer folder operations and conflict handling, with faster copies and downloads.
+- Direct target transfers alongside Copy, Move and Paste Here.
+- Double-click opening, clearer selection, a layout for smaller screens and
+  upload feedback that appears only while dragging files.
 
-PS5 testing is still needed for Rest Mode, USB disconnects, and large transfer
-conflicts before this is considered stable.
+See the current README for setup instructions.

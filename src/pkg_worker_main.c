@@ -29,6 +29,7 @@
 #include "pkg_protocol.h"
 #include "appinst_pkg_abi.h"
 #include "pkg_worker_uri.h"
+#include "firmware.h"
 
 #define PKG_WORKER_PORT 9041
 #define PKG_WORKER_PROTOCOL "BFPKG/2"
@@ -136,6 +137,8 @@ parse_firmware_major(const char *version) {
 
 static int
 firmware_major(void) {
+  int major = bfpilot_firmware_major_from_sdk(kernel_get_fw_version());
+  if(major) return major;
   char version[256];
   size_t size = sizeof(version) - 1;
   if(sysctlbyname("kern.version", version, &size, NULL, 0) != 0) return 0;

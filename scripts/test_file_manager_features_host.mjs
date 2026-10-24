@@ -1,4 +1,4 @@
-/** Behavioral parity contract for owendswang/ps5-web-file-manager v1.4. */
+/** File-manager feature and navigation checks. */
 import assert from 'assert'
 import fs from 'fs'
 import path from 'path'
@@ -61,11 +61,11 @@ assert(websrv.includes('/api/fs/pkg/install') &&
 assert(html.includes("window.addEventListener('popstate'") &&
   html.includes('pathNavigationBlocked') && html.includes('revealPathInList') &&
   html.includes('input.scrollLeft = input.scrollWidth'),
-  'v1.4 back/reveal/long-path behavior is covered')
+  'back navigation, parent reveal and long paths are supported')
 assert(main.includes('handoff_existing_server') && main.includes('BFPILOT_WEB_PORT'),
   'fixed tile port uses safe same-service handoff')
 assert(!fs.readdirSync(path.join(root, 'assets')).some((name) => /^lang-/i.test(name)),
   'BFpilot intentionally ships English only')
 
 new Function(html.match(/<script>([\s\S]*)<\/script>/)[1])
-console.log('upstream v1.4 behavioral parity checks passed')
+console.log('File-manager feature checks passed')

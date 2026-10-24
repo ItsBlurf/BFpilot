@@ -882,7 +882,7 @@ finish_build(search_index_t *idx, int rc, const char *error, int saved_errno,
               "files=%lu elapsed_ms=%ld stale=%d error=%s",
               rc, saved_errno, log_entries, log_dirs, log_files,
               log_elapsed_ms, log_stale, error ? error : "");
-  /* Agent-reachable summary line for post-session diagnosis. */
+  /* Index completion summary for the log. */
   {
     double eps = log_elapsed_ms > 0
                      ? ((double)log_entries * 1000.0) / (double)log_elapsed_ms

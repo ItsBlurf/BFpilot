@@ -1,89 +1,68 @@
-# Performance and stability design
+# Transfer implementation
 
-BFpilot optimizes for sustained PS5 throughput. Peak speed is not accepted if
-it weakens staging, mount boundaries, cancellation, or fatal-I/O handling.
+Transfers use fixed-size buffers and one writer at a time. Output is written
+to temporary files before replacing the destination.
 
-## Current data paths
+## Data paths
 
-| Operation | Fast path | Stability boundary |
-|---|---|---|
-| Upload | 2 MiB page-aligned `recv` then `write`; 4 MiB requested receive window | One writer, free-space preflight, same-directory staging, 256 MiB writeback checkpoints, rename only after close |
-| Download | 2 MiB page-aligned sequential `read` then socket send; 4 MiB requested send window | Buffered on every filesystem; short source reads fail instead of returning a truncated success |
-| Copy | Two page-aligned 8 MiB slots for regular files at least 64 MiB; serial fallback for smaller files or allocation/thread failure | Source fd/inode/device/size revalidation, no-follow reopen, same-device recursive fence, staging, cancellation, 256 MiB writeback checkpoints |
-| Move | Same-filesystem `rename` | Cross-device moves use the staged copy path, then delete the source only after finalization |
-| ZIP extract | 16 MiB aligned input and 64 MiB aligned output buffers | Free-space preflight, path validation, CRC/size validation, staging, preallocation only before decoding a known-size member, writeback checkpoints |
-| RAR/7z extract | Upstream multi-thread decoders with bounded thread selection | Existing staged extraction, safety limits, cleanup, and format checks remain unchanged |
-| Index/list/search | Directory-relative `fstatat(..., AT_SYMLINK_NOFOLLOW)`; search stops after the requested page plus one match | Sequential crawl, `st_dev` boundaries, visited inode/device set, fatal-error threshold; `matchedExact` reports early-stop semantics |
+| Operation | Implementation |
+| --- | --- |
+| Upload | One 2 MiB aligned buffer, temporary output, free-space checks and a flush every 256 MiB |
+| Download | One 2 MiB aligned buffer; a short source read fails instead of returning a truncated success |
+| Copy | Two 8 MiB aligned buffers for regular files of at least 64 MiB; a serial path for smaller files or allocation/thread failure |
+| Move | Rename on the same filesystem; otherwise copy, finish and then remove the source |
+| ZIP | Automatic archive service, or the integrated decoder with 16 MiB input and 64 MiB output buffers |
+| RAR/7z | Automatic archive service, with integrated decoders available for manual thread settings |
+| Index/search | One directory scan at a time; search stops once the requested page and one extra match are found |
 
-## Deliberately excluded
+Recursive operations stay within their starting filesystem and do not follow
+symbolic links. Source identity and size are checked again when opening a file.
+Write, flush and close errors are reported before a replacement is considered
+complete. See [temporary files and recovery](PRIVATE_STAGING.md).
 
-* Global PS5 `sendfile`: FreeBSD documents its zero-copy advantage, but the
-  available PS5 filesystem implementations and field reports disagree about
-  PFS/exFAT/nullfs pager safety. BFpilot keeps the buffered path until a
-  filesystem whitelist is proven on supported firmware and media.
-* `F_NOCACHE` on download fds: it conflicts with `sendfile`-style VM paging and
-  has caused regressions in PS5 transfer implementations.
-* Double-buffered browser upload: disk writes can keep the receiver away from
-  `recv` long enough to collapse the TCP window. The stable STOR cadence is
-  retained.
-* Whole-file `posix_fallocate` after a browser starts POSTing: on PFS it can
-  block long enough to stall the connection. Archive members may preallocate
-  before decode because there is no live network body to drain.
-* Parallel directory writers: metadata and PFS contention can be slower and
-  less stable than one ordered writer. Only the read side of a single large
-  file overlaps its writer.
+## Network and storage choices
 
-## Telemetry
+HTTP keep-alive reduces connection setup for multi-file uploads. Upload and
+download request 4 MiB socket buffers; the system may choose different effective
+sizes. Large writes use 256 MiB flush checkpoints to limit outstanding writes.
 
-`GET /api/fs/job/status` reports copy mode counts, bytes read/written, buffer
-size, writeback checkpoint count, rate, and device ids.
+Downloads use buffered reads rather than `sendfile`, whose behavior varies across
+PS5 filesystems. Bulk transfers do not enable `TCP_NODELAY`. Uploads avoid
+whole-file `posix_fallocate` while receiving a request, because allocation can
+stall the connection. Archive members can allocate space before decoding when
+their size is known.
 
-`GET /api/fs/transfer/stats` reports the last upload and download, including
-buffer alignment, receive/read/send/write/checkpoint time, rate, device id, and
-errno. Socket logs record both requested and effective buffer sizes.
+Folder operations use one writer. Only reads for a single large file overlap
+its writes; there is no parallel tree-copy writer pool or resumable-upload feature.
 
-Archive status already separates input/output wait rates, CPU time, thread
-activity, and decoder throughput. ZIP checkpoint latency is written to the
-archive log.
+## Diagnostics
 
-## Hardware validation
+- `/api/fs/job/status`: copy mode, discovered/completed bytes, buffer size,
+  checkpoints, speed and device IDs.
+- `/api/fs/transfer/stats`: last upload/download timing, buffer alignment and errors.
+- Archive status/logs: decoder speed, waits, thread settings and flush timing.
 
-Run at least three warm and three cold-ish repetitions for each direction and
-media pair. Compare medians, not a single peak:
+The main process's CPU figure does not include a separate archive process.
+Compare like-for-like process totals when investigating resource use.
 
-1. PC to `/data`, PC to USB, `/data` to PC, and USB to PC.
-2. `/data` to `/data`, `/data` to USB, USB to `/data`, and USB to USB.
-3. One large stored ZIP, one large deflated ZIP, one RAR, and one LZMA2 7z.
-4. A many-small-file directory for copy, upload, extract, list, and Index All.
-5. Cancel midway, disconnect midway, full-disk simulation, unplug/remount only
-   on disposable test media, and re-run after every error.
+## Measuring transfers
 
-Use wired LAN, record firmware/media/filesystem, retain `/data/BFpilot` logs,
-and reject a speed change if it introduces a hang, partial final path, retry on
-`EIO`/`ESTALE`/`EBADF`/`EFAULT`, or console instability.
-
-For an end-to-end, bounded-memory upload/download/copy run:
+Use the same files, direction and storage for repeated runs. Record firmware,
+filesystem, drive and network connection. Verify file contents as well as speed.
+Start with disposable data when checking cancellation, storage exhaustion or
+disconnect behavior.
 
 ```sh
 BF_ALLOW_PS5_WRITE=1 PS5_IP=<console-ip> make ps5-transfer-perf
 ```
 
-The default streams 512 MiB, verifies the uploaded file and local-copy SHA-256,
-exercises the large-file copy pipeline, writes a JSON report under `logs/`, and
-removes only its uniquely named test directory.
+The default run streams 512 MiB, checks upload and copy SHA-256 values, writes a
+report under `logs/` and removes its own uniquely named test directory.
 
-## Research basis
+## References
 
-* [FreeBSD `sendfile(2)`](https://man.freebsd.org/cgi/man.cgi?query=sendfile&sektion=2)
-  for zero-copy, partial-send, and readahead semantics
-* [FreeBSD `posix_fadvise(2)`](https://man.freebsd.org/cgi/man.cgi?manpath=FreeBSD+13.0-RELEASE&query=posix_fadvise&sektion=2)
-  for advisory sequential access
-* [FreeBSD `posix_fallocate(2)`](https://man.freebsd.org/cgi/man.cgi?manpath=FreeBSD+8.3-RELEASE&query=posix_fallocate&sektion=2)
-  for the successful-allocation guarantee used before archive decode
-* [`phantomptr/ps5upload` runtime](https://github.com/phantomptr/ps5upload/blob/main/payload/src/runtime.c)
-  and [buffer configuration](https://github.com/phantomptr/ps5upload/blob/main/payload/include/config.h)
-* [`seregonwar/zftpd` HTTP configuration](https://github.com/seregonwar/zftpd/blob/main/include/http_config.h)
-
-The FreeBSD interfaces define API behavior; PS5-specific choices remain gated
-by the local filesystem findings and must be confirmed on each supported
-firmware/media combination.
+- [FreeBSD sendfile](https://man.freebsd.org/cgi/man.cgi?query=sendfile&sektion=2)
+- [FreeBSD posix_fadvise](https://man.freebsd.org/cgi/man.cgi?manpath=FreeBSD+13.0-RELEASE&query=posix_fadvise&sektion=2)
+- [FreeBSD posix_fallocate](https://man.freebsd.org/cgi/man.cgi?manpath=FreeBSD+8.3-RELEASE&query=posix_fallocate&sektion=2)
+- [ps5upload transfer code](https://github.com/phantomptr/ps5upload/blob/main/payload/src/runtime.c)
+- [zftpd HTTP configuration](https://github.com/seregonwar/zftpd/blob/main/include/http_config.h)

@@ -90,7 +90,11 @@ require_string '/api/fs/pkg/install'
 require_string '/api/fs/archive/prepare'
 require_string '/api/fs/download/prepare'
 
-abi_source="src/pkg_worker_main.c"
+abi_source="src/appinst_pkg_abi.h"
+grep -F '#include "appinst_pkg_abi.h"' src/pkg_worker_main.c >/dev/null || {
+  echo "inspect-imports: PKG worker is missing its ABI header" >&2
+  exit 1
+}
 for shape in \
   'languages[30][8]' \
   'playgo_scenario_ids[64][3]' \

@@ -1,31 +1,28 @@
-# Private filesystem staging
+# Temporary files and recovery
 
-Copy, upload and extraction build private output on the destination filesystem
-before publishing it. Internal storage uses `/data/BFpilot/staging`. Removable
-volumes use `.bfpilot-staging` at the volume root. This keeps unfinished game
-executables outside homebrew directories that another payload may scan.
+Copies, uploads and extractions write temporary output on the destination
+filesystem before placing it at the final path. Internal storage normally uses
+`/data/BFpilot/staging`; removable drives use `.bfpilot-staging` at their root.
+This keeps unfinished executables outside homebrew folders that other payloads
+may scan.
 
-The staging selector verifies device identities and refuses symlink staging
-directories. It avoids placing a directory copy's stage inside its own source;
-backing up BFpilot's data can use `/data/.bfpilot-staging` instead. A destination
-on a nested mounted game filesystem that has no suitable outside staging area
-is rejected rather than populated incrementally. Other writable filesystems use
-a checked private directory at their own volume root.
+BFpilot checks the filesystem and rejects staging directories that are symbolic
+links. It also avoids putting a folder copy's temporary output inside its source.
+Backing up `/data/BFpilot` can therefore use `/data/.bfpilot-staging`. A destination
+inside a mounted game filesystem is rejected when no suitable temporary area
+exists outside that mount.
 
-Successful new destinations are published by same-filesystem rename. Replacing
-a regular file retains the previous file until the replacement is complete.
-Merging an existing directory validates type conflicts first, preserves unrelated
-files, and publishes completed replacements individually. A directory merge is
-not a rollback transaction: files already replaced before a later error remain
-replaced. Cross-device moves copy/publish before removing their source.
+A completed new destination is renamed into place. An existing file stays intact
+until its replacement is ready. A folder merge checks type conflicts first,
+keeps unrelated files and replaces files one at a time. Replacements completed
+before a later error remain in place; the merge cannot undo all earlier changes.
+Cross-filesystem moves finish the copy before removing the source.
 
-Extracted files undergo checked permissions and final fsync before the stage is
-published. RAR progress reports actual output bytes separately from packed-input
-progress; its output total stays unknown until successful completion. Other
-known-size formats keep completion below 100% until final publication.
+Extraction checks permissions and flushes output before placing it at the final
+path. RAR reports output bytes separately from compressed input; its final output
+size is unknown until completion. Progress for known-size output stays below 100%
+until the operation finishes.
 
-Cancellation cleans only the operation's owned stage. Failed finalization can
-retain its stage for diagnosis. An interrupted process can also leave a stage;
-inspect the recorded path and logs before removing it. Private staging reduces
-exposure to incomplete files, but does not establish the cause or resolution of
-every console panic or third-party mount interaction.
+Cancel normally removes the operation's temporary output. A failure or process
+interruption can leave temporary files and recovery records. Check the recorded
+path and logs before deleting them. Keep backups of important files.

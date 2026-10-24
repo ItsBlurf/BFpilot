@@ -1,4 +1,4 @@
-/** Tests for Fullscreen WebApp, PKG info/icon dialog, CHMOD modal, and v1.8 parity. */
+/** Media tile, package details, permissions and console-control checks. */
 import assert from 'assert'
 import fs from 'fs'
 import path from 'path'
@@ -15,13 +15,13 @@ const pkgFileH = read('src/pkg_file.h')
 const pkgFileC = read('src/pkg_file.c')
 const html = read('assets/files.html')
 
-// 1. Universal Media Tile
+// Media tile
 assert.strictEqual(param.applicationCategoryType, 65536, 'applicationCategoryType must be 65536 (Media App)')
 assert.ok(param.deeplinkUri && param.deeplinkUri.includes('5905'), 'deeplinkUri must point to BFpilot port 5905')
 assert.strictEqual(param.webAppUri, undefined, 'webAppUri must be absent to prevent WebMediaApp CE-117690-4 crash')
 assert.ok(fs.existsSync(path.join(root, 'assets-app/pic1.png')), 'pic1.png must exist for 1080p backdrop')
 
-// 2. Universal tile installation fallback & clean staging
+// Tile registration fallback and asset permissions
 assert.ok(appinst.includes('remount_system_ex'), 'appinst_direct must implement remount_system_ex')
 assert.ok(appinst.includes('Sx4TTyrQccE'), 'appinst_direct must resolve app_uninstall to purge stale app.db entries')
 assert.ok(appinst.includes('sceAppInstUtilAppInstallAll(NULL)'), 'appinst_direct must have fallback to sceAppInstUtilAppInstallAll')
@@ -62,5 +62,5 @@ assert.ok(html.includes('toggleFocusedSelection'), 'files.html defines toggleFoc
 assert.ok(html.includes('pollGamepad'), 'files.html defines pollGamepad')
 assert.ok(appinst.includes('registration v4'), 'appinst_direct marker must be updated to v4')
 
-console.log('All v1.8 superiority, WebCard clean UI, Square selection, and universal tile installer checks passed!')
+console.log('Package, tile and console-control checks passed')
 
